@@ -1,0 +1,57 @@
+{
+  "expo": {
+    "name": "HakbangQuest",
+    "slug": "HakbangQuest",
+    "owner": "sdi23",
+    "version": "1.0.0",
+    "icon": "./assets/image/icon.png",
+    "assetBundlePatterns": [
+      "**/*",
+      "assets/fonts/*"
+    ],
+    "newArchEnabled": true,
+    "scheme": "hakbangquest",
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/image/adaptive-icon.png",
+        "backgroundColor": "#FFFFFF"
+      },
+      "hermes": false,
+      "devClient": true,
+      "edgeToEdgeEnabled": true,
+      "package": "com.hakbangquest",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "android.permission.CAMERA"
+      ],
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyCFE6SuCoD7LQftBLIN34ChHr-F2gnyaEI"
+        }
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "com.hakbangquest",
+      "config": {
+        "googleMapsApiKey": "AIzaSyCFE6SuCoD7LQftBLIN34ChHr-F2gnyaEI"
+      }
+    },
+    "plugins": [
+      "expo-font",
+      "expo-web-browser",
+      "expo-video"
+    ],
+    "splash": {
+      "image": "./assets/image/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "015c9cba-ad36-4cba-af79-9131e8c73ba2"
+      }
+    }
+  }
+}
