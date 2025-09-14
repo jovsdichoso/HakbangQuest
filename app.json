@@ -19,6 +19,7 @@
       "hermes": false,
       "devClient": true,
       "edgeToEdgeEnabled": true,
+      "minSdkVersion": 26,
       "package": "com.hakbangquest",
       "permissions": [
         "ACCESS_FINE_LOCATION",
