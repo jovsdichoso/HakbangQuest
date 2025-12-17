@@ -11,18 +11,19 @@ import {
   TextInput,
   FlatList,
   Dimensions,
-  KeyboardAvoidingView,
-  Platform,
 } from "react-native"
 import twrnc from "twrnc"
 import CustomText from "../components/CustomText"
 import { Ionicons } from "@expo/vector-icons"
 import { db, auth } from "../firebaseConfig"
+import { getDoc } from "firebase/firestore"
 import CustomModal from "../components/CustomModal"
 import NotificationService from "../services/NotificationService"
 import AnimatedButton from "../components/buttons/AnimatedButton"
 import ChallengeDetailsModal from "../components/modals/ChallengeDetailsModal"
 import CreateChallengeModal from "../components/modals/CreateChallengeModal"
+import DuoVsModal from "../components/modals/DuoVsModal"
+import XPManager from "../utils/xpManager" // Import XPManager
 
 // Import icons
 import WalkingIcon from "../components/icons/walking.png"
@@ -47,17 +48,20 @@ import {
   createChallenge,
   createCustomChallenge,
   joinChallenge,
+  startChallenge,
   loadLeaderboardData,
-  sendChatMessage,
   setUserOnlineStatus,
   setUserOfflineStatus,
   formatLastActive,
-  formatTime,
   formatActivityDescription,
   deleteChallenge,
-  completeChallenge,
-  updateChallengeProgress,
+  getUserChallenges,
 } from "../utils/CommunityBackend"
+
+import { getActivityDisplayInfo } from "../utils/activityDisplayMapper"
+
+// Import firebase functions
+import { doc, updateDoc, serverTimestamp } from "firebase/firestore"
 
 // Default avatar image to use when user has no avatar
 const DEFAULT_AVATAR = "https://res.cloudinary.com/dljywnlvh/image/upload/v1747077348/default-avatar_jkbpwv.jpg"
@@ -93,8 +97,12 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
   const [selectedFriend, setSelectedFriend] = useState(null)
   const [isFriendProfileVisible, setIsFriendProfileVisible] = useState(false)
   const [isCreateChallengeModalVisible, setIsCreateChallengeModalVisible] = useState(false)
-  const [isEditChallengeModalVisible, setIsEditChallengeModalVisible] = useState(false);
+  const [isEditChallengeModalVisible, setIsEditChallengeModalVisible] = useState(false)
   const [onlineUsers, setOnlineUsers] = useState({})
+  const [participantsData, setParticipantsData] = useState({})
+  const [showVsModal, setShowVsModal] = useState(false)
+  const [startingChallenge, setStartingChallenge] = useState(false)
+  const [vsModalData, setVsModalData] = useState({ visible: false })
   const [newChallenge, setNewChallenge] = useState({
     title: "",
     description: "",
@@ -105,13 +113,12 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     durationHours: 0,
     durationMinutes: 0,
     durationSeconds: 0,
-    endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-    groupType: "public",
+    endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // default: 7 days later
+    groupType: "duo", // ✅ start with duo instead of public
     selectedFriendsForGroupChallenge: [],
-    xpReward: 50,
-    xpPenalty: 10,
-    completionRequirement: "complete_goal",
-  });
+    stakeXP: 100, // 💰 stake per participant
+  })
+
   const [friendsPage, setFriendsPage] = useState(1)
   const [hasMoreFriends, setHasMoreFriends] = useState(true)
   const [loadingMoreFriends, setLoadingMoreFriends] = useState(false)
@@ -140,6 +147,7 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
   const [sendingMessage, setSendingMessage] = useState(false)
   const [sendingChallenge, setSendingChallenge] = useState(false)
   // const [openingChat, setOpeningChat] = useState(false) // Removed
+  const [sendingQuickMessage, setSendingQuickMessage] = useState(false) // Declared sendingQuickMessage
 
   const [modalVisible, setModalVisible] = useState(false)
   const [modalProps, setModalProps] = useState({
@@ -157,11 +165,6 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
   const [isChallengeDetailsVisible, setIsChallengeDetailsVisible] = useState(false)
 
   // QuickChat states
-  const [isQuickChatVisible, setIsQuickChatVisible] = useState(false);
-  const [quickChatSelectedFriend, setQuickChatSelectedFriend] = useState(null);
-  const [quickChatMessage, setQuickChatMessage] = useState("");
-  const [sendingQuickMessage, setSendingQuickMessage] = useState(false);
-
 
   const activities = useMemo(
     () => [
@@ -173,9 +176,9 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         color: "#4361EE",
         iconColor: "#FFFFFF",
         isGpsActivity: true,
-        defaultGoal: 5, // km
         unit: "km",
-        goalOptions: [1, 2, 5, 10], // km
+        defaultGoal: 5,
+        goalOptions: [5, 10, 15, 20],
       },
       {
         id: "running",
@@ -185,9 +188,9 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         color: "#EF476F",
         iconColor: "#FFFFFF",
         isGpsActivity: true,
-        defaultGoal: 5, // km
         unit: "km",
-        goalOptions: [1, 3, 5, 10], // km
+        defaultGoal: 3,
+        goalOptions: [3, 5, 7, 10],
       },
       {
         id: "cycling",
@@ -197,9 +200,9 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         color: "#06D6A0",
         iconColor: "#FFFFFF",
         isGpsActivity: true,
-        defaultGoal: 10, // km
         unit: "km",
-        goalOptions: [5, 10, 20, 50], // km
+        defaultGoal: 10,
+        goalOptions: [10, 20, 30, 40],
       },
       {
         id: "jogging",
@@ -209,9 +212,9 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         color: "#FFC107",
         iconColor: "#FFFFFF",
         isGpsActivity: true,
-        defaultGoal: 3, // km
         unit: "km",
-        goalOptions: [1, 2, 3, 5], // km
+        defaultGoal: 4,
+        goalOptions: [4, 6, 8, 12],
       },
       {
         id: "pushup",
@@ -221,13 +224,13 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         color: "#9B5DE5",
         iconColor: "#FFFFFF",
         isGpsActivity: false,
-        defaultGoal: 50, // reps
         unit: "reps",
-        goalOptions: [10, 25, 50, 100], // reps
+        defaultGoal: 20,
+        goalOptions: [10, 20, 30, 50],
       },
     ],
-    []
-  );
+    [],
+  )
 
   // Helper to show modal
   const showModal = ({
@@ -345,6 +348,38 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     }
   }, [])
 
+  // Declare fetchParticipantsData here
+  const fetchParticipantsData = useCallback(async () => {
+    if (
+      selectedChallenge &&
+      Array.isArray(selectedChallenge.participants) &&
+      selectedChallenge.participants.length > 0
+    ) {
+      const users = {}
+      for (const uid of selectedChallenge.participants) {
+        try {
+          // Fetch user data from Firestore
+          const userDoc = await db.collection("users").doc(uid).get()
+          if (userDoc.exists) {
+            users[uid] = userDoc.data()
+          } else {
+            users[uid] = { displayName: "Player", avatar: DEFAULT_AVATAR, xp: 0 }
+          }
+        } catch (e) {
+          users[uid] = { displayName: "Player", avatar: DEFAULT_AVATAR, xp: 0 }
+        }
+      }
+      setParticipantsData(users)
+    } else {
+      setParticipantsData({})
+    }
+  }, [selectedChallenge])
+
+  // Call fetchParticipantsData in useEffect
+  useEffect(() => {
+    fetchParticipantsData()
+  }, [fetchParticipantsData])
+
   // Load user profile and initial data
   useEffect(() => {
     const callbacks = {
@@ -425,31 +460,29 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
   }
 
   const getDateFromTimestamp = (timestamp) => {
-    if (!timestamp) return null;
+    if (!timestamp) return null
     if (timestamp.toDate && typeof timestamp.toDate === "function") {
-      return timestamp.toDate();
+      return timestamp.toDate()
     }
     if (timestamp instanceof Date) {
-      return timestamp;
+      return timestamp
     }
     // If timestamp is a string or number, try to parse it
-    const parsedDate = new Date(timestamp);
-    if (!isNaN(parsedDate)) return parsedDate;
-    return null;
-  };
+    const parsedDate = new Date(timestamp)
+    if (!isNaN(parsedDate)) return parsedDate
+    return null
+  }
 
   // In your existing useEffect that handles cleanup
   useEffect(() => {
     return () => {
       // Cleanup all modal states
-      setIsChallengeDetailsVisible(false);
-      setIsEditChallengeModalVisible(false);
-      setSelectedChallenge(null);
-      setCreatingChallenge(false);
-    };
-  }, []);
-
-
+      setIsChallengeDetailsVisible(false)
+      setIsEditChallengeModalVisible(false)
+      setSelectedChallenge(null)
+      setCreatingChallenge(false)
+    }
+  }, [])
 
   // Search users
   useEffect(() => {
@@ -476,64 +509,52 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     performSearch()
   }, [debouncedSearchQuery])
 
-
-  // In your activity completion logic, add this:
   const checkChallengesAfterActivity = async (activityData) => {
     try {
-      const user = auth.currentUser;
+      const user = auth.currentUser
       if (!user) {
-        console.log("No user logged in");
-        return;
+        console.log("No user logged in")
+        return
       }
 
-      console.log("Checking challenges after activity:", activityData);
+      console.log("Checking challenges after activity:", activityData)
 
       // Get user's active challenges
-      const userChallenges = await getUserChallenges(user.uid);
-      console.log(`User has ${userChallenges.length} active challenges`);
+      const userChallenges = await getUserChallenges(user.uid)
+      console.log(`User has ${userChallenges.length} active challenges`)
 
       for (const challenge of userChallenges) {
-        console.log(`Checking challenge: ${challenge.title}, Type: ${challenge.activityType}`);
+        console.log(`Checking challenge: ${challenge.title}, Type: ${challenge.activityType}`)
 
         if (challenge.activityType === activityData.activityType) {
-          console.log(`Challenge matches activity type: ${activityData.activityType}`);
+          console.log(`Challenge matches activity type: ${activityData.activityType}`)
 
-          // Update progress for this challenge
-          const currentProgress = challenge.progress?.[user.uid] || 0;
-          const activityDistance = activityData.distance || 0;
-          const newProgress = currentProgress + activityDistance;
+          // Use XP Manager to handle challenge progress
+          const activityId = XPManager.generateActivityId(user.uid, Date.now(), activityData.activityType)
 
-          console.log(`Updating progress from ${currentProgress} to ${newProgress}`);
+          const xpResult = await XPManager.awardXPForActivity({
+            userId: user.uid,
+            activityId: activityId,
+            activityData: activityData,
+            stats: activityData,
+            activityParams: { activityType: activityData.activityType },
+            challengeData: challenge,
+            isStrengthActivity: !activityData.distance, // Simple check for strength activities
+          })
 
-          await updateChallengeProgress(challenge.id, user.uid, newProgress);
-
-          // Check if challenge is completed
-          const result = await completeChallenge(challenge.id, user.uid);
-
-          if (result.success) {
-            // Show notification about XP reward
+          if (xpResult.challengeCompleted) {
             showModal({
               title: "Challenge Completed!",
-              message: `You earned ${result.xpReward} XP for completing "${challenge.title}"`,
-              type: "success"
-            });
-          } else if (result.xpPenalty) {
-            // Show notification about XP penalty
-            showModal({
-              title: "Challenge Failed",
-              message: `You lost ${result.xpPenalty} XP for failing "${challenge.title}"`,
-              type: "error"
-            });
+              message: `You earned bonus XP for completing "${challenge.title}"!`,
+              type: "success",
+            })
           }
-        } else {
-          console.log(`Challenge type ${challenge.activityType} doesn't match activity type ${activityData.activityType}`);
         }
       }
     } catch (err) {
-      console.error("Error checking challenges after activity:", err);
-      // Don't show error to user to avoid interrupting their flow
+      console.error("Error checking challenges after activity:", err)
     }
-  };
+  }
 
   // Friend request handlers
   const handleSendFriendRequest = async (userId) => {
@@ -587,6 +608,70 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     }
   }
 
+  const handleStartChallenge = async (challengeId) => {
+    try {
+      setCreatingChallenge(true)
+
+      await startChallenge(challengeId)
+
+      // Update local state
+      setChallenges((prev) =>
+        prev.map((challenge) =>
+          challenge.id === challengeId
+            ? { ...challenge, status: { ...challenge.status, global: "active" }, startDate: new Date() }
+            : challenge,
+        ),
+      )
+
+      setSelectedChallenge((prev) =>
+        prev && prev.id === challengeId
+          ? { ...prev, status: { ...prev.status, global: "active" }, startDate: new Date() }
+          : prev,
+      )
+
+      showModal({
+        title: "Challenge Started",
+        message: "Your challenge is now active!",
+        type: "success",
+      })
+    } catch (err) {
+      console.error("Failed to start challenge:", err)
+
+      // Rollback UI if start failed
+      setSelectedChallenge((prev) =>
+        prev && prev.id === challengeId ? { ...prev, status: { ...prev.status, global: "pending" } } : prev,
+      )
+
+      showModal({
+        title: "Error",
+        message: err?.message || "Failed to start challenge. Please try again.",
+        type: "error",
+      })
+    } finally {
+      setCreatingChallenge(false)
+    }
+  }
+
+  const handleViewChallenge = async (challenge) => {
+    setSelectedChallenge(challenge)
+
+    // Ensure participants data is loaded first
+    if (
+      !participantsData[challenge.createdBy] ||
+      !participantsData[challenge.participants?.find((p) => p !== challenge.createdBy)]
+    ) {
+      await fetchParticipantsData()
+    }
+
+    // ✅ Only show challenge details — do not trigger VS modal here
+    setIsChallengeDetailsVisible(true)
+  }
+
+  const handleShowDuoVs = ({ challengeId, player1, player2, stakeXP, fullChallenge }) => {
+    setVsModalData({ challengeId, player1, player2, stakeXP, fullChallenge })
+    setShowVsModal(true)
+  }
+
   // Challenge handlers
   const handleCreateChallenge = async () => {
     try {
@@ -599,19 +684,9 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         return;
       }
 
-      const now = new Date();
-      const endDate = new Date(
-        now.getTime() +
-        (newChallenge.durationDays || 0) * 24 * 60 * 60 * 1000 +
-        (newChallenge.durationHours || 0) * 60 * 60 * 1000 +
-        (newChallenge.durationMinutes || 0) * 60 * 1000
-      );
-
-      // Validate friend selection for duo/lobby challenges
-      if (
-        newChallenge.groupType === "duo" &&
-        newChallenge.selectedFriendsForGroupChallenge.length !== 1
-      ) {
+      // ✅ Validate participants only
+      const selectedFriendsCount = newChallenge.selectedFriendsForGroupChallenge?.length || 0;
+      if (newChallenge.groupType === "duo" && selectedFriendsCount !== 1) {
         showModal({
           title: "Error",
           message: "Duo challenges require exactly one friend.",
@@ -620,81 +695,35 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         return;
       }
 
-      if (
-        newChallenge.groupType === "lobby" &&
-        (newChallenge.selectedFriendsForGroupChallenge.length === 0 ||
-          newChallenge.selectedFriendsForGroupChallenge.length >
-          CHALLENGE_GROUP_TYPES.find((t) => t.id === "lobby").maxParticipants - 1)
-      ) {
-        showModal({
-          title: "Error",
-          message: `Lobby challenges require 1 to ${CHALLENGE_GROUP_TYPES.find((t) => t.id === "lobby").maxParticipants - 1
-            } friends.`,
-          type: "error",
-        });
-        return;
-      }
-
       setCreatingChallenge(true);
 
-      // Save the current type and title/description before reset
-      const selectedActivityType = newChallenge.type;
-      const selectedTitle = newChallenge.title;
-      const selectedDescription = newChallenge.description;
-      const selectedGoal = newChallenge.goal;
-      const selectedUnit = newChallenge.unit;
-
-      // ✅ Create the challenge with correct endDate + durations
+      // 🧠 Just pass newChallenge as-is
       const result = await createChallenge(
-        {
-          ...newChallenge,
-          createdBy: auth.currentUser.uid,
-          createdAt: now,
-          endDate, // use recalculated endDate
-          durationDays: newChallenge.durationDays || 0,
-          durationHours: newChallenge.durationHours || 0,
-          durationMinutes: newChallenge.durationMinutes || 0,
-        },
-        newChallenge.selectedFriendsForGroupChallenge.map((f) => f.id),
+        newChallenge,
+        newChallenge.selectedFriendsForGroupChallenge?.map((f) => f.id) || [],
         newChallenge.groupType
       );
 
-      // Add new challenge to state
       setChallenges((prev) => [result.challenge, ...prev]);
-
-      // Close modal
       setIsCreateChallengeModalVisible(false);
 
-      // Show success modal
       showModal({
         title: "Success",
         message: result.message,
         type: "success",
       });
 
-      // Navigate or do anything with selectedType here
-      navigateToActivity({
-        activityType: selectedActivityType,
-        title: selectedTitle,
-        description: selectedDescription,
-        goal: selectedGoal,
-        unit: selectedUnit,
-        questId: result.challenge.id, // Pass the newly created challenge ID as questId
-      });
-
-      // ✅ Reset the form including durations
       setNewChallenge({
         title: "",
         description: "",
-        type: "walking", // leave blank or default if you want user to reselect
-        goal: 5,
+        type: "walking",
+        goal: null,
         unit: "km",
-        endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        durationDays: 0,
-        durationHours: 0,
-        durationMinutes: 0,
-        groupType: "public",
+        endDate: new Date(Date.now() + 30 * 60 * 1000),
+        durationMinutes: 30,
+        groupType: "duo",
         selectedFriendsForGroupChallenge: [],
+        stakeXP: 100,
       });
     } catch (err) {
       showModal({
@@ -707,11 +736,11 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     }
   };
 
+
   const handleCreateCustomChallenge = async () => {
     try {
       setCreatingChallenge(true)
       const result = await createCustomChallenge(customChallenge, challengeTargetFriend)
-      // Reset state and close modal
       setCustomChallenge({
         activityType: "walking",
         goal: 5,
@@ -752,7 +781,6 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
           challenge.id === challengeId ? { ...challenge, participants: result.updatedParticipants } : challenge,
         ),
       )
-      // Update the selectedChallenge if it's currently open
       setSelectedChallenge((prev) =>
         prev && prev.id === challengeId ? { ...prev, participants: result.updatedParticipants } : prev,
       )
@@ -765,40 +793,22 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
   }
 
   // QuickChat handlers
-  const handleOpenQuickChat = (friend) => {
-    setQuickChatSelectedFriend(friend);
-    setIsQuickChatVisible(true);
-    setQuickChatMessage(""); // Clear previous message
-    setIsFriendProfileVisible(false); // Add this line to close the friend profile modal
-  };
-
-
-  const handleSendQuickMessage = async () => {
-    if (!quickChatMessage.trim() || !quickChatSelectedFriend || sendingQuickMessage) return;
-
-    try {
-      setSendingQuickMessage(true);
-      const messageText = quickChatMessage.trim();
-      setQuickChatMessage(""); // Clear input immediately
-
-      const chatRoomId = [auth.currentUser.uid, quickChatSelectedFriend.id].sort().join("_");
-      await sendChatMessage(chatRoomId, messageText, quickChatSelectedFriend, userProfile);
-
+  const handleOpenQuickChat = async (friend) => {
+    // Placeholder for actual quick chat navigation/logic
+    // For now, just show a modal indicating the action
+    setSendingQuickMessage(true)
+    console.log("Opening quick chat with:", friend.displayName)
+    // In a real app, you would navigate to a chat screen or open a chat modal
+    // For demonstration, we'll simulate a brief loading and then close it.
+    setTimeout(() => {
+      setSendingQuickMessage(false)
       showModal({
-        title: "Message Sent",
-        message: `Your message has been sent to ${quickChatSelectedFriend.displayName || quickChatSelectedFriend.username}.`,
-        type: "success",
-      });
-    } catch (err) {
-      showModal({
-        title: "Error",
-        message: err.message,
-        type: "error",
-      });
-    } finally {
-      setSendingQuickMessage(false);
-    }
-  };
+        title: "Quick Chat",
+        message: `Opening chat with ${friend.displayName}... (Feature not fully implemented)`,
+        type: "info",
+      })
+    }, 1000) // Simulate network delay
+  }
 
   // Custom challenge helpers
   const openCustomChallengeModal = (friend) => {
@@ -865,41 +875,58 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     setIsChallengeDetailsVisible(true)
   }
 
-  // Function to navigate to ActivityScreen with challenge data
-  const navigateToActivityWithChallenge = (challenge) => {
-    const userId = auth.currentUser?.uid;
-    const userProgressAbsolute = challenge.progress?.[userId] || 0;
-    const goal = Number(challenge.goal) || 1;
+  // ChallengeDetailsModal.js - Ensure proper challenge data passing
+  const navigateToActivityWithChallenge = (challenge, skipAnimation = false) => {
+    const userId = auth.currentUser?.uid
+    const userProgressAbsolute = challenge.progress?.[userId] || 0
 
-    // Calculate progress fraction (0 to 1)
-    const progressFraction = Math.min(userProgressAbsolute / goal, 1);
-
-    const params = {
+    const challengeData = {
       questId: challenge.id,
       title: challenge.title,
       description: challenge.description,
-      goal: challenge.goal,
+      goal: challenge.mode === "time" ? null : Number(challenge.goal) || 1,
       unit: challenge.unit,
-      activityType: challenge.activityType,
-      xpReward: challenge.xpReward || 50,
+      activityType: challenge.activityType || challenge.type,
+      stakeXP: challenge.stakeXP,
       difficulty: challenge.difficulty || "medium",
       category: "challenge",
-      progress: progressFraction,
+      progress: challenge.mode === "time" ? 0 : Math.min(userProgressAbsolute / (challenge.goal || 1), 1),
       status: challenge.status?.[userId] || "not_started",
-      onActivityComplete: checkChallengesAfterActivity // Add callback
-    };
+      mode: challenge.mode,
+      durationMinutes: challenge.durationMinutes,
+      startDate: challenge.startDate,
+      endDate: challenge.endDate,
+      xpReward: challenge.xpReward,
+      participants: challenge.participants,
+      createdBy: challenge.createdBy,
+      groupType: challenge.groupType,
+    }
 
-    navigateToActivity(params);
-    setIsChallengeDetailsVisible(false);
-  };
+    // ✅ Skip showing the DuoVsModal again if already shown
+    if (!skipAnimation && challenge.groupType === "duo" && challenge.participants?.length === 2) {
+      setSelectedChallenge(challenge)
+      // Pass fullChallenge to DuoVsModal data when triggering
+      handleShowDuoVs({
+        challengeId: challenge.id,
+        player1: challenge.participants[0], // Assuming participants are ordered
+        player2: challenge.participants[1],
+        stakeXP: challenge.stakeXP,
+        fullChallenge: challenge, // Pass the whole challenge object
+      })
+    } else {
+      navigateToActivity({ questData: challengeData })
+      setIsChallengeDetailsVisible(false)
+      setShowVsModal(false)
+    }
+  }
 
   // Add this useEffect to manage modal transitions
   useEffect(() => {
     if (isEditChallengeModalVisible) {
       // If edit modal is opening, ensure details modal is closed
-      setIsChallengeDetailsVisible(false);
+      setIsChallengeDetailsVisible(false)
     }
-  }, [isEditChallengeModalVisible]);
+  }, [isEditChallengeModalVisible])
 
   // Then update handleEditChallenge to be simpler:
   const handleEditChallenge = (challenge) => {
@@ -908,8 +935,8 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         title: "Permission Denied",
         message: "Only the creator can edit this challenge.",
         type: "error",
-      });
-      return;
+      })
+      return
     }
 
     // Pre-fill editable values
@@ -924,23 +951,24 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
       difficulty: challenge.difficulty || "medium",
       xpReward: challenge.xpReward || 50,
       selectedFriendsForGroupChallenge: [],
-    });
+      durationMinutes: challenge.durationMinutes, // Ensure durationMinutes is pre-filled
+    })
 
     // Store which challenge is being edited
-    setSelectedChallenge(challenge);
+    setSelectedChallenge(challenge)
 
     // Close details modal and open edit modal
-    setIsChallengeDetailsVisible(false);
-    setTimeout(() => setIsEditChallengeModalVisible(true), 100);
-  };
+    setIsChallengeDetailsVisible(false)
+    setTimeout(() => setIsEditChallengeModalVisible(true), 100)
+  }
 
   const handleSaveChallenge = async () => {
     try {
       if (selectedChallenge) {
-        setCreatingChallenge(true);
+        setCreatingChallenge(true)
 
         // Update existing challenge - only allow editing specific fields
-        const challengeRef = doc(db, "challenges", selectedChallenge.id);
+        const challengeRef = doc(db, "challenges", selectedChallenge.id)
         await updateDoc(challengeRef, {
           title: newChallenge.title,
           description: newChallenge.description,
@@ -948,8 +976,9 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
           unit: newChallenge.unit,
           difficulty: newChallenge.difficulty,
           xpReward: newChallenge.xpReward,
+          durationMinutes: newChallenge.durationMinutes, // Save durationMinutes
           updatedAt: serverTimestamp(),
-        });
+        })
 
         // Update local state
         setChallenges((prev) =>
@@ -963,34 +992,33 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                 unit: newChallenge.unit,
                 difficulty: newChallenge.difficulty,
                 xpReward: newChallenge.xpReward,
+                durationMinutes: newChallenge.durationMinutes, // Update durationMinutes in local state
               }
-              : c
-          )
-        );
+              : c,
+          ),
+        )
 
         showModal({
           title: "Success",
           message: "Challenge updated successfully!",
-          type: "success"
-        });
+          type: "success",
+        })
       }
     } catch (err) {
-      console.error("Error saving challenge:", err);
+      console.error("Error saving challenge:", err)
       showModal({
         title: "Error",
         message: err.message || "Failed to update challenge.",
-        type: "error"
-      });
+        type: "error",
+      })
     } finally {
       // Always reset these states, even on error
-      setCreatingChallenge(false);
-      setSelectedChallenge(null);
-      setIsEditChallengeModalVisible(false);
+      setCreatingChallenge(false)
+      setSelectedChallenge(null)
+      setIsEditChallengeModalVisible(false)
     }
-  };
+  }
 
-
-  // Function to handle deleting a challenge (placeholder)
   const handleDeleteChallenge = async (challengeId) => {
     showModal({
       title: "Delete Challenge",
@@ -1000,38 +1028,34 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
       confirmText: "Delete",
       onConfirm: async () => {
         try {
-          setCreatingChallenge(true); // Use loading state for deletion too
+          setCreatingChallenge(true)
 
-          // Actually delete from database
-          const result = await deleteChallenge(challengeId);
-
-          // Remove from local state
-          setChallenges((prev) => prev.filter((c) => c.id !== challengeId));
-
-          // Close the details modal if it's open
-          setIsChallengeDetailsVisible(false);
+          const result = await deleteChallenge(challengeId)
+          setChallenges((prev) => prev.filter((c) => c.id !== challengeId))
+          setIsChallengeDetailsVisible(false)
 
           showModal({
             title: "Challenge Deleted",
             message: result.message,
             type: "success",
-          });
+          })
         } catch (err) {
-          console.error("Error deleting challenge:", err);
+          console.error("Error deleting challenge:", err)
           showModal({
             title: "Error",
             message: err.message || "Failed to delete challenge. Please try again.",
             type: "error",
-          });
+          })
         } finally {
-          setCreatingChallenge(false);
+          setCreatingChallenge(false)
         }
       },
       onCancel: () => {
-        // Just close the confirmation modal, no action needed
+        // ✅ Explicitly close
+        setModalVisible(false)
       },
-    });
-  };
+    })
+  }
 
   // Render functions
   const renderFriendItem = ({ item }) => (
@@ -1157,53 +1181,93 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
   )
 
   const renderChallengeItem = ({ item }) => {
-    const userId = auth.currentUser?.uid;
+    const userId = auth.currentUser?.uid
 
     // Handle participants
-    const isFull = item.maxParticipants && item.participants?.length >= item.maxParticipants;
-    const isJoined = Array.isArray(item.participants) && item.participants.includes(userId);
+    const isFull = item.maxParticipants && item.participants?.length >= item.maxParticipants
+    const isJoined = Array.isArray(item.participants) && item.participants.includes(userId)
 
     // ✅ Check if user is invited to private challenges - handle both field names
-    const isPublicChallenge = item.groupType === "public";
+    const isPublicChallenge = item.groupType === "public"
 
     // Check both invitedUsers and invited fields for backward compatibility
-    const invitedUsersList = Array.isArray(item.invitedUsers) ? item.invitedUsers :
-      (Array.isArray(item.invited) ? item.invited : []);
+    const invitedUsersList = Array.isArray(item.invitedUsers)
+      ? item.invitedUsers
+      : Array.isArray(item.invited)
+        ? item.invited
+        : []
 
     // ✅ FIX: Creator should always be considered invited to their own challenges
-    const isCreator = item.createdBy === userId;
-    const isInvited = isPublicChallenge || invitedUsersList.includes(userId) || isCreator;
+    const isCreator = item.createdBy === userId
+    const isInvited = isPublicChallenge || invitedUsersList.includes(userId) || isCreator
 
     // ✅ Hide private challenges that user is not invited to
     if (!isPublicChallenge && !isInvited) {
-      return null; // This will hide the challenge from the list
+      return null // This will hide the challenge from the list
     }
 
-    const canJoin = !isJoined && !isFull && isInvited;
+    const canJoin = !isJoined && !isFull && isInvited
 
     // Safely access progress and status
-    const userProgress = item.progress?.[userId] ?? 0;
-    const userStatus = item.status?.[userId] ?? "not_started";
+    const userProgress = item.progress?.[userId] ?? 0
+    const userStatus = item.status?.[userId] ?? "not_started"
 
-    // Find the activity configuration to get the correct unit
-    const activityConfig = activities.find((act) => act.id === item.activityType);
-    const unitDisplay = activityConfig ? activityConfig.unit : item.unit || "";
+    // Find the activity configuration to get the correct unit and color
+    const activityConfig = activities.find((act) => act.id === item.activityType)
+    const unitDisplay = activityConfig ? activityConfig.unit : item.unit || ""
+    const activityColor = activityConfig?.color || "#FFC107"
+    const activityIcon = activityConfig?.icon
+
+    // Calculate remaining time function
+    const getRemainingTime = () => {
+      const endDate = getDateFromTimestamp(item.endDate)
+      if (!endDate) return "N/A"
+
+      const now = new Date()
+      const diff = endDate - now
+      if (diff < 0) return "Ended"
+
+      const hours = Math.floor(diff / (1000 * 60 * 60))
+      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
+
+      if (hours > 24) {
+        const days = Math.floor(hours / 24)
+        return `${days}d ${hours % 24}h`
+      }
+      return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`
+    }
 
     return (
       <TouchableOpacity
         style={twrnc`bg-[#2A2E3A] rounded-2xl p-5 mb-4 shadow-lg`}
-        onPress={() => viewChallengeDetails(item)}
+        onPress={() => handleViewChallenge(item)}
         activeOpacity={0.8}
       >
         {/* Header */}
         <View style={twrnc`flex-row items-center mb-4`}>
-          <View style={twrnc`w-16 h-16 rounded-2xl bg-[#FFC10720] items-center justify-center mr-4`}>
-            {item.icon ? (
-              <Image source={{ uri: item.icon }} style={twrnc`w-10 h-10`} resizeMode="contain" />
+          {/* Activity Icon with colored background */}
+          <View
+            style={[
+              twrnc`w-16 h-16 rounded-2xl items-center justify-center mr-4`,
+              { backgroundColor: `${activityColor}` }, // 20% opacity of activity color
+            ]}
+          >
+            {activityIcon ? (
+              <Image
+                source={activityIcon}
+                style={twrnc`w-10 h-10`}
+                resizeMode="contain"
+                tintColor="#FFFFFF" // Changed to white for activity icons
+              />
             ) : (
-              <Ionicons name="trophy" size={32} color="#FFC107" />
+              <Ionicons
+                name="fitness"
+                size={32}
+                color={activityColor} // Keep colored for fallback icon
+              />
             )}
           </View>
+
           <View style={twrnc`flex-1`}>
             <CustomText weight="bold" style={twrnc`text-white text-lg mb-1`}>
               {item.title}
@@ -1211,82 +1275,73 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
 
             {/* Challenge tags */}
             <View style={twrnc`flex-row items-center mb-2`}>
-              <View style={twrnc`bg-[#4361EE20] px-3 py-1 rounded-xl mr-2`}>
-                <CustomText style={twrnc`text-[#4361EE] text-xs font-medium`}>
-                  {item.activityType
-                    ? item.activityType.charAt(0).toUpperCase() + item.activityType.slice(1)
-                    : "Challenge"}
+              <View
+                style={[
+                  twrnc`px-3 py-1 rounded-xl mr-2`,
+                  { backgroundColor: `${activityColor}20` }, // Use activity color for tag
+                ]}
+              >
+                <CustomText style={[twrnc`text-xs font-medium`, { color: activityColor }]}>
+                  {activityConfig?.name || "Challenge"}
                 </CustomText>
               </View>
+
               <View style={twrnc`bg-[#06D6A020] px-3 py-1 rounded-xl`}>
                 <CustomText style={twrnc`text-[#06D6A0] text-xs font-medium`}>
                   {String(item.participants?.length || 0)} / {String(item.maxParticipants || "∞")} joined
                 </CustomText>
               </View>
+
               {item.groupType && item.groupType !== "public" && (
                 <View style={twrnc`bg-[#9B5DE520] px-3 py-1 rounded-xl ml-2`}>
-                  <CustomText style={twrnc`text-[#9B5DE5] text-xs font-medium capitalize`}>
-                    {item.groupType}
-                  </CustomText>
+                  <CustomText style={twrnc`text-[#9B5DE5] text-xs font-medium capitalize`}>{item.groupType}</CustomText>
                 </View>
               )}
             </View>
 
-            {/* Dates, goal, difficulty */}
-            <View style={twrnc`flex-row items-center`}>
-              <Ionicons name="time-outline" size={14} color="#FFC107" />
-              <CustomText style={twrnc`text-[#FFC107] text-xs ml-1`}>
-                {(() => {
-                  const endDateObj = getDateFromTimestamp(item.endDate);
-                  return endDateObj ? `Ends ${endDateObj.toLocaleDateString()}` : "Ongoing";
-                })()}
-              </CustomText>
+            {/* Remaining time, goal, difficulty */}
+            <View style={twrnc`flex-row items-center flex-wrap`}>
+              <View style={twrnc`flex-row items-center mr-3 mb-1`}>
+                <Ionicons name="time-outline" size={14} color="#FFC107" />
+                <CustomText style={twrnc`text-[#FFC107] text-xs ml-1`}>{getRemainingTime()} remaining</CustomText>
+              </View>
 
               {item.goal && item.unit && (
-                <>
-                  <Ionicons name="flag-outline" size={14} color="#06D6A0" style={twrnc`ml-3`} />
+                <View style={twrnc`flex-row items-center mr-3 mb-1`}>
+                  <Ionicons name="flag-outline" size={14} color="#06D6A0" />
                   <CustomText style={twrnc`text-[#06D6A0] text-xs ml-1`}>
                     Goal: {String(item.goal)} {unitDisplay}
                   </CustomText>
-                </>
+                </View>
               )}
 
               {item.difficulty && (
-                <>
-                  <Ionicons name="flash-outline" size={14} color="#EF476F" style={twrnc`ml-3`} />
-                  <CustomText style={twrnc`text-[#EF476F] text-xs ml-1 capitalize`}>
-                    {item.difficulty}
-                  </CustomText>
-                </>
+                <View style={twrnc`flex-row items-center mb-1`}>
+                  <Ionicons name="flash-outline" size={14} color="#EF476F" />
+                  <CustomText style={twrnc`text-[#EF476F] text-xs ml-1 capitalize`}>{item.difficulty}</CustomText>
+                </View>
               )}
             </View>
           </View>
         </View>
 
         {/* Description */}
-        {item.description && (
-          <CustomText style={twrnc`text-gray-400 text-sm mb-4`}>
-            {item.description}
-          </CustomText>
-        )}
+        {item.description && <CustomText style={twrnc`text-gray-400 text-sm mb-4`}>{item.description}</CustomText>}
 
         {/* User progress & status */}
-        <View style={twrnc`mb-4`}>
-          <CustomText style={twrnc`text-gray-300 text-sm`}>
-            Progress: {userProgress.toFixed(1)} {unitDisplay}
-          </CustomText>
-          <CustomText style={twrnc`text-gray-300 text-sm`}>
-            Status: {userStatus.replace(/_/g, " ")}
-          </CustomText>
-        </View>
+        {isJoined && userProgress > 0 && (
+          <View style={twrnc`mb-4`}>
+            <CustomText style={twrnc`text-gray-300 text-sm`}>
+              Your Progress: {userProgress.toFixed(1)} {unitDisplay}
+            </CustomText>
+            <CustomText style={twrnc`text-gray-300 text-sm`}>Status: {userStatus.replace(/_/g, " ")}</CustomText>
+          </View>
+        )}
 
         {/* Join button - Only show if user can join */}
         {canJoin && (
           <TouchableOpacity
-            style={twrnc`${joiningChallenges[item.id]
-              ? "bg-[#3251DD]"
-              : "bg-[#4361EE]"
-              } py-3 rounded-xl items-center`}
+            style={twrnc`${joiningChallenges[item.id] ? "bg-[#3251DD]" : "bg-[#4361EE]"} py-3 rounded-xl items-center`}
             onPress={() => handleJoinChallenge(item.id)}
             disabled={joiningChallenges[item.id]}
             activeOpacity={0.8}
@@ -1328,10 +1383,8 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
           </View>
         )}
       </TouchableOpacity>
-    );
-  };
-
-
+    )
+  }
 
   const renderSearchResultItem = ({ item }) => (
     <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-5 mb-4 shadow-lg`}>
@@ -1396,33 +1449,6 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     </View>
   )
 
-  // Removed renderChatMessage as full chat modal is removed
-  /*
-  const renderChatMessage = ({ item }) => {
-    const user = auth.currentUser
-    const isOwnMessage = item.senderId === user.uid
-    return (
-      <View style={twrnc`flex-row ${isOwnMessage ? "justify-end" : "justify-start"} mb-3`}>
-        {!isOwnMessage && (
-          <Image
-            source={{ uri: selectedFriend?.avatar || DEFAULT_AVATAR }}
-            style={twrnc`w-8 h-8 rounded-full mr-2 mt-1`}
-          />
-        )}
-        <View
-          style={twrnc`max-w-[80%] rounded-2xl p-3 ${isOwnMessage ? "bg-[#4361EE] rounded-tr-none" : "bg-[#2A2E3A] rounded-tl-none"
-            }`}
-        >
-          <CustomText style={twrnc`text-white`}>{item.text}</CustomText>
-          <CustomText style={twrnc`text-gray-300 text-xs mt-1 text-right`}>
-            {new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-          </CustomText>
-        </View>
-      </View>
-    )
-  }
-  */
-
   const renderFriendsFooter = () => {
     if (!hasMoreFriends) return null
     return (
@@ -1449,7 +1475,7 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
   }
 
   const renderTabButton = (tab) => {
-    const isActive = activeTab === tab.id;
+    const isActive = activeTab === tab.id
 
     return (
       <AnimatedButton
@@ -1464,11 +1490,7 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
             { backgroundColor: isActive ? tab.bgColor : "#2A2E3A" },
           ]}
         >
-          <Ionicons
-            name={tab.icon}
-            size={24}
-            color={isActive ? tab.color : "#6B7280"}
-          />
+          <Ionicons name={tab.icon} size={24} color={isActive ? tab.color : "#6B7280"} />
 
           {tab.count > 0 && (
             <View
@@ -1491,10 +1513,8 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
           {tab.label}
         </CustomText>
       </AnimatedButton>
-    );
-  };
-
-
+    )
+  }
 
   if (loading) {
     return (
@@ -1533,6 +1553,23 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         </View>
       </View>
     )
+  }
+
+  // Helper function to format time in HH:MM:SS
+  const formatTime = (seconds) => {
+    if (typeof seconds !== "number" || isNaN(seconds)) {
+      return "00:00"
+    }
+
+    const hours = Math.floor(seconds / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
+    const remainingSeconds = seconds % 60
+
+    const formattedHours = String(hours).padStart(2, "0")
+    const formattedMinutes = String(minutes).padStart(2, "0")
+    const formattedSeconds = String(remainingSeconds).padStart(2, "0")
+
+    return `${formattedHours}:${formattedMinutes}:${formattedSeconds}`
   }
 
   return (
@@ -1793,9 +1830,7 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                       </View>
                       <View style={twrnc`flex-row items-center mt-1`}>
                         <Ionicons name="trophy" size={12} color="#FFC107" />
-                        <CustomText style={twrnc`text-[#FFC107] text-xs ml-1`}>
-                          Lvl {user.level || 1}
-                        </CustomText>
+                        <CustomText style={twrnc`text-[#FFC107] text-xs ml-1`}>Lvl {user.level || 1}</CustomText>
                       </View>
                     </View>
                     <View style={twrnc`items-end`}>
@@ -1860,7 +1895,7 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                       <Ionicons name="walk-outline" size={24} color="#06D6A0" />
                     </View>
                     <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                      {leaderboard.find(user => user.isCurrentUser)?.distance?.toFixed(1) || "0"}
+                      {leaderboard.find((user) => user.isCurrentUser)?.distance?.toFixed(1) || "0"}
                     </CustomText>
                     <CustomText style={twrnc`text-gray-400 text-xs`}>Distance (km)</CustomText>
                   </View>
@@ -1869,7 +1904,7 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                       <Ionicons name="star" size={24} color="#9B5DE5" />
                     </View>
                     <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                      {leaderboard.find(user => user.isCurrentUser)?.exp?.toLocaleString() || "0"}
+                      {leaderboard.find((user) => user.isCurrentUser)?.exp?.toLocaleString() || "0"}
                     </CustomText>
                     <CustomText style={twrnc`text-gray-400 text-xs`}>Total EXP</CustomText>
                   </View>
@@ -1879,7 +1914,7 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                   style={twrnc`bg-[#4361EE20] rounded-xl p-4 items-center`}
                   onPress={() => {
                     // Navigation to profile
-                    showModal({ title: "Navigation", message: "Navigating to Profile (placeholder)", type: "info" });
+                    showModal({ title: "Navigation", message: "Navigating to Profile (placeholder)", type: "info" })
                   }}
                   activeOpacity={0.8}
                 >
@@ -1985,11 +2020,8 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         friends={friends}
         activities={activities}
         CHALLENGE_GROUP_TYPES={CHALLENGE_GROUP_TYPES}
-        DIFFICULTY_LEVELS={DIFFICULTY_LEVELS}
         handleCreateChallenge={handleCreateChallenge}
         creatingChallenge={creatingChallenge}
-        showModal={showModal}
-        DEFAULT_AVATAR={DEFAULT_AVATAR}
       />
 
       {/* Custom Challenge Modal */}
@@ -2047,7 +2079,11 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                       >
                         <Image
                           source={activity.icon}
-                          style={{ width: 24, height: 24, tintColor: customChallenge.activityType === activity.id ? "#FFFFFF" : "#6B7280" }}
+                          style={{
+                            width: 24,
+                            height: 24,
+                            tintColor: customChallenge.activityType === activity.id ? "#FFFFFF" : "#6B7280",
+                          }}
                           resizeMode="contain"
                         />
                       </View>
@@ -2084,22 +2120,24 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                   </CustomText>
                 </View>
                 <View style={twrnc`flex-row flex-wrap`}>
-                  {activities.find((a) => a.id === customChallenge.activityType)?.goalOptions?.map((option) => (
-                    <TouchableOpacity
-                      key={option}
-                      style={twrnc`bg-[#3A3F4B] px-4 py-2 rounded-xl mr-2 mb-2 ${customChallenge.goal === option ? "bg-[#4361EE]" : ""
-                        }`}
-                      onPress={() => updateChallengeDescription(option, customChallenge.duration)}
-                      activeOpacity={0.8}
-                    >
-                      <CustomText
-                        weight={customChallenge.goal === option ? "bold" : "medium"}
-                        style={twrnc`text-white text-sm`}
+                  {activities
+                    .find((a) => a.id === customChallenge.activityType)
+                    ?.goalOptions?.map((option) => (
+                      <TouchableOpacity
+                        key={option}
+                        style={twrnc`bg-[#3A3F4B] px-4 py-2 rounded-xl mr-2 mb-2 ${customChallenge.goal === option ? "bg-[#4361EE]" : ""
+                          }`}
+                        onPress={() => updateChallengeDescription(option, customChallenge.duration)}
+                        activeOpacity={0.8}
                       >
-                        {option} {activities.find((a) => a.id === customChallenge.activityType)?.unit}
-                      </CustomText>
-                    </TouchableOpacity>
-                  ))}
+                        <CustomText
+                          weight={customChallenge.goal === option ? "bold" : "medium"}
+                          style={twrnc`text-white text-sm`}
+                        >
+                          {option} {activities.find((a) => a.id === customChallenge.activityType)?.unit}
+                        </CustomText>
+                      </TouchableOpacity>
+                    ))}
                 </View>
               </View>
 
@@ -2381,59 +2419,78 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                     Recent Activity
                   </CustomText>
                   {selectedFriend.lastActivity ? (
-                    <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-5`}>
-                      <View style={twrnc`flex-row items-center mb-3`}>
-                        <View style={twrnc`w-10 h-10 rounded-2xl bg-[#FFC10720] items-center justify-center mr-3`}>
-                          <Ionicons
-                            name={
-                              selectedFriend.lastActivity.activityType === "running"
-                                ? "walk-outline"
-                                : selectedFriend.lastActivity.activityType === "cycling"
-                                  ? "bicycle-outline"
-                                  : "walk-outline"
-                            }
-                            size={20}
-                            color="#FFC107"
-                          />
+                    (() => {
+                      const activityInfo = getActivityDisplayInfo(selectedFriend.lastActivity)
+
+                      return (
+                        <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-5`}>
+                          <View style={twrnc`flex-row items-center mb-3`}>
+                            <View style={twrnc`w-10 h-10 rounded-2xl bg-[#FFC10720] items-center justify-center mr-3`}>
+                              <Ionicons
+                                name={activityInfo?.icon || "fitness-outline"}
+                                size={20}
+                                color={activityInfo?.color || "#FFC107"}
+                              />
+                            </View>
+                            <View style={twrnc`flex-1`}>
+                              <CustomText weight="semibold" style={twrnc`text-white text-lg`}>
+                                {activityInfo?.displayName || "Activity"}
+                              </CustomText>
+                              <CustomText style={twrnc`text-gray-400 text-sm`}>
+                                {selectedFriend.lastActivity.createdAt
+                                  ? formatLastActive(selectedFriend.lastActivity.createdAt)
+                                  : ""}
+                              </CustomText>
+                            </View>
+                          </View>
+                          <View style={twrnc`flex-row justify-between pt-3 border-t border-[#3A3F4B]`}>
+                            {activityInfo?.isGpsActivity ? (
+                              <>
+                                <View style={twrnc`items-center`}>
+                                  <CustomText weight="semibold" style={twrnc`text-[#4361EE] text-lg`}>
+                                    {activityInfo.values.distance || "0"}
+                                  </CustomText>
+                                  <CustomText style={twrnc`text-gray-400 text-xs`}>km</CustomText>
+                                </View>
+                                <View style={twrnc`items-center`}>
+                                  <CustomText weight="semibold" style={twrnc`text-[#06D6A0] text-lg`}>
+                                    {formatTime(activityInfo.values.duration)}
+                                  </CustomText>
+                                  <CustomText style={twrnc`text-gray-400 text-xs`}>Duration</CustomText>
+                                </View>
+                                <View style={twrnc`items-center`}>
+                                  <CustomText weight="semibold" style={twrnc`text-[#FFC107] text-lg`}>
+                                    {formatTime(activityInfo.values.pace)}
+                                  </CustomText>
+                                  <CustomText style={twrnc`text-gray-400 text-xs`}>Pace/km</CustomText>
+                                </View>
+                              </>
+                            ) : (
+                              <>
+                                <View style={twrnc`items-center`}>
+                                  <CustomText weight="semibold" style={twrnc`text-[#9B5DE5] text-lg`}>
+                                    {activityInfo.values.reps || "0"}
+                                  </CustomText>
+                                  <CustomText style={twrnc`text-gray-400 text-xs`}>Reps</CustomText>
+                                </View>
+                                <View style={twrnc`items-center`}>
+                                  <CustomText weight="semibold" style={twrnc`text-[#06D6A0] text-lg`}>
+                                    {activityInfo.values.sets || "1"}
+                                  </CustomText>
+                                  <CustomText style={twrnc`text-gray-400 text-xs`}>Sets</CustomText>
+                                </View>
+                                <View style={twrnc`items-center`}>
+                                  <CustomText weight="semibold" style={twrnc`text-[#FFC107] text-lg`}>
+                                    {formatTime(activityInfo.values.duration)}
+                                  </CustomText>
+                                  <CustomText style={twrnc`text-gray-400 text-xs`}>Duration</CustomText>
+                                </View>
+                              </>
+                            )}
+                          </View>
                         </View>
-                        <View style={twrnc`flex-1`}>
-                          <CustomText weight="semibold" style={twrnc`text-white text-lg`}>
-                            {selectedFriend.lastActivity.activityType?.charAt(0).toUpperCase() +
-                              selectedFriend.lastActivity.activityType?.slice(1) || "Activity"}
-                          </CustomText>
-                          <CustomText style={twrnc`text-gray-400 text-sm`}>
-                            {selectedFriend.lastActivity.createdAt
-                              ? formatLastActive(selectedFriend.lastActivity.createdAt)
-                              : ""}
-                          </CustomText>
-                        </View>
-                      </View>
-                      <View style={twrnc`flex-row justify-between pt-3 border-t border-[#3A3F4B]`}>
-                        <View style={twrnc`items-center`}>
-                          <CustomText weight="semibold" style={twrnc`text-[#4361EE] text-lg`}>
-                            {typeof selectedFriend.lastActivity.distance === "number" &&
-                              !isNaN(selectedFriend.lastActivity.distance)
-                              ? selectedFriend.lastActivity.distance.toFixed(2)
-                              : "0"}
-                          </CustomText>
-                          <CustomText style={twrnc`text-gray-400 text-xs`}>km</CustomText>
-                        </View>
-                        <View style={twrnc`items-center`}>
-                          <CustomText weight="semibold" style={twrnc`text-[#06D6A0] text-lg`}>
-                            {selectedFriend.lastActivity.duration
-                              ? formatTime(selectedFriend.lastActivity.duration)
-                              : "0:00"}
-                          </CustomText>
-                          <CustomText style={twrnc`text-gray-400 text-xs`}>Duration</CustomText>
-                        </View>
-                        <View style={twrnc`items-center`}>
-                          <CustomText weight="semibold" style={twrnc`text-[#FFC107] text-lg`}>
-                            {selectedFriend.lastActivity.pace ? formatTime(selectedFriend.lastActivity.pace) : "0:00"}
-                          </CustomText>
-                          <CustomText style={twrnc`text-gray-400 text-xs`}>Pace/km</CustomText>
-                        </View>
-                      </View>
-                    </View>
+                      )
+                    })()
                   ) : (
                     <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-8 items-center`}>
                       <View style={twrnc`w-16 h-16 rounded-3xl bg-[#6B728020] items-center justify-center mb-4`}>
@@ -2503,10 +2560,22 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         )}
       </Modal>
 
+      <DuoVsModal
+        visible={showVsModal}
+        player1={vsModalData.player1}
+        player2={vsModalData.player2}
+        stakeXP={vsModalData.stakeXP}
+        challengeId={vsModalData.challengeId}
+        fullChallenge={vsModalData.fullChallenge}
+        onClose={() => setShowVsModal(false)}
+        navigateToActivityWithChallenge={navigateToActivityWithChallenge}
+      />
+
       <ChallengeDetailsModal
         isVisible={isChallengeDetailsVisible}
         onClose={() => setIsChallengeDetailsVisible(false)}
         selectedChallenge={selectedChallenge}
+        setSelectedChallenge={setSelectedChallenge}
         auth={auth}
         activities={activities}
         joiningChallenges={joiningChallenges}
@@ -2515,6 +2584,12 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         handleEditChallenge={handleEditChallenge}
         handleDeleteChallenge={handleDeleteChallenge}
         creatingChallenge={creatingChallenge}
+        handleStartChallenge={handleStartChallenge}
+        startingChallenge={startingChallenge}
+        onShowDuoVs={({ challengeId, player1, player2, stakeXP, fullChallenge }) => {
+          setVsModalData({ visible: true, challengeId, player1, player2, stakeXP, fullChallenge })
+          setShowVsModal(true)
+        }}
       />
 
       {/* Edit Challenge Modal */}
@@ -2523,39 +2598,27 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         transparent={true}
         visible={isEditChallengeModalVisible}
         onRequestClose={() => {
-          setIsEditChallengeModalVisible(false);
-          setSelectedChallenge(null);
-          setCreatingChallenge(false);
+          setIsEditChallengeModalVisible(false)
+          setSelectedChallenge(null)
+          setCreatingChallenge(false)
         }}
       >
-        <TouchableOpacity
-          style={twrnc`flex-1 bg-black bg-opacity-50 justify-end`}
-          activeOpacity={1}
-          onPress={() => {
-            setIsEditChallengeModalVisible(false);
-            setSelectedChallenge(null);
-            setCreatingChallenge(false);
-          }}
-        >
-          <TouchableOpacity
-            style={twrnc`bg-[#121826] rounded-t-3xl p-6 h-2/3`}
-            activeOpacity={1}
-            onPress={(e) => e.stopPropagation()} // Prevent click from propagating to background
-          >
+        <View style={twrnc`flex-1 bg-black bg-opacity-50 justify-end`}>
+          {/* Modal Container */}
+          <View style={twrnc`bg-[#121826] rounded-t-3xl h-2/3`}>
             {/* Header */}
-            <View style={twrnc`flex-row justify-between items-center mb-6`}>
+            <View style={twrnc`flex-row justify-between items-center p-6 border-b border-gray-700`}>
               <CustomText weight="bold" style={twrnc`text-white text-2xl`}>
                 Edit Challenge
               </CustomText>
               <TouchableOpacity
                 style={twrnc`bg-[#2A2E3A] p-3 rounded-2xl`}
                 onPress={() => {
-                  setIsEditChallengeModalVisible(false);
-                  setSelectedChallenge(null);
-                  setCreatingChallenge(false);
+                  setIsEditChallengeModalVisible(false)
+                  setSelectedChallenge(null)
+                  setCreatingChallenge(false)
                 }}
                 disabled={creatingChallenge}
-                activeOpacity={0.8}
               >
                 {creatingChallenge ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
@@ -2565,8 +2628,8 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
               </TouchableOpacity>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false}>
-
+            {/* ✅ Scrollable Content */}
+            <ScrollView style={twrnc`p-6`} contentContainerStyle={twrnc`pb-10`} showsVerticalScrollIndicator={false}>
               {/* Challenge Type (Read-only) */}
               <View style={twrnc`mb-6`}>
                 <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
@@ -2574,7 +2637,7 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                 </CustomText>
                 <View style={twrnc`bg-[#2A2E3A] p-4 rounded-2xl opacity-50`}>
                   <CustomText style={twrnc`text-white text-center`}>
-                    {CHALLENGE_GROUP_TYPES.find(t => t.id === newChallenge.groupType)?.name || "Public"}
+                    {CHALLENGE_GROUP_TYPES.find((t) => t.id === newChallenge.groupType)?.name || "Public"}
                   </CustomText>
                 </View>
                 <CustomText style={twrnc`text-gray-400 text-sm mt-2 text-center`}>
@@ -2590,7 +2653,11 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                   </CustomText>
                   <View style={twrnc`bg-[#2A2E3A] p-4 rounded-2xl opacity-50`}>
                     <CustomText style={twrnc`text-white text-center`}>
-                      {selectedChallenge?.participants?.length || 1} / {newChallenge.groupType === "duo" ? 2 : CHALLENGE_GROUP_TYPES.find(t => t.id === "lobby").maxParticipants} participants
+                      {selectedChallenge?.participants?.length || 1} /{" "}
+                      {newChallenge.groupType === "duo"
+                        ? 2
+                        : CHALLENGE_GROUP_TYPES.find((t) => t.id === "lobby").maxParticipants}{" "}
+                      participants
                     </CustomText>
                   </View>
                   <CustomText style={twrnc`text-gray-400 text-sm mt-2 text-center`}>
@@ -2638,7 +2705,7 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                 </CustomText>
                 <View style={twrnc`bg-[#2A2E3A] p-4 rounded-2xl opacity-50`}>
                   <CustomText style={twrnc`text-white text-center`}>
-                    {activities.find(a => a.id === newChallenge.type)?.name || "Walking"}
+                    {activities.find((a) => a.id === newChallenge.type)?.name || "Walking"}
                   </CustomText>
                 </View>
                 <CustomText style={twrnc`text-gray-400 text-sm mt-2 text-center`}>
@@ -2646,66 +2713,74 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                 </CustomText>
               </View>
 
-              {/* Goal Selection */}
+              {/* ✅ Duration Selection (Editable for time-based challenges) */}
               <View style={twrnc`mb-6`}>
                 <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  Goal ({newChallenge.unit})
+                  Duration (minutes)
                 </CustomText>
                 <View style={twrnc`flex-row justify-between`}>
-                  {activities.find(act => act.id === newChallenge.type)?.goalOptions?.map((goalOption) => (
+                  {[15, 30, 60, 120].map((minutes) => (
                     <TouchableOpacity
-                      key={goalOption}
-                      style={twrnc`bg-[#2A2E3A] p-4 rounded-2xl flex-1 mx-1 items-center ${newChallenge.goal === goalOption ? "border-2 border-[#06D6A0]" : ""} ${creatingChallenge ? "opacity-50" : ""}`}
-                      onPress={() => !creatingChallenge && setNewChallenge({ ...newChallenge, goal: goalOption })}
+                      key={minutes}
+                      style={twrnc`bg-[#2A2E3A] p-4 rounded-2xl flex-1 mx-1 items-center ${newChallenge.durationMinutes === minutes ? "border-2 border-[#06D6A0]" : ""
+                        } ${creatingChallenge ? "opacity-50" : ""}`}
+                      onPress={() =>
+                        !creatingChallenge && setNewChallenge({ ...newChallenge, durationMinutes: minutes })
+                      }
                       disabled={creatingChallenge}
-                      activeOpacity={0.8}
                     >
                       <CustomText
-                        weight={newChallenge.goal === goalOption ? "bold" : "medium"}
+                        weight={newChallenge.durationMinutes === minutes ? "bold" : "medium"}
                         style={twrnc`text-white text-center ${creatingChallenge ? "opacity-50" : ""}`}
                       >
-                        {goalOption} {newChallenge.unit}
+                        {minutes}m
                       </CustomText>
                     </TouchableOpacity>
                   ))}
                 </View>
                 <TextInput
-                  style={twrnc`bg-[#2A2E3A] text-white p-4 rounded-2xl text-base mt-3 ${creatingChallenge ? "opacity-50" : ""}`}
-                  placeholder="Enter custom goal"
+                  style={twrnc`bg-[#2A2E3A] text-white p-4 rounded-2xl text-base mt-3 ${creatingChallenge ? "opacity-50" : ""
+                    }`}
+                  placeholder="Enter custom duration (minutes)"
                   placeholderTextColor="#6B7280"
                   keyboardType="numeric"
-                  value={String(newChallenge.goal)}
-                  onChangeText={(text) => !creatingChallenge && setNewChallenge({ ...newChallenge, goal: Number(text) || 0 })}
+                  value={String(newChallenge.durationMinutes || 30)}
+                  onChangeText={(text) =>
+                    !creatingChallenge && setNewChallenge({ ...newChallenge, durationMinutes: Number(text) || 30 })
+                  }
                   editable={!creatingChallenge}
                 />
               </View>
 
-              {/* Difficulty Selection */}
-              <View style={twrnc`mb-8`}>
+              {/* ✅ Stake XP (Editable) */}
+              <View style={twrnc`mb-6`}>
                 <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  Difficulty
+                  Stake XP
                 </CustomText>
-                <View style={twrnc`flex-row justify-between`}>
-                  {["Easy", "Medium", "Hard"].map((level) => (
-                    <TouchableOpacity
-                      key={level}
-                      style={twrnc`bg-[#2A2E3A] p-4 rounded-2xl flex-1 mx-1 items-center ${newChallenge.difficulty === level ? "border-2 border-[#FFC107]" : ""} ${creatingChallenge ? "opacity-50" : ""}`}
-                      onPress={() => !creatingChallenge && setNewChallenge({ ...newChallenge, difficulty: level })}
-                      disabled={creatingChallenge}
-                      activeOpacity={0.8}
-                    >
-                      <CustomText
-                        weight={newChallenge.difficulty === level ? "bold" : "medium"}
-                        style={twrnc`text-white text-center ${creatingChallenge ? "opacity-50" : ""}`}
-                      >
-                        {level}
-                      </CustomText>
-                    </TouchableOpacity>
-                  ))}
+                <View style={twrnc`flex-row items-center bg-[#2A2E3A] rounded-2xl px-4 py-3`}>
+                  <TextInput
+                    style={twrnc`flex-1 text-white text-lg font-bold ${creatingChallenge ? "opacity-50" : ""}`}
+                    value={String(newChallenge.stakeXP || 100)}
+                    onChangeText={(text) =>
+                      !creatingChallenge &&
+                      setNewChallenge({
+                        ...newChallenge,
+                        stakeXP: Math.max(0, Number(text) || 100),
+                      })
+                    }
+                    keyboardType="numeric"
+                    placeholder="100"
+                    placeholderTextColor="#6B7280"
+                    editable={!creatingChallenge}
+                  />
+                  <CustomText style={twrnc`text-gray-400 ml-2`}>XP</CustomText>
                 </View>
+                <CustomText style={twrnc`text-gray-400 text-sm mt-2`}>
+                  Each participant contributes this amount. Winner takes the total pot.
+                </CustomText>
               </View>
 
-              {/* Duration */}
+              {/* End Date (Read-only) */}
               <View style={twrnc`mb-8`}>
                 <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
                   End Date
@@ -2722,96 +2797,52 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
 
               {/* Update Button */}
               <TouchableOpacity
-                style={twrnc`${creatingChallenge ? "bg-[#3251DD]" : "bg-[#4361EE]"} p-4 rounded-2xl flex-row justify-center items-center`}
+                style={twrnc`${creatingChallenge ? "bg-[#3251DD]" : "bg-[#4361EE]"
+                  } p-4 rounded-2xl flex-row justify-center items-center`}
                 onPress={handleSaveChallenge}
                 disabled={creatingChallenge}
-                activeOpacity={0.8}
               >
                 {creatingChallenge ? (
                   <>
                     <ActivityIndicator size="small" color="white" style={twrnc`mr-2`} />
-                    <CustomText weight="bold" style={twrnc`text-white`}>Updating...</CustomText>
+                    <CustomText weight="bold" style={twrnc`text-white`}>
+                      Updating...
+                    </CustomText>
                   </>
                 ) : (
-                  <CustomText weight="bold" style={twrnc`text-white`}>Update Challenge</CustomText>
+                  <CustomText weight="bold" style={twrnc`text-white`}>
+                    Update Challenge
+                  </CustomText>
                 )}
               </TouchableOpacity>
 
               {/* Cancel Button */}
               <TouchableOpacity
-                style={twrnc`${creatingChallenge ? "bg-[#7F1D1D80]" : "bg-[#EF476F]"} p-4 rounded-2xl flex-row justify-center items-center mt-4`}
+                style={twrnc`${creatingChallenge ? "bg-[#7F1D1D80]" : "bg-[#EF476F]"
+                  } p-4 rounded-2xl flex-row justify-center items-center mt-4`}
                 onPress={() => {
                   if (!creatingChallenge) {
-                    setIsEditChallengeModalVisible(false);
-                    setSelectedChallenge(null);
-                    setCreatingChallenge(false);
+                    setIsEditChallengeModalVisible(false)
+                    setSelectedChallenge(null)
+                    setCreatingChallenge(false)
                   }
                 }}
                 disabled={creatingChallenge}
-                activeOpacity={0.8}
               >
                 {creatingChallenge ? (
                   <ActivityIndicator size="small" color="white" />
                 ) : (
-                  <CustomText weight="bold" style={twrnc`text-white`}>Cancel</CustomText>
+                  <CustomText weight="bold" style={twrnc`text-white`}>
+                    Cancel
+                  </CustomText>
                 )}
               </TouchableOpacity>
-
             </ScrollView>
-          </TouchableOpacity>
-        </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
 
-
       {/* QuickChat Input at the bottom */}
-      {isQuickChatVisible && quickChatSelectedFriend && (
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={twrnc`absolute bottom-0 left-0 right-0 bg-[#1A1F2E] p-4 border-t border-[#2A3447]`}
-        >
-          <View style={twrnc`flex-row items-center mb-3`}>
-            <Image
-              source={{ uri: quickChatSelectedFriend.avatar || DEFAULT_AVATAR }}
-              style={twrnc`w-8 h-8 rounded-full mr-2`}
-            />
-            <CustomText weight="bold" style={twrnc`text-white text-base`}>
-              Chatting with {quickChatSelectedFriend.displayName || quickChatSelectedFriend.username}
-            </CustomText>
-            <TouchableOpacity
-              onPress={() => setIsQuickChatVisible(false)}
-              style={twrnc`ml-auto p-1 rounded-full bg-[#2A2E3A]`}
-            >
-              <Ionicons name="close" size={18} color="#FFFFFF" />
-            </TouchableOpacity>
-          </View>
-          <View style={twrnc`flex-row items-end`}>
-            <View style={twrnc`flex-1 bg-[#2A2E3A] rounded-2xl px-4 py-3 mr-3`}>
-              <TextInput
-                style={twrnc`text-white text-base max-h-24`}
-                placeholder="Type a quick message..."
-                placeholderTextColor="#6B7280"
-                value={quickChatMessage}
-                onChangeText={setQuickChatMessage}
-                multiline
-                editable={!sendingQuickMessage}
-              />
-            </View>
-            <TouchableOpacity
-              style={twrnc`${sendingQuickMessage ? "bg-[#3251DD]" : "bg-[#4361EE]"
-                } w-12 h-12 rounded-2xl items-center justify-center ${!quickChatMessage.trim() ? "opacity-50" : ""}`}
-              onPress={handleSendQuickMessage}
-              disabled={!quickChatMessage.trim() || sendingQuickMessage}
-              activeOpacity={0.8}
-            >
-              {sendingQuickMessage ? (
-                <ActivityIndicator size="small" color="white" />
-              ) : (
-                <Ionicons name="send" size={20} color="white" />
-              )}
-            </TouchableOpacity>
-          </View>
-        </KeyboardAvoidingView>
-      )}
 
       {/* Offline Mode Indicator */}
       {offlineMode && (

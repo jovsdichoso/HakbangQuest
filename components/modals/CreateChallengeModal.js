@@ -1,631 +1,604 @@
-import React, { useState } from 'react';
-import { Modal, View, ScrollView, TextInput, Image, ActivityIndicator } from 'react-native';
-import Ionicons from 'react-native-vector-icons/Ionicons';
-import AnimatedButton from '../buttons/AnimatedButton';
-import CustomText from '../CustomText';
-import twrnc from 'twrnc';
+"use client";
 
-import { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
+import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
+import { Modal, View, ScrollView, TextInput, Image, ActivityIndicator, Animated, TouchableOpacity } from "react-native";
+import Ionicons from "react-native-vector-icons/Ionicons";
+import CustomText from "../CustomText";
+import twrnc from "twrnc";
+
+const DEFAULT_AVATAR =
+  "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y";
+
+// Memoized Components for Better Performance
+const GroupTypeButton = memo(({ groupType, isSelected, onPress }) => (
+  <TouchableOpacity
+    style={twrnc`flex-1 mx-1 p-4 rounded-2xl items-center min-w-[100px] ${isSelected
+      ? "border-2 border-[#FFC107] bg-[#FFC10720]"
+      : "bg-[#2A2E3A]"
+      }`}
+    onPress={onPress}
+    activeOpacity={0.7}
+  >
+    <CustomText
+      weight={isSelected ? "bold" : "medium"}
+      style={twrnc`text-white text-center text-sm`}
+    >
+      {groupType.name}
+    </CustomText>
+  </TouchableOpacity>
+));
+
+const ActivityButton = memo(({ activity, isSelected, onPress }) => (
+  <TouchableOpacity
+    onPress={onPress}
+    style={twrnc`mr-4`}
+    activeOpacity={0.7}
+  >
+    <View
+      style={twrnc`items-center justify-center w-28 rounded-2xl p-4 ${isSelected
+        ? `border-2 border-[${activity.color}] bg-[#2A2E3A]`
+        : "bg-[#2A2E3A]"
+        }`}
+    >
+      <View
+        style={[
+          twrnc`w-14 h-14 rounded-2xl items-center justify-center mb-2`,
+          {
+            backgroundColor: isSelected ? activity.color : "#3A3F4B",
+          },
+        ]}
+      >
+        <Image
+          source={activity.icon}
+          style={twrnc`w-7 h-7`}
+          resizeMode="contain"
+        />
+      </View>
+      <CustomText
+        weight={isSelected ? "bold" : "medium"}
+        style={twrnc`text-white text-sm text-center`}
+        numberOfLines={1}
+      >
+        {activity.name}
+      </CustomText>
+    </View>
+  </TouchableOpacity>
+));
+
+const FriendButton = memo(({ friend, isSelected, onPress }) => (
+  <TouchableOpacity
+    onPress={onPress}
+    style={twrnc`mr-4`}
+    activeOpacity={0.7}
+  >
+    <View
+      style={twrnc`items-center w-24 rounded-2xl p-3 ${isSelected
+        ? "border-2 border-[#FFC107] bg-[#1E2432]"
+        : "bg-[#1E2432]"
+        }`}
+    >
+      <Image
+        source={{ uri: friend.avatar || DEFAULT_AVATAR }}
+        style={twrnc`w-14 h-14 rounded-full mb-2`}
+        resizeMode="cover"
+      />
+      <CustomText
+        weight={isSelected ? "bold" : "medium"}
+        style={twrnc`text-white text-sm text-center`}
+        numberOfLines={1}
+      >
+        {friend.displayName || friend.username || "Friend"}
+      </CustomText>
+      {isSelected && (
+        <View style={twrnc`mt-1 bg-[#FFC107] px-2 py-0.5 rounded-full`}>
+          <CustomText style={twrnc`text-xs text-black font-semibold`}>
+            Selected
+          </CustomText>
+        </View>
+      )}
+    </View>
+  </TouchableOpacity>
+));
 
 const CreateChallengeModal = ({
-    isVisible,
-    onClose,
-    newChallenge,
-    setNewChallenge,
-    friends,
-    activities,
-    CHALLENGE_GROUP_TYPES,
-    DIFFICULTY_LEVELS,
-    handleCreateChallenge,
-    creatingChallenge,
-    showModal,
-    DEFAULT_AVATAR,
+  isVisible,
+  onClose,
+  newChallenge,
+  setNewChallenge,
+  friends,
+  activities,
+  CHALLENGE_GROUP_TYPES,
+  handleCreateChallenge,
+  creatingChallenge,
 }) => {
-    const [showDateTimePicker, setShowDateTimePicker] = useState(false);
+  const [selectedDurationKey, setSelectedDurationKey] = useState(null);
+  const [stakeXP, setStakeXP] = useState(50);
+  const [prizePool, setPrizePool] = useState(100);
+  const [inviteError, setInviteError] = useState(null);
 
-    // Calculate duration fields from endDate
-    const updateDurationFields = (selectedDate) => {
-        const now = Date.now();
-        const endDate = selectedDate.getTime();
-        const diffMilliseconds = Math.max(0, endDate - now);
+  // Animation values
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(30)).current;
 
-        const durationDays = Math.floor(diffMilliseconds / (24 * 60 * 60 * 1000));
-        const remainingAfterDays = diffMilliseconds % (24 * 60 * 60 * 1000);
-        const durationHours = Math.floor(remainingAfterDays / (60 * 60 * 1000));
-        const remainingAfterHours = remainingAfterDays % (60 * 60 * 1000);
-        const durationMinutes = Math.floor(remainingAfterHours / (60 * 1000));
-        const durationSeconds = Math.floor((remainingAfterHours % (60 * 1000)) / 1000);
+  const durationOptions = useMemo(() => [
+    { label: "1m", minutes: 1 },
+    { label: "5m", minutes: 5 },
+    { label: "10m", minutes: 10 },
+    { label: "30m", minutes: 30 },
+    { label: "1h", minutes: 60 },
+    { label: "12h", minutes: 720 },
+    { label: "1d", minutes: 1440 },
+  ], []);
 
-        setNewChallenge((prev) => ({
-            ...prev,
-            endDate: selectedDate,
-            durationDays,
-            durationHours,
-            durationMinutes,
-            durationSeconds,
-        }));
-    };
+  const updateDurationFields = useCallback((minutes) => {
+    const now = Date.now();
+    const endDate = new Date(now + minutes * 60 * 1000);
+    setNewChallenge((prev) => ({
+      ...prev,
+      endDate,
+      durationMinutes: minutes,
+    }));
+  }, [setNewChallenge]);
 
-    // ✅ Open DateTimePicker (Android dialog)
-    const openDateTimePicker = () => {
-        DateTimePickerAndroid.open({
-            value: newChallenge.endDate || new Date(),
-            mode: 'datetime',
-            display: 'default',
-            minimumDate: new Date(Date.now() + 60 * 1000),
-            onChange: (event, selectedDate) => {
-                if (event.type === 'dismissed') return;
-                if (selectedDate) {
-                    updateDurationFields(selectedDate);
-                }
+  // Update the existing useEffect to only calculate base XP
+  useEffect(() => {
+    const mins = newChallenge.durationMinutes || 0;
+    let baseXP = 50;
+
+    if (mins >= 2 && mins <= 5) baseXP = 100;
+    else if (mins > 5 && mins <= 10) baseXP = 150;
+    else if (mins > 10 && mins <= 30) baseXP = 200;
+    else if (mins > 30 && mins <= 60) baseXP = 300;
+    else if (mins > 60 && mins <= 180) baseXP = 500;
+    else if (mins > 180 && mins <= 360) baseXP = 800;
+    else if (mins > 360 && mins <= 720) baseXP = 1000;
+    else if (mins > 720) baseXP = 1500;
+
+    setStakeXP(baseXP);
+  }, [newChallenge.durationMinutes, setNewChallenge]);
+
+  // Fast entrance animations
+  useEffect(() => {
+    if (isVisible) {
+      fadeAnim.setValue(0);
+      slideAnim.setValue(30);
+
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }).start();
+
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 250,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [isVisible, fadeAnim, slideAnim]);
+
+
+  // Add these helper functions inside your component
+  const getParticipantCount = useCallback(() => {
+    const baseCount = 1; // Always include yourself
+
+    if (newChallenge.groupType === 'solo') {
+      return 1;
+    } else if (newChallenge.groupType === 'duo') {
+      return baseCount + (newChallenge.selectedFriendsForGroupChallenge?.length || 0);
+    } else {
+      // For group challenges, count selected friends + yourself
+      return baseCount + (newChallenge.selectedFriendsForGroupChallenge?.length || 0);
+    }
+  }, [newChallenge.groupType, newChallenge.selectedFriendsForGroupChallenge]);
+
+  useEffect(() => {
+    const calculatedStake = calculateStakeXP();
+    setNewChallenge(prev => ({
+      ...prev,
+      stakeXP: calculatedStake
+    }));
+  }, [calculateStakeXP, setNewChallenge]);
+
+  const calculateStakeXP = useCallback(() => {
+    const baseXP = stakeXP; 
+    const participantCount = getParticipantCount();
+
+    // Scale stake based on participant count
+    if (newChallenge.groupType === 'solo') {
+      return baseXP;
+    } else if (newChallenge.groupType === 'duo') {
+      return baseXP * 1.5; // 50% more for duos
+    } else {
+      // For groups, scale based on size
+      return baseXP * Math.min(participantCount, 5); // Cap at 5x for balance
+    }
+  }, [stakeXP, getParticipantCount, newChallenge.groupType]);
+
+  const calculatePrizePool = useCallback(() => {
+    const participantStake = calculateStakeXP();
+    const participantCount = getParticipantCount();
+
+    // Prize pool = total stakes from all participants
+    return participantStake * participantCount;
+  }, [calculateStakeXP, getParticipantCount]);
+
+  // Optimized handlers with stable references
+  const handleFriendSelect = useCallback((friendId) => {
+    setNewChallenge((prev) => {
+      let updatedList = [...(prev.selectedFriendsForGroupChallenge || [])];
+      const friend = friends.find(f => f.id === friendId);
+
+      if (prev.groupType === "duo") {
+        updatedList = updatedList[0]?.id === friendId ? [] : [friend];
+      } else {
+        const exists = updatedList.find((f) => f.id === friendId);
+
+        if (exists) {
+          updatedList = updatedList.filter((f) => f.id !== friendId);
+        } else {
+          if (updatedList.length >= 4) {
+            setInviteError("Group challenges can only have up to 5 members including you.");
+            setTimeout(() => setInviteError(null), 3000);
+            return prev;
+          }
+          updatedList.push(friend);
+        }
+      }
+
+      setInviteError(null);
+      return {
+        ...prev,
+        selectedFriendsForGroupChallenge: updatedList,
+      };
+    });
+  }, [friends, setNewChallenge]);
+
+  const handleGroupTypeSelect = useCallback((groupTypeId) => {
+    setNewChallenge((prev) => ({
+      ...prev,
+      groupType: groupTypeId,
+      selectedFriendsForGroupChallenge: [],
+    }));
+  }, [setNewChallenge]);
+
+  const handleActivitySelect = useCallback((activityId, activityUnit) => {
+    setNewChallenge((prev) => ({
+      ...prev,
+      type: activityId,
+      goal: null,
+      unit: activityUnit,
+    }));
+  }, [setNewChallenge]);
+
+  const handleDurationSelect = useCallback((minutes, label) => {
+    updateDurationFields(minutes);
+    setSelectedDurationKey(label);
+  }, [updateDurationFields]);
+
+  const handleTitleChange = useCallback((text) => {
+    setNewChallenge((prev) => ({ ...prev, title: text }));
+  }, [setNewChallenge]);
+
+  const handleDescriptionChange = useCallback((text) => {
+    setNewChallenge((prev) => ({ ...prev, description: text }));
+  }, [setNewChallenge]);
+
+  return (
+    <Modal animationType="none" transparent={true} visible={isVisible} onRequestClose={onClose}>
+      <View style={twrnc`flex-1 bg-black bg-opacity-50 justify-end`}>
+        <Animated.View
+          style={[
+            twrnc`bg-[#121826] rounded-t-3xl p-6 h-4/5`,
+            {
+              opacity: fadeAnim,
+              transform: [{ translateY: slideAnim }],
             },
-        });
-    };
-
-    return (
-        <Modal
-            animationType="slide"
-            transparent={true}
-            visible={isVisible}
-            onRequestClose={onClose}
+          ]}
         >
-            <View style={twrnc`flex-1 bg-black bg-opacity-50 justify-end`}>
-                <View style={twrnc`bg-[#121826] rounded-t-3xl p-6 h-4/5`}>
-                    {/* Header */}
-                    <View style={twrnc`flex-row justify-between items-center mb-6`}>
-                        <View style={twrnc`flex-1`}>
-                            <CustomText weight="bold" style={twrnc`text-white text-2xl mb-1`}>
-                                Create Challenge
-                            </CustomText>
-                            <CustomText style={twrnc`text-gray-400 text-sm`}>
-                                Build a new fitness challenge
-                            </CustomText>
-                        </View>
-                        <AnimatedButton
-                            style={twrnc`bg-[#2A2E3A] p-3 rounded-2xl ml-4`}
-                            onPress={onClose}
-                            activeOpacity={0.8}
-                            accessibilityLabel="Close create challenge modal"
-                        >
-                            <Ionicons name="close" size={20} color="#FFFFFF" />
-                        </AnimatedButton>
-                    </View>
-
-                    <ScrollView showsVerticalScrollIndicator={false}>
-                        {/* Challenge Group Type Selection */}
-                        <View style={twrnc`mb-6`}>
-                            <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                                Challenge Type
-                            </CustomText>
-                            <View style={twrnc`flex-row flex-wrap justify-between`}>
-                                {CHALLENGE_GROUP_TYPES.map((groupType) => (
-                                    <AnimatedButton
-                                        key={groupType.id}
-                                        style={twrnc`flex-1 mx-1 p-4 rounded-2xl items-center min-w-[100px] ${newChallenge.groupType === groupType.id
-                                            ? 'border-2 border-[#FFC107]'
-                                            : 'bg-[#2A2E3A]'
-                                            }`}
-                                        onPress={() =>
-                                            setNewChallenge({
-                                                ...newChallenge,
-                                                groupType: groupType.id,
-                                                selectedFriendsForGroupChallenge: [],
-                                            })
-                                        }
-                                        activeOpacity={0.8}
-                                        accessibilityLabel={`Select ${groupType.name} challenge type`}
-                                    >
-                                        <CustomText
-                                            weight={newChallenge.groupType === groupType.id ? 'bold' : 'medium'}
-                                            style={twrnc`text-white text-center text-sm`}
-                                        >
-                                            {groupType.name}
-                                        </CustomText>
-                                    </AnimatedButton>
-                                ))}
-                            </View>
-                            {newChallenge.groupType !== 'public' && (
-                                <CustomText style={twrnc`text-gray-400 text-sm mt-2 text-center`}>
-                                    {CHALLENGE_GROUP_TYPES.find((t) => t.id === newChallenge.groupType)?.description}
-                                </CustomText>
-                            )}
-                        </View>
-
-                        {/* Friend Selection */}
-                        {(newChallenge.groupType === 'duo' || newChallenge.groupType === 'lobby') && (
-                            <View style={twrnc`mb-6`}>
-                                <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                                    Select Friends (
-                                    {newChallenge.selectedFriendsForGroupChallenge.length} /{' '}
-                                    {newChallenge.groupType === 'duo'
-                                        ? 1
-                                        : CHALLENGE_GROUP_TYPES.find((t) => t.id === 'lobby').maxParticipants - 1}
-                                    )
-                                </CustomText>
-                                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={twrnc`-mx-2`}>
-                                    {friends.map((friend) => {
-                                        const isSelected = newChallenge.selectedFriendsForGroupChallenge.some(
-                                            (f) => f.id === friend.id
-                                        );
-                                        const maxFriendsReached =
-                                            newChallenge.groupType === 'duo'
-                                                ? newChallenge.selectedFriendsForGroupChallenge.length >= 1
-                                                : newChallenge.selectedFriendsForGroupChallenge.length >=
-                                                CHALLENGE_GROUP_TYPES.find((t) => t.id === 'lobby').maxParticipants - 1;
-
-                                        return (
-                                            <AnimatedButton
-                                                key={friend.id || friend.uid}
-                                                style={twrnc`mx-2 items-center ${isSelected ? 'border-2 border-[#06D6A0] rounded-2xl p-1' : ''
-                                                    }`}
-                                                onPress={() => {
-                                                    setNewChallenge((prev) => {
-                                                        const currentSelected = [...prev.selectedFriendsForGroupChallenge];
-                                                        if (isSelected) {
-                                                            return {
-                                                                ...prev,
-                                                                selectedFriendsForGroupChallenge: currentSelected.filter(
-                                                                    (f) => f.id !== friend.id
-                                                                ),
-                                                            };
-                                                        } else if (maxFriendsReached) {
-                                                            showModal({
-                                                                title: 'Limit Reached',
-                                                                message:
-                                                                    newChallenge.groupType === 'duo'
-                                                                        ? 'You can only select one friend for a duo challenge.'
-                                                                        : `You can only select up to ${CHALLENGE_GROUP_TYPES.find((t) => t.id === 'lobby')
-                                                                            .maxParticipants - 1
-                                                                        } friends for a lobby challenge.`,
-                                                                type: 'info',
-                                                            });
-                                                            return prev;
-                                                        }
-                                                        return {
-                                                            ...prev,
-                                                            selectedFriendsForGroupChallenge:
-                                                                newChallenge.groupType === 'duo'
-                                                                    ? [friend]
-                                                                    : [...currentSelected, friend],
-                                                        };
-                                                    });
-                                                }}
-                                                activeOpacity={0.8}
-                                                accessibilityLabel={`Select friend ${friend.displayName || friend.username}`}
-                                            >
-                                                <Image
-                                                    source={{ uri: friend.avatar || DEFAULT_AVATAR }}
-                                                    style={twrnc`w-12 h-12 rounded-2xl`}
-                                                />
-                                                <CustomText style={twrnc`text-white text-xs mt-1 text-center`}>
-                                                    {friend.displayName || friend.username}
-                                                </CustomText>
-                                            </AnimatedButton>
-                                        );
-                                    })}
-                                </ScrollView>
-                            </View>
-                        )}
-
-                        {/* Activity Type Selection */}
-                        <View style={twrnc`mb-6`}>
-                            <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                                Activity Type
-                            </CustomText>
-                            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={twrnc`-mx-2`}>
-                                {activities.map((activity) => (
-                                    <AnimatedButton
-                                        key={activity.id}
-                                        style={twrnc`mx-2 p-4 rounded-2xl items-center min-w-[100px] ${newChallenge.type === activity.id
-                                            ? `border-2 border-[${activity.color}]`
-                                            : 'bg-[#2A2E3A]'
-                                            }`}
-                                        onPress={() =>
-                                            setNewChallenge({
-                                                ...newChallenge,
-                                                type: activity.id,
-                                                goal: activity.defaultGoal,
-                                                unit: activity.unit,
-                                            })
-                                        }
-                                        activeOpacity={0.8}
-                                        accessibilityLabel={`Select ${activity.name} activity`}
-                                    >
-                                        <View
-                                            style={[
-                                                twrnc`w-12 h-12 rounded-2xl items-center justify-center mb-2`,
-                                                {
-                                                    backgroundColor:
-                                                        newChallenge.type === activity.id ? activity.color : '#3A3F4B',
-                                                },
-                                            ]}
-                                        >
-                                            <Image
-                                                source={activity.icon}
-                                                style={twrnc`w-6 h-6 tint-[${newChallenge.type === activity.id ? '#FFFFFF' : '#6B7280'
-                                                    }]`}
-                                                resizeMode="contain"
-                                            />
-                                        </View>
-                                        <CustomText
-                                            weight={newChallenge.type === activity.id ? 'bold' : 'medium'}
-                                            style={twrnc`text-white text-center text-sm`}
-                                        >
-                                            {activity.name}
-                                        </CustomText>
-                                    </AnimatedButton>
-                                ))}
-                            </ScrollView>
-                        </View>
-
-                        {/* Goal Selection */}
-                        <View style={twrnc`mb-6`}>
-                            <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                                Challenge Goal
-                            </CustomText>
-                            <View style={twrnc`flex-row items-center bg-[#2A2E3A] rounded-2xl px-4 py-3 mb-3`}>
-                                <TextInput
-                                    style={twrnc`flex-1 text-white text-lg font-bold`}
-                                    value={String(newChallenge.goal)}
-                                    onChangeText={(text) => setNewChallenge({ ...newChallenge, goal: Number(text) || 0 })}
-                                    keyboardType="numeric"
-                                    placeholder="0"
-                                    placeholderTextColor="#6B7280"
-                                    accessibilityLabel="Challenge goal input"
-                                />
-                                <CustomText style={twrnc`text-gray-400 ml-2`}>{newChallenge.unit}</CustomText>
-                            </View>
-                            <View style={twrnc`flex-row flex-wrap`}>
-                                {activities
-                                    .find((act) => act.id === newChallenge.type)
-                                    ?.goalOptions?.map((option) => (
-                                        <AnimatedButton
-                                            key={option}
-                                            style={twrnc`bg-[#3A3F4B] px-4 py-2 rounded-xl mr-2 mb-2 ${newChallenge.goal === option ? 'bg-[#4361EE]' : ''
-                                                }`}
-                                            onPress={() => setNewChallenge({ ...newChallenge, goal: option })}
-                                            activeOpacity={0.8}
-                                            accessibilityLabel={`Set goal to ${option} ${newChallenge.unit}`}
-                                        >
-                                            <CustomText
-                                                weight={newChallenge.goal === option ? 'bold' : 'medium'}
-                                                style={twrnc`text-white text-sm`}
-                                            >
-                                                {option} {newChallenge.unit}
-                                            </CustomText>
-                                        </AnimatedButton>
-                                    ))}
-                            </View>
-                        </View>
-
-                        {/* Difficulty Selection */}
-                        <View style={twrnc`mb-6`}>
-                            <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                                Difficulty Level
-                            </CustomText>
-                            <View style={twrnc`flex-row justify-between`}>
-                                {DIFFICULTY_LEVELS.map((difficulty) => (
-                                    <AnimatedButton
-                                        key={difficulty.id}
-                                        style={twrnc`flex-1 mx-1 p-4 rounded-2xl items-center ${newChallenge.difficulty === difficulty.id
-                                            ? `border-2 border-[${difficulty.color}]`
-                                            : 'bg-[#2A2E3A]'
-                                            }`}
-                                        onPress={() => setNewChallenge({ ...newChallenge, difficulty: difficulty.id })}
-                                        activeOpacity={0.8}
-                                        accessibilityLabel={`Select ${difficulty.name} difficulty`}
-                                    >
-                                        <View
-                                            style={[
-                                                twrnc`w-10 h-10 rounded-2xl items-center justify-center mb-2`,
-                                                {
-                                                    backgroundColor:
-                                                        newChallenge.difficulty === difficulty.id ? difficulty.color : '#3A3F4B',
-                                                },
-                                            ]}
-                                        >
-                                            <Ionicons
-                                                name={difficulty.icon}
-                                                size={20}
-                                                color={newChallenge.difficulty === difficulty.id ? '#FFFFFF' : '#6B7280'}
-                                            />
-                                        </View>
-                                        <CustomText
-                                            weight={newChallenge.difficulty === difficulty.id ? 'bold' : 'medium'}
-                                            style={twrnc`text-white text-center text-xs`}
-                                        >
-                                            {difficulty.name}
-                                        </CustomText>
-                                        <CustomText style={twrnc`text-gray-400 text-xs mt-1`}>
-                                            {difficulty.multiplier}x
-                                        </CustomText>
-                                    </AnimatedButton>
-                                ))}
-                            </View>s
-                        </View>
-
-                        {/* Duration Selection */}
-                        <View style={twrnc`mb-6`}>
-                            <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                                Duration
-                            </CustomText>
-
-                            {/* Quick Duration Buttons */}
-                            <View style={twrnc`flex-row flex-wrap mb-3`}>
-                                {[{ label: "30m", minutes: 30 }, { label: "1h", minutes: 60 }, { label: "1d", minutes: 1440 }].map(
-                                    (option) => (
-                                        <AnimatedButton
-                                            key={option.label}
-                                            style={twrnc`bg-[#3A3F4B] px-4 py-2 rounded-xl mr-2 mb-2`}
-                                            onPress={() => {
-                                                const selectedDate = new Date(Date.now() + option.minutes * 60 * 1000);
-                                                updateDurationFields(selectedDate);
-                                            }}
-                                            activeOpacity={0.8}
-                                            accessibilityLabel={`Set duration to ${option.label}`}
-                                        >
-                                            <CustomText style={twrnc`text-white text-sm`}>{option.label}</CustomText>
-                                        </AnimatedButton>
-                                    )
-                                )}
-                            </View>
-
-                            {/* Manual Picker */}
-                            <AnimatedButton
-                                style={twrnc`bg-[#2A2E3A] p-4 rounded-2xl items-center`}
-                                onPress={openDateTimePicker} // Opens the system picker
-                                activeOpacity={0.8}
-                                accessibilityLabel="Open date and time picker"
-                            >
-                                <CustomText weight="medium" style={twrnc`text-white text-base`}>
-                                    {newChallenge.endDate
-                                        ? `Ends: ${newChallenge.endDate.toLocaleString()}`
-                                        : 'Select End Date & Time'}
-                                </CustomText>
-                            </AnimatedButton>
-
-                            {/* Display breakdown */}
-                            <View style={twrnc`flex-row justify-between mt-3`}>
-                                <CustomText style={twrnc`text-gray-400 text-sm`}>
-                                    Days: {newChallenge.durationDays}
-                                </CustomText>
-                                <CustomText style={twrnc`text-gray-400 text-sm`}>
-                                    Hours: {newChallenge.durationHours}
-                                </CustomText>
-                                <CustomText style={twrnc`text-gray-400 text-sm`}>
-                                    Minutes: {newChallenge.durationMinutes}
-                                </CustomText>
-                                <CustomText style={twrnc`text-gray-400 text-sm`}>
-                                    Seconds: {newChallenge.durationSeconds}
-                                </CustomText>
-                            </View>
-                        </View>
-
-
-                        {/* Challenge Title */}
-                        <View style={twrnc`mb-6`}>
-                            <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                                Challenge Title
-                            </CustomText>
-                            <TextInput
-                                style={twrnc`bg-[#2A2E3A] text-white p-4 rounded-2xl text-base`}
-                                placeholder="Enter challenge title"
-                                placeholderTextColor="#6B7280"
-                                value={newChallenge.title}
-                                onChangeText={(text) => setNewChallenge({ ...newChallenge, title: text })}
-                                accessibilityLabel="Challenge title input"
-                            />
-                        </View>
-
-                        {/* Challenge Description */}
-                        <View style={twrnc`mb-6`}>
-                            <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                                Description
-                            </CustomText>
-                            <TextInput
-                                style={twrnc`bg-[#2A2E3A] text-white p-4 rounded-2xl h-20 text-base`}
-                                placeholder="Enter challenge description"
-                                placeholderTextColor="#6B7280"
-                                multiline={true}
-                                textAlignVertical="top"
-                                value={newChallenge.description}
-                                onChangeText={(text) => setNewChallenge({ ...newChallenge, description: text })}
-                                accessibilityLabel="Challenge description input"
-                            />
-                        </View>
-
-                        {/* XP Reward/Penalty Settings */}
-                        <View style={twrnc`mb-6`}>
-                            <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                                XP Settings
-                            </CustomText>
-                            <View style={twrnc`flex-row justify-between`}>
-                                <View style={twrnc`flex-1 mr-2`}>
-                                    <CustomText style={twrnc`text-gray-400 text-sm mb-1`}>XP Reward</CustomText>
-                                    <TextInput
-                                        style={twrnc`bg-[#2A2E3A] text-white p-4 rounded-2xl text-base text-center`}
-                                        placeholder="50"
-                                        placeholderTextColor="#6B7280"
-                                        keyboardType="numeric"
-                                        value={String(newChallenge.xpReward)}
-                                        onChangeText={(text) =>
-                                            setNewChallenge({
-                                                ...newChallenge,
-                                                xpReward: Math.max(0, Number(text) || 0),
-                                            })
-                                        }
-                                        accessibilityLabel="XP reward input"
-                                    />
-                                </View>
-                                <View style={twrnc`flex-1 ml-2`}>
-                                    <CustomText style={twrnc`text-gray-400 text-sm mb-1`}>XP Penalty</CustomText>
-                                    <TextInput
-                                        style={twrnc`bg-[#2A2E3A] text-white p-4 rounded-2xl text-base text-center`}
-                                        placeholder="10"
-                                        placeholderTextColor="#6B7280"
-                                        keyboardType="numeric"
-                                        value={String(newChallenge.xpPenalty)}
-                                        onChangeText={(text) =>
-                                            setNewChallenge({
-                                                ...newChallenge,
-                                                xpPenalty: Math.max(0, Number(text) || 0),
-                                            })
-                                        }
-                                        accessibilityLabel="XP penalty input"
-                                    />
-                                </View>
-                            </View>
-                        </View>
-
-                        {/* Completion Requirement */}
-                        <View style={twrnc`mb-8`}>
-                            <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                                Completion Requirement
-                            </CustomText>
-                            <View style={twrnc`flex-row justify-between`}>
-                                {[
-                                    { id: 'complete_goal', name: 'Reach Goal', icon: 'flag-outline', color: '#06D6A0' },
-                                    { id: 'better_than_others', name: 'Beat Others', icon: 'trophy-outline', color: '#FFC107' },
-                                    { id: 'time_based', name: 'Time Based', icon: 'time-outline', color: '#4361EE' },
-                                ].map((requirement) => (
-                                    <AnimatedButton
-                                        key={requirement.id}
-                                        style={twrnc`flex-1 mx-1 p-4 rounded-2xl items-center ${newChallenge.completionRequirement === requirement.id
-                                            ? `border-2 border-[${requirement.color}]`
-                                            : 'bg-[#2A2E3A]'
-                                            }`}
-                                        onPress={() =>
-                                            setNewChallenge({
-                                                ...newChallenge,
-                                                completionRequirement: requirement.id,
-                                            })
-                                        }
-                                        activeOpacity={0.8}
-                                        accessibilityLabel={`Select ${requirement.name} completion requirement`}
-                                    >
-                                        <View
-                                            style={[
-                                                twrnc`w-10 h-10 rounded-2xl items-center justify-center mb-2`,
-                                                {
-                                                    backgroundColor:
-                                                        newChallenge.completionRequirement === requirement.id
-                                                            ? requirement.color
-                                                            : '#3A3F4B',
-                                                },
-                                            ]}
-                                        >
-                                            <Ionicons
-                                                name={requirement.icon}
-                                                size={20}
-                                                color={
-                                                    newChallenge.completionRequirement === requirement.id ? '#FFFFFF' : '#6B7280'
-                                                }
-                                            />
-                                        </View>
-                                        <CustomText
-                                            weight={newChallenge.completionRequirement === requirement.id ? 'bold' : 'medium'}
-                                            style={twrnc`text-white text-center text-xs`}
-                                        >
-                                            {requirement.name}
-                                        </CustomText>
-                                    </AnimatedButton>
-                                ))}
-                            </View>
-                        </View>
-
-                        {/* Challenge Preview */}
-                        <View style={twrnc`mb-8 bg-[#2A2E3A] rounded-2xl p-4`}>
-                            <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                                Challenge Preview
-                            </CustomText>
-                            <View style={twrnc`flex-row items-center mb-2`}>
-                                <View
-                                    style={[
-                                        twrnc`w-8 h-8 rounded-xl items-center justify-center mr-3`,
-                                        {
-                                            backgroundColor:
-                                                activities.find((a) => a.id === newChallenge.type)?.color || '#4361EE',
-                                        },
-                                    ]}
-                                >
-                                    <Image
-                                        source={activities.find((a) => a.id === newChallenge.type)?.icon}
-                                        style={twrnc`w-4 h-4 tint-[#FFFFFF]`}
-                                        resizeMode="contain"
-                                    />
-                                </View>
-                                <CustomText weight="bold" style={twrnc`text-white text-lg`}>
-                                    {newChallenge.title || 'New Challenge'}
-                                </CustomText>
-                            </View>
-                            <CustomText style={twrnc`text-gray-400 text-sm mb-3`}>
-                                {newChallenge.description || 'No description provided'}
-                            </CustomText>
-                            <View style={twrnc`flex-row justify-between`}>
-                                <View style={twrnc`items-center`}>
-                                    <CustomText weight="semibold" style={twrnc`text-[#4361EE] text-lg`}>
-                                        {newChallenge.goal}
-                                    </CustomText>
-                                    <CustomText style={twrnc`text-gray-400 text-xs`}>{newChallenge.unit}</CustomText>
-                                </View>
-                                <View style={twrnc`items-center`}>
-                                    <CustomText weight="semibold" style={twrnc`text-[#FFC107] text-lg`}>
-                                        {newChallenge.durationDays}
-                                    </CustomText>
-                                    <CustomText style={twrnc`text-gray-400 text-xs`}>days</CustomText>
-                                </View>
-                                <View style={twrnc`items-center`}>
-                                    <CustomText
-                                        weight="semibold"
-                                        style={twrnc`text-[#EF476F] text-lg capitalize`}
-                                    >
-                                        {newChallenge.difficulty}
-                                    </CustomText>
-                                    <CustomText style={twrnc`text-gray-400 text-xs`}>difficulty</CustomText>
-                                </View>
-                            </View>
-                        </View>
-
-                        {/* Action Buttons */}
-                        <View style={twrnc`flex-row justify-between mb-4`}>
-                            <AnimatedButton
-                                style={twrnc`bg-[#EF476F] py-4 px-6 rounded-2xl flex-1 mr-2 items-center`}
-                                onPress={onClose}
-                                activeOpacity={0.8}
-                                accessibilityLabel="Cancel challenge creation"
-                            >
-                                <CustomText weight="semibold" style={twrnc`text-white`}>
-                                    Cancel
-                                </CustomText>
-                            </AnimatedButton>
-                            <AnimatedButton
-                                style={twrnc`${creatingChallenge ? 'bg-[#3251DD]' : 'bg-[#4361EE]'
-                                    } py-4 px-6 rounded-2xl flex-1 ml-2 items-center ${!newChallenge.title.trim() ? 'opacity-50' : ''
-                                    }`}
-                                onPress={handleCreateChallenge}
-                                disabled={creatingChallenge || !newChallenge.title.trim()}
-                                activeOpacity={0.8}
-                                accessibilityLabel="Create challenge"
-                            >
-                                {creatingChallenge ? (
-                                    <View style={twrnc`flex-row items-center`}>
-                                        <ActivityIndicator size="small" color="white" style={twrnc`mr-2`} />
-                                        <CustomText weight="semibold" style={twrnc`text-white`}>
-                                            Creating...
-                                        </CustomText>
-                                    </View>
-                                ) : (
-                                    <CustomText weight="semibold" style={twrnc`text-white`}>
-                                        Create Challenge
-                                    </CustomText>
-                                )}
-                            </AnimatedButton>
-                        </View>
-                    </ScrollView>
-                </View>
+          {/* Header */}
+          <View style={twrnc`flex-row justify-between items-center mb-6`}>
+            <View style={twrnc`flex-1`}>
+              <CustomText weight="bold" style={twrnc`text-white text-2xl mb-1`}>
+                Create Challenge
+              </CustomText>
+              <CustomText style={twrnc`text-gray-400 text-sm`}>
+                Build a new fitness challenge
+              </CustomText>
             </View>
-        </Modal>
-    );
+            <TouchableOpacity
+              style={twrnc`bg-[#2A2E3A] p-3 rounded-2xl ml-4`}
+              onPress={onClose}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="close" size={20} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            removeClippedSubviews={true}
+            maxToRenderPerBatch={10}
+            updateCellsBatchingPeriod={50}
+            windowSize={10}
+          >
+            {/* Challenge Group Type */}
+            <View style={twrnc`mb-6`}>
+              <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
+                Challenge Type
+              </CustomText>
+              <View style={twrnc`flex-row flex-wrap justify-between`}>
+                {CHALLENGE_GROUP_TYPES.map((groupType) => (
+                  <GroupTypeButton
+                    key={groupType.id}
+                    groupType={groupType}
+                    isSelected={newChallenge.groupType === groupType.id}
+                    onPress={() => handleGroupTypeSelect(groupType.id)}
+                  />
+                ))}
+              </View>
+            </View>
+
+            {/* Activity Type */}
+            <View style={twrnc`mb-6`}>
+              <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
+                Activity Type
+              </CustomText>
+
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={twrnc`pb-2`}
+                removeClippedSubviews={true}
+              >
+                {activities.map((activity) => (
+                  <ActivityButton
+                    key={activity.id}
+                    activity={activity}
+                    isSelected={newChallenge.type === activity.id}
+                    onPress={() => handleActivitySelect(activity.id, activity.unit)}
+                  />
+                ))}
+              </ScrollView>
+            </View>
+
+            {/* Invite Friends */}
+            {friends?.length > 0 && (
+              <View style={twrnc`mb-6`}>
+                <CustomText weight="semibold" style={twrnc`text-white mb-2`}>
+                  Invite {newChallenge.groupType === "duo" ? "a Friend" : "Friends"}
+                </CustomText>
+
+                {inviteError && (
+                  <CustomText style={twrnc`text-[#EF476F] text-sm mb-2`}>
+                    {inviteError}
+                  </CustomText>
+                )}
+
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={twrnc`pb-2`}
+                  removeClippedSubviews={true}
+                >
+                  {friends.map((friend) => (
+                    <FriendButton
+                      key={friend.id}
+                      friend={friend}
+                      isSelected={newChallenge.selectedFriendsForGroupChallenge?.some(
+                        (f) => f.id === friend.id
+                      )}
+                      onPress={() => handleFriendSelect(friend.id)}
+                    />
+                  ))}
+                </ScrollView>
+              </View>
+            )}
+
+            {/* Title */}
+            <View style={twrnc`mb-6`}>
+              <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
+                Challenge Title
+              </CustomText>
+              <TextInput
+                style={twrnc`bg-[#2A2E3A] text-white p-4 rounded-2xl text-base`}
+                placeholder="Enter challenge title"
+                placeholderTextColor="#6B7280"
+                value={newChallenge.title}
+                onChangeText={handleTitleChange}
+              />
+            </View>
+
+            {/* Description */}
+            <View style={twrnc`mb-6`}>
+              <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
+                Description
+              </CustomText>
+              <TextInput
+                style={twrnc`bg-[#2A2E3A] text-white p-4 rounded-2xl h-20 text-base`}
+                placeholder="Enter challenge description"
+                placeholderTextColor="#6B7280"
+                multiline
+                textAlignVertical="top"
+                value={newChallenge.description}
+                onChangeText={handleDescriptionChange}
+              />
+            </View>
+
+            {/* Duration & Stake Preview */}
+            <View style={twrnc`mb-6`}>
+              <CustomText weight="semibold" style={twrnc`text-white mb-3 text-lg`}>
+                Duration
+              </CustomText>
+
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={twrnc`pb-2 gap-3 px-1`}
+              >
+                {durationOptions.map((option) => (
+                  <TouchableOpacity
+                    key={option.label}
+                    style={twrnc`
+        w-20 h-20 items-center justify-center p-3 rounded-2xl
+        border-2 ${selectedDurationKey === option.label
+                        ? 'border-[#4361EE] bg-[#1E2A5E] shadow-lg shadow-[#4361EE40]'
+                        : 'border-[#3A3F4B] bg-[#2A2E3A] shadow-md shadow-black/20'
+                      }
+      `}
+                    onPress={() => handleDurationSelect(option.minutes, option.label)}
+                    activeOpacity={0.7}
+                  >
+                    <CustomText
+                      weight="bold"
+                      style={twrnc`
+          text-lg mb-1
+          ${selectedDurationKey === option.label ? 'text-[#4361EE]' : 'text-white'}
+        `}
+                    >
+                      {option.label}
+                    </CustomText>
+
+                    {selectedDurationKey === option.label && (
+                      <View style={twrnc`absolute -top-1 -right-1 bg-[#4361EE] rounded-full w-5 h-5 items-center justify-center`}>
+                        <Ionicons name="checkmark" size={12} color="white" />
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+
+              {/* XP Stake & Prize Pool Preview */}
+              <View style={twrnc`bg-gradient-to-b from-[#1A1F2E] to-[#151925] rounded-2xl p-5 mt-4 border border-[#2A3245] shadow-lg`}>
+                <CustomText weight="semibold" style={twrnc`text-white text-base mb-4 text-center`}>
+                  Challenge Summary
+                </CustomText>
+
+                {/* Participants Row */}
+                <View style={twrnc`flex-row justify-between items-center mb-4 pb-3 border-b border-[#2A3245]`}>
+                  <View style={twrnc`flex-row items-center`}>
+                    <View style={twrnc`bg-[#2A3245] p-2 rounded-lg mr-3`}>
+                      <Ionicons name="people-outline" size={18} color="#FFC107" />
+                    </View>
+                    <View>
+                      <CustomText style={twrnc`text-gray-300 text-sm`}>
+                        Participants
+                      </CustomText>
+                      <CustomText style={twrnc`text-gray-400 text-xs`}>
+                        Including you
+                      </CustomText>
+                    </View>
+                  </View>
+                  <View style={twrnc`bg-[#2A3245] px-3 py-1 rounded-full`}>
+                    <CustomText weight="bold" style={twrnc`text-white text-sm`}>
+                      {getParticipantCount()} {getParticipantCount() === 1 ? 'person' : 'people'}
+                    </CustomText>
+                  </View>
+                </View>
+
+                {/* Stake & Prize Grid */}
+                <View style={twrnc`flex-row justify-between`}>
+                  {/* Your Stake */}
+                  <View style={twrnc`flex-1 mr-2`}>
+                    <View style={twrnc`flex-row items-center mb-2`}>
+                      <View style={twrnc`bg-[#2A3245] p-1.5 rounded-lg mr-2`}>
+                        <Ionicons name="shield-outline" size={14} color="#FFC107" />
+                      </View>
+                      <CustomText style={twrnc`text-gray-300 text-xs`}>
+                        Your Stake
+                      </CustomText>
+                    </View>
+                    <View style={twrnc`bg-[#2A3245] p-3 rounded-xl border-l-4 border-l-[#FFC107]`}>
+                      <CustomText weight="bold" style={twrnc`text-[#FFC107] text-lg text-center`}>
+                        {calculateStakeXP().toLocaleString()}
+                      </CustomText>
+                      <CustomText style={twrnc`text-gray-400 text-xs text-center mt-1`}>
+                        XP
+                      </CustomText>
+                    </View>
+                  </View>
+
+                  {/* Prize Pool */}
+                  <View style={twrnc`flex-1 ml-2`}>
+                    <View style={twrnc`flex-row items-center mb-2`}>
+                      <View style={twrnc`bg-[#2A3245] p-1.5 rounded-lg mr-2`}>
+                        <Ionicons name="trophy-outline" size={14} color="#4361EE" />
+                      </View>
+                      <CustomText style={twrnc`text-gray-300 text-xs`}>
+                        Prize Pool
+                      </CustomText>
+                    </View>
+                    <View style={twrnc`bg-[#2A3245] p-3 rounded-xl border-l-4 border-l-[#4361EE] relative`}>
+                      <CustomText weight="bold" style={twrnc`text-[#4361EE] text-lg text-center`}>
+                        {calculatePrizePool().toLocaleString()}
+                      </CustomText>
+                      <CustomText style={twrnc`text-gray-400 text-xs text-center mt-1`}>
+                        XP
+                      </CustomText>
+                      <View style={twrnc`absolute -top-1 -right-1 bg-[#FFD700] rounded-full p-1`}>
+                        <Ionicons name="trophy" size={10} color="#000" />
+                      </View>
+                    </View>
+                  </View>
+                </View>
+
+                {/* Multiplier Indicator */}
+                <View style={twrnc`bg-[#2A3245] rounded-xl px-4 py-3 mt-4 border border-[#3A3F4B]`}>
+                  <View style={twrnc`flex-row justify-between items-center`}>
+                    <CustomText style={twrnc`text-gray-300 text-xs`}>
+                      Calculation
+                    </CustomText>
+                    <View style={twrnc`bg-[#4361EE] px-2 py-1 rounded-full`}>
+                      <CustomText weight="bold" style={twrnc`text-white text-xs`}>
+                        {getParticipantCount()} × {calculateStakeXP()} XP
+                      </CustomText>
+                    </View>
+                  </View>
+                  <CustomText style={twrnc`text-gray-400 text-xs mt-1 text-center`}>
+                    Each participant contributes {calculateStakeXP()} XP to the prize pool
+                  </CustomText>
+                </View>
+              </View>
+            </View>
+
+            {/* Action Buttons */}
+            <View style={twrnc`flex-row justify-between mb-4`}>
+              <TouchableOpacity
+                style={twrnc`bg-[#EF476F] py-4 px-6 rounded-2xl flex-1 mr-2 items-center`}
+                onPress={onClose}
+                activeOpacity={0.7}
+              >
+                <CustomText weight="semibold" style={twrnc`text-white`}>
+                  Cancel
+                </CustomText>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={twrnc`${creatingChallenge ? "bg-[#3251DD]" : "bg-[#4361EE]"
+                  } py-4 px-6 rounded-2xl flex-1 ml-2 items-center ${!newChallenge.title.trim() && !creatingChallenge ? "opacity-50" : ""
+                  }`}
+                onPress={handleCreateChallenge}
+                disabled={creatingChallenge || !newChallenge.title.trim()}
+                activeOpacity={0.7}
+              >
+                {creatingChallenge ? (
+                  <View style={twrnc`flex-row items-center`}>
+                    <ActivityIndicator size="small" color="white" style={twrnc`mr-2`} />
+                    <CustomText weight="semibold" style={twrnc`text-white`}>
+                      Creating...
+                    </CustomText>
+                  </View>
+                ) : (
+                  <CustomText weight="semibold" style={twrnc`text-white`}>
+                    Create Challenge
+                  </CustomText>
+                )}
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </Animated.View>
+      </View>
+    </Modal>
+  );
 };
 
 export default CreateChallengeModal;

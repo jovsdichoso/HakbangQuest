@@ -21,10 +21,9 @@ import CustomText from "../components/CustomText"
 import CustomModal from "../components/CustomModal"
 import { collection, doc, getDoc, addDoc, updateDoc, serverTimestamp } from "firebase/firestore"
 import { db, auth } from "../firebaseConfig"
-import { Accelerometer } from "expo-sensors"  
+import { Accelerometer } from "expo-sensors"
 import FaceProximityPushUpCounter from "../components/FaceProximityPushUpCounter"
 import CountdownOverlay from "../components/CountdownOverlay"
-import XPManager from "../utils/xpManager"
 
 // Import icons
 import WalkingIcon from "../components/icons/walking.png"
@@ -445,7 +444,6 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
     loadUserStats()
   }, [loadUserStats])
 
-  
   // Helper function to format duration properly
   const formatDuration = useCallback((seconds) => {
     const hours = Math.floor(seconds / 3600)
@@ -480,60 +478,61 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
   useEffect(() => {
     console.log("ActivityScreen: Processing params for quest initialization:", params);
 
-    // 🩹 Fix: unwrap nested questData if passed like { questData: {...} }
-    const normalizedParams = params.questData ? { ...params.questData } : params;
-
-    if (normalizedParams.questId || (normalizedParams.title && normalizedParams.description && normalizedParams.goal && normalizedParams.unit)) {
+    if (params.questId || (params.title && params.description && params.goal && params.unit)) {
       let questData = {
-        id: normalizedParams.questId || `quest_${Date.now()}`,
-        title: normalizedParams.title,
-        description: normalizedParams.description,
-        goal: normalizedParams.goal,
-        unit: normalizedParams.unit,
-        progress: normalizedParams.progress || 0,
-        status: normalizedParams.status || "not_started",
-        activityType: normalizedParams.activityType,
-        difficulty: normalizedParams.difficulty || "medium",
-        category: normalizedParams.category || "challenge",
-        ...(normalizedParams.category === "challenge"
-          ? { xpReward: 0, stakeXP: normalizedParams.stakeXP }
-          : { xpReward: normalizedParams.xpReward || 50 }),
-        mode: normalizedParams.mode,
-        durationMinutes: normalizedParams.durationMinutes,
-        startDate: normalizedParams.startDate,
-        endDate: normalizedParams.endDate,
+        id: params.questId || `quest_${Date.now()}`,
+        title: params.title,
+        description: params.description,
+        goal: params.goal,
+        unit: params.unit,
+        progress: params.progress || 0,
+        status: params.status || "not_started",
+        activityType: params.activityType,
+        difficulty: params.difficulty || "medium",
+        category: params.category || "challenge",
+        ...(params.category === "challenge"
+          ? { xpReward: 0, stakeXP: params.stakeXP }
+          : { xpReward: params.xpReward || 50 }),
+
+        // ✅ Preserve time-based fields if present
+        mode: params.mode,
+        durationMinutes: params.durationMinutes,
+        startDate: params.startDate,
+        endDate: params.endDate,
       };
 
+      // ✅ Normalize time-based challenges
       if (questData.mode === "time" && questData.durationMinutes) {
         questData.unit = "duration";
-        questData.goal = questData.durationMinutes;
+        questData.goal = questData.durationMinutes; // minutes
       }
 
-      console.log("ActivityScreen: Setting active quest from normalizedParams:", questData);
+      console.log("ActivityScreen: Setting active quest from params:", questData);
       setActiveQuest(questData);
 
+      // Prioritize quest's activityType if it's valid
       if (questData.activityType) {
+        console.log("ActivityScreen: Updating selectedActivity from questData.activityType:", questData.activityType);
         setSelectedActivity(questData.activityType);
+      } else if (params.title) {
+        const inferredActivityType = activities.find((act) =>
+          params.title.toLowerCase().includes(act.name.toLowerCase())
+        )?.id;
+        if (inferredActivityType) {
+          console.log("ActivityScreen: Inferred activity type from quest title:", inferredActivityType);
+          setSelectedActivity(inferredActivityType);
+        }
       }
     } else {
       console.log("ActivityScreen: No quest data found in params, setting activeQuest to null.");
       setActiveQuest(null);
-    }
-  }, [params]);
 
-  const shouldDisableActivitySelection = useCallback(() => {
-    return activeQuest && activeQuest.activityType;
-  }, [activeQuest]);
-
-  useEffect(() => {
-    if (activeQuest && activeQuest.activityType) {
-      const challengeActivity = activities.find(a => a.id === activeQuest.activityType);
-      if (challengeActivity && selectedActivity !== challengeActivity.id) {
-        console.log("ActivityScreen: Auto-selecting challenge activity:", activeQuest.activityType);
-        setSelectedActivity(activeQuest.activityType);
+      if (!params.activityType) {
+        setSelectedActivity("walking");
       }
     }
-  }, [activeQuest, activities, selectedActivity]);
+  }, [params, activities]);
+
 
 
   const calculateCalories = useCallback(() => {
@@ -631,161 +630,391 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
     }))
   }, [])
 
+  // Enhanced saveActivity with XP saving and quest completion
   const saveActivity = useCallback(
     async (finalStats = null) => {
-      console.log("ActivityScreen: Starting save activity process");
-      setIsTrackingLoading(true);
+      // NEW: Accept finalStats from MapScreen or FaceProximityPushUpCounter
+      console.log("ActivityScreen: Starting save activity process")
+      setIsTrackingLoading(true)
 
-      // 🧩 Merge final stats or fallback
-      const activityStatsToSave =
-        finalStats || stats || { reps: 0, duration: 0, distance: 0, steps: 0 };
+      // Use finalStats if provided, otherwise use local 'stats'
+      const activityStatsToSave = finalStats || stats || { reps: 0, duration: 0, distance: 0, steps: 0 }
 
-      // 🧠 Determine if this is a strength activity
-      const strengthFlag = finalStats?.isStrengthActivity ?? isStrengthActivity;
-      console.log("🧾 Activity Save Debug:", {
-        selectedActivity,
-        reps: activityStatsToSave.reps,
-        duration: activityStatsToSave.duration,
-        strengthFlag,
-      });
+      const normalizedStats = {
+        reps: Number(activityStatsToSave.reps) || 0,
+        duration: Number(activityStatsToSave.duration) || 0,
+        distance: Number(activityStatsToSave.distance) || 0,
+        steps: Number(activityStatsToSave.steps) || 0,
+        sets: Number(activityStatsToSave.sets) || 1,
+        restTime: Number(activityStatsToSave.restTime) || 0,
+        maxSpeed: Number(activityStatsToSave.maxSpeed) || 0,
+        elevationGain: Number(activityStatsToSave.elevationGain) || 0,
+        elevationLoss: Number(activityStatsToSave.elevationLoss) || 0,
+      }
+      console.log("ActivityScreen: Normalized stats for saving:", normalizedStats)
 
       try {
-        const user = auth.currentUser;
+        const user = auth.currentUser
         if (!user) {
-          showModal("Error", "You must be logged in to save activities.");
-          setIsTrackingLoading(false);
-          return;
+          showModal("Error", "You must be logged in to save activities.")
+          setIsTrackingLoading(false)
+          return
         }
-
-        // 🧩 Validate activity data
-        if (strengthFlag) {
-          if ((activityStatsToSave.reps || 0) < 5) {
+        console.log("ActivityScreen: Validating activity data")
+        // Activity type validation
+        if (isStrengthActivity) {
+          // Strength activity validation
+          if (activityStatsToSave.reps < 5) {
+            // NEW: Use activityStatsToSave
             showModal(
               "Activity Too Short",
-              "Your activity was too short to save. Please complete at least 5 repetitions."
-            );
-            setIsTrackingLoading(false);
-            return;
+              "Your activity was too short to save. Please complete at least 5 repetitions.",
+              () => { },
+            )
+            setIsTrackingLoading(false)
+            return
           }
         } else {
-          const minDistance = 0.1; // km
-          const minDuration = 60; // seconds
-          const distanceInKm = (activityStatsToSave.distance || 0) / 1000;
-
-          if (distanceInKm < minDistance) {
+          // Distance activity validation
+          const minDistance = 0.1 // 0.1 km minimum
+          const minDuration = 60 // 1 minute minimum
+          if (activityStatsToSave.distance / 1000 < minDistance) {
+            // NEW: Use activityStatsToSave
             showModal(
               "Activity Too Short",
-              `Your activity was too short to save. Please cover at least ${minDistance} km.`
-            );
-            setIsTrackingLoading(false);
-            return;
+              `Your activity was too short to save. Please cover at least ${minDistance} km.`,
+              () => { },
+            )
+            setIsTrackingLoading(false)
+            return
           }
-
-          if ((activityStatsToSave.duration || 0) < minDuration) {
+          if (activityStatsToSave.duration < minDuration) {
+            // NEW: Use activityStatsToSave
             showModal(
               "Activity Too Short",
-              `Your activity was too short to save. Please exercise for at least ${Math.floor(
-                minDuration / 60
-              )} minute(s).`
-            );
-            setIsTrackingLoading(false);
-            return;
+              `Your activity was too short to save. Please exercise for at least ${Math.floor(minDuration / 60)} minute(s).`,
+              () => { },
+            )
+            setIsTrackingLoading(false)
+            return
+          }
+        }
+        console.log("ActivityScreen: Calculating activity metrics")
+        // Calculate metrics based on activity type
+        let calculatedMetrics = {}
+        if (!isStrengthActivity) {
+          const distanceInKm = normalizedStats.distance / 1000
+          const durationInHours = normalizedStats.duration / 3600
+          const durationInMinutes = normalizedStats.duration / 60
+          calculatedMetrics = {
+            distanceInKm,
+            avgSpeed: durationInHours > 0 ? distanceInKm / durationInHours : 0,
+            pace: distanceInKm > 0 ? durationInMinutes / distanceInKm : 0,
           }
         }
 
-        // 🧩 Prepare activity data for XPManager
-        const activityData = {
+        // Base activity data
+        const baseActivityData = {
           userId: user.uid,
           activityType: selectedActivity,
-          duration: activityStatsToSave.duration || 0,
-          calories: activityStatsToSave.calories || calories || 0,
+          duration: activityStatsToSave.duration || 0, // NEW: Use activityStatsToSave
+          calories: activityStatsToSave.calories || calories || 0, // Use calories from finalStats if available, else local state
           createdAt: serverTimestamp(),
-          ...(strengthFlag
-            ? {
-              reps: activityStatsToSave.reps || 0,
-              sets: activityStatsToSave.sets || 1,
+          videoUrl: null,
+          imageUrl: null,
+        }
+        // Build activity data based on type
+        const activityData = isStrengthActivity
+          ? {
+            ...baseActivityData,
+            reps: activityStatsToSave.reps || 0, // NEW: Use activityStatsToSave
+            // Add strength-specific fields
+            sets: activityStatsToSave.sets || 1,
+            restTime: activityStatsToSave.restTime || 0,
+          }
+          : {
+            ...baseActivityData,
+            distance: activityStatsToSave.distance || 0, // in meters // NEW: Use activityStatsToSave
+            steps: activityStatsToSave.steps || 0, // NEW: Use activityStatsToSave
+            avgSpeed: calculatedMetrics.avgSpeed || 0, // km/h
+            pace: calculatedMetrics.pace || 0, // min/km
+            maxSpeed: activityStatsToSave.maxSpeed || 0, // NEW: Use activityStatsToSave
+            elevationGain: activityStatsToSave.elevationGain || 0, // NEW: Use activityStatsToSave
+            elevationLoss: activityStatsToSave.elevationLoss || 0, // NEW: Use activityStatsToSave
+            coordinates: coordinates || [],
+            // Add GPS-specific metadata
+            startLocation:
+              coordinates && coordinates.length > 0
+                ? {
+                  latitude: coordinates[0].latitude,
+                  longitude: coordinates[0].longitude,
+                  timestamp: coordinates[0].timestamp,
+                }
+                : null,
+            endLocation:
+              coordinates && coordinates.length > 0
+                ? {
+                  latitude: coordinates[coordinates.length - 1].latitude,
+                  longitude: coordinates[coordinates.length - 1].longitude,
+                  timestamp: coordinates[coordinates.length - 1].timestamp,
+                }
+                : null,
+          }
+        console.log("ActivityScreen: Built activity data:", activityData)
+        let questCompleted = false
+        let xpEarned = 50 // Base XP for completing an activity
+        let questCompletionData = null
+        // Quest completion logic (using quest data from Dashboard)
+        if (activeQuest) {
+          console.log("ActivityScreen: Processing quest completion for:", activeQuest)
+          activityData.questId = activeQuest.id
+          activityData.questTitle = activeQuest.title
+          activityData.questDescription = activeQuest.description
+          activityData.questCategory = activeQuest.category
+          // Calculate quest progress based on different units
+          let questProgress = 0
+          let currentValue = 0
+          if (activeQuest.unit === "reps" && isStrengthActivity) {
+            currentValue = activityStatsToSave.reps || 0 // Use activityStatsToSave
+            questProgress = currentValue / activeQuest.goal
+          } else if (activeQuest.unit === "distance" && !isStrengthActivity) {
+            currentValue = calculatedMetrics.distanceInKm || 0
+            questProgress = currentValue / activeQuest.goal
+          } else if (activeQuest.unit === "duration") {
+            currentValue = (activityStatsToSave.duration || 0) / 60 // Convert to minutes
+            questProgress = currentValue / activeQuest.goal
+          } else if (activeQuest.unit === "steps" && !isStrengthActivity) {
+            currentValue = activityStatsToSave.steps || 0 // Use activityStatsToSave
+            questProgress = currentValue / activeQuest.goal
+          } else if (activeQuest.unit === "calories") {
+            currentValue = activityStatsToSave.calories || calories || 0 // Use calories from finalStats if available
+            questProgress = currentValue / activeQuest.goal
+          }
+          questCompleted = questProgress >= 1
+          activityData.questProgress = Math.min(questProgress, 1)
+          activityData.questStatus = questCompleted ? "completed" : "in_progress"
+          console.log("ActivityScreen: Quest progress calculated:", {
+            unit: activeQuest.unit,
+            currentValue,
+            goal: activeQuest.goal,
+            progress: questProgress,
+            completed: questCompleted,
+          })
+          if (questCompleted) {
+            xpEarned += activeQuest.xpReward || 0
+            // Prepare quest completion data
+            questCompletionData = {
+              questId: activeQuest.id,
+              userId: user.uid,
+              questTitle: activeQuest.title,
+              questDescription: activeQuest.description,
+              questGoal: activeQuest.goal,
+              questUnit: activeQuest.unit,
+              achievedValue: currentValue,
+              activityType: selectedActivity,
+              xpEarned: activeQuest.xpReward || 0,
+              completedAt: serverTimestamp(),
+              activityData: {
+                ...(isStrengthActivity
+                  ? {
+                    reps: activityStatsToSave.reps || 0, // Use activityStatsToSave
+                    duration: activityStatsToSave.duration || 0, // Use activityStatsToSave
+                  }
+                  : {
+                    distance: calculatedMetrics.distanceInKm || 0,
+                    duration: (activityStatsToSave.duration || 0) / 60, // Use activityStatsToSave
+                    avgSpeed: calculatedMetrics.avgSpeed || 0,
+                    steps: activityStatsToSave.steps || 0, // Use activityStatsToSave
+                  }),
+              },
             }
-            : {
-              distance: activityStatsToSave.distance || 0,
-              steps: activityStatsToSave.steps || 0,
-              coordinates: coordinates || [],
-            }),
-        };
-
-        // 🧩 Generate activity ID
-        const activityId = XPManager.generateActivityId(
-          user.uid,
-          Date.now(),
-          selectedActivity
-        );
-
-        console.log("📦 Saving Activity:", {
-          activityId,
-          strengthFlag,
-          selectedActivity,
-          stats: activityStatsToSave,
-        });
-
-        // 🧠 Call XP Manager to handle XP, quest, and challenge logic
-        const xpResult = await XPManager.awardXPForActivity({
-          userId: user.uid,
-          activityId: activityId,
-          activityData: activityData,
-          stats: activityStatsToSave,
-          activityParams: { activityType: selectedActivity },
-          questData: activeQuest,
-          challengeData:
-            activeQuest?.category === "challenge" ? activeQuest : null,
-          isStrengthActivity: strengthFlag,
-        });
-
-        if (!xpResult.success) {
-          showModal(
-            "Activity Not Saved",
-            xpResult.reason || "Activity does not meet minimum requirements."
-          );
-          setIsTrackingLoading(false);
-          return;
+            console.log("ActivityScreen: Quest completed! Completion data:", questCompletionData)
+            // Save quest completion to Firestore
+            try {
+              await addDoc(collection(db, "quest_completions"), questCompletionData)
+              console.log("ActivityScreen: Quest completion saved to Firestore")
+            } catch (error) {
+              console.error("ActivityScreen: Error saving quest completion:", error)
+              // Don't fail the entire save operation if quest completion fails
+            }
+          }
         }
-
-        // 🏅 Build success message
-        let successMessage = "";
-        if (strengthFlag) {
-          successMessage = `Awesome ${selectedActivity} session!\n\nWorkout Summary:\n• ${activityStatsToSave.reps} reps completed\n• ${formatDuration(
-            activityStatsToSave.duration
-          )} duration\n• ${activityStatsToSave.calories || calories} calories burned\n• ${xpResult.xpEarned
-            } XP earned`;
+        console.log("ActivityScreen: Calculating activity metrics")
+        // Calculate bonus XP based on performance
+        let bonusXP = 0
+        if (isStrengthActivity) {
+          // Bonus XP for strength activities
+          bonusXP += Math.floor((activityStatsToSave.reps || 0) / 10) * 5 // 5 XP per 10 reps // Use activityStatsToSave
+          bonusXP += Math.floor((activityStatsToSave.duration || 0) / 300) * 10 // 10 XP per 5 minutes // Use activityStatsToSave
         } else {
-          const distanceInKm = (activityStatsToSave.distance || 0) / 1000;
-          successMessage = `Great ${selectedActivity} session!\n\nWorkout Summary:\n• ${distanceInKm.toFixed(
-            2
-          )} km covered\n• ${formatDuration(
-            activityStatsToSave.duration
-          )} duration\n• ${xpResult.xpEarned} XP earned`;
+          // Bonus XP for distance activities
+          bonusXP += Math.floor(calculatedMetrics.distanceInKm || 0) * 10 // 10 XP per km
+          bonusXP += Math.floor((activityStatsToSave.duration || 0) / 600) * 5 // 5 XP per 10 minutes // Use activityStatsToSave
+          bonusXP += Math.floor((activityStatsToSave.steps || 0) / 1000) * 2 // 2 XP per 1000 steps // Use activityStatsToSave
+        }
+        xpEarned += bonusXP
+        activityData.xpEarned = xpEarned
+        activityData.bonusXP = bonusXP
+        console.log("ActivityScreen: Total XP calculated:", {
+          baseXP: 50,
+          questXP: activeQuest?.xpReward || 0,
+          bonusXP,
+          totalXP: xpEarned,
+        })
+        // Update user's XP and level in Firestore
+        try {
+          const userRef = doc(db, "users", user.uid)
+          const userDoc = await getDoc(userRef)
+          if (userDoc.exists()) {
+            const userData = userDoc.data()
+            const currentXP = userData.totalXP || 0
+            const currentLevel = userData.level || 1
+            const newTotalXP = currentXP + xpEarned
+            const newLevel = Math.floor(newTotalXP / 1000) + 1
+            console.log("ActivityScreen: Updating user XP:", { currentXP, newTotalXP, currentLevel, newLevel })
+            // Prepare user update data
+            const userUpdateData = {
+              totalXP: newTotalXP,
+              level: newLevel,
+              lastActivityDate: serverTimestamp(),
+              totalActivities: (userData.totalActivities || 0) + 1,
+            }
+            // Add activity-specific stats
+            if (isStrengthActivity) {
+              userUpdateData.totalReps = (userData.totalReps || 0) + (activityStatsToSave.reps || 0) // Use activityStatsToSave
+              userUpdateData.totalStrengthDuration =
+                (userData.totalStrengthDuration || 0) + (activityStatsToSave.duration || 0) // Use activityStatsToSave
+            } else {
+              userUpdateData.totalDistance = (userData.totalDistance || 0) + (calculatedMetrics.distanceInKm || 0)
+              userUpdateData.totalSteps = (userData.totalSteps || 0) + (activityStatsToSave.steps || 0) // Use activityStatsToSave
+              userUpdateData.totalDuration = (userData.totalDuration || 0) + (activityStatsToSave.duration || 0) // Use activityStatsToSave
+            }
+            await updateDoc(userRef, userUpdateData)
+            console.log("ActivityScreen: User data updated successfully")
+            // Check for level up
+            if (newLevel > currentLevel) {
+              setTimeout(() => {
+                showModal(
+                  "Level Up!",
+                  `Congratulations! You've reached level ${newLevel}! Keep up the great work!`,
+                  () => { },
+                )
+              }, 2000)
+            }
+          } else {
+            console.error("ActivityScreen: User document does not exist")
+          }
+        } catch (error) {
+          console.error("ActivityScreen: Error updating user XP:", error)
+          // Don't fail the entire save operation if user update fails
+        }
+        // Save activity to Firestore
+        console.log("ActivityScreen: Saving activity to Firestore:", activityData)
+        const activityDocRef = await addDoc(collection(db, "activities"), activityData)
+        console.log("ActivityScreen: Activity saved with ID:", activityDocRef.id)
+        // Prepare success message based on activity type and quest completion
+        const successTitle = "Activity Saved"
+        let successMessage = ""
+        const safeDistance = calculatedMetrics.distanceInKm || 0
+        const safeAvgSpeed = calculatedMetrics.avgSpeed || 0
+        const safeSteps = normalizedStats.steps || 0
+        const safeReps = normalizedStats.reps || 0
+        const safeDuration = normalizedStats.duration || 0
+        const safeCalories = activityStatsToSave.calories || calories || 0 // Use calories from finalStats if available
+
+        if (questCompleted) {
+          if (isStrengthActivity) {
+            successMessage = `Congratulations! You completed the "${activeQuest?.title}" quest and earned ${xpEarned} XP!\n\nWorkout Summary:\n• ${safeReps} ${selectedActivity} reps\n• ${formatDuration(safeDuration)} duration\n• ${safeCalories} calories burned`
+          } else {
+            successMessage = `Congratulations! You completed the "${activeQuest?.title}" quest and earned ${xpEarned} XP!\n\nWorkout Summary:\n• ${safeDistance.toFixed(2)} km distance\n• ${formatDuration(safeDuration)} duration\n• ${safeAvgSpeed.toFixed(1)} km/h avg speed\n• ${safeSteps.toLocaleString()} steps\n• ${safeCalories} calories burned`
+          }
+        } else {
+          if (isStrengthActivity) {
+            successMessage = `Awesome ${selectedActivity} session!\n\nWorkout Summary:\n• ${safeReps} reps completed\n• ${formatDuration(safeDuration)} duration\n• ${safeCalories} calories burned\n• ${xpEarned} XP earned`
+          } else {
+            successMessage = `Great ${selectedActivity} session!\n\nWorkout Summary:\n• ${safeDistance.toFixed(2)} km covered\n• ${formatDuration(safeDuration)} duration\n• ${safeAvgSpeed.toFixed(1)} km/h avg speed\n• ${safeSteps.toLocaleString()} steps\n• ${safeCalories} calories burned\n• ${xpEarned} XP earned`
+          }
         }
 
-        // 🏆 Add special completion messages
-        if (xpResult.questCompleted) {
-          successMessage = `🎯 Congratulations! You completed the "${activeQuest?.title}" quest!\n\n${successMessage}`;
+        // Add bonus XP message if applicable
+        if (bonusXP > 0) {
+          successMessage += `\nBonus: +${bonusXP} XP for excellent performance!`
         }
-
-        if (xpResult.challengeCompleted) {
-          successMessage = `💪 Challenge Completed! You earned bonus XP!\n\n${successMessage}`;
-        }
-
-        if (xpResult.levelUp) {
-          successMessage += `\n\n⭐ Level Up! You've reached level ${xpResult.newLevel}!`;
-        }
-
-        showModal("Activity Saved", successMessage, () => {
-          clearActivity();
-          navigateToDashboard();
-        });
+        console.log("ActivityScreen: Activity saved successfully, showing success message")
+        showModal(successTitle, successMessage, () => {
+          clearActivity()
+          navigateToDashboard()
+        })
       } catch (error) {
-        console.error("ActivityScreen: Error saving activity:", error);
-        showModal("Error", "Failed to save activity. Please try again.");
+        console.error("ActivityScreen: Error saving activity:", error)
+        // Provide more specific error messages
+        let errorMessage = "Failed to save activity. Please try again."
+        if (error.code === "permission-denied") {
+          errorMessage = "You don't have permission to save this activity. Please check your login status."
+        } else if (error.code === "network-request-failed") {
+          errorMessage = "Network error. Please check your internet connection and try again."
+        } else if (error.code === "quota-exceeded") {
+          errorMessage = "Storage quota exceeded. Please contact support."
+        }
+        showModal("Error", errorMessage)
       } finally {
-        setIsTrackingLoading(false);
+        setIsTrackingLoading(false)
+      }
+
+      // NEW: Update challenge progress if applicable
+
+      if (activeQuest && activeQuest.category === "challenge") {
+        try {
+          const challengeRef = doc(db, "challenges", activeQuest.id)
+          const challengeDoc = await getDoc(challengeRef)
+          if (challengeDoc.exists()) {
+            const challengeData = challengeDoc.data()
+
+            // Defensive defaults
+            const currentUser = auth.currentUser
+            if (!currentUser) {
+              console.warn("User  not authenticated, cannot update challenge progress")
+              return
+            }
+
+            const userId = currentUser.uid
+            const progress = challengeData.progress || {}
+            const status = challengeData.status || {}
+            const goal = Number(challengeData.goal) || 0
+
+            // Calculate value to add based on unit and activity type
+            let valueToAdd = 0
+            if (activeQuest.unit === "reps" && isStrengthActivity) {
+              valueToAdd = activityStatsToSave.reps || 0
+            } else if (activeQuest.unit === "distance" && !isStrengthActivity) {
+              valueToAdd = (activityStatsToSave.distance || 0) / 1000 // meters to km
+            } else if (activeQuest.unit === "duration") {
+              valueToAdd = (activityStatsToSave.duration || 0) / 60 // seconds to minutes
+            } else if (activeQuest.unit === "steps" && !isStrengthActivity) {
+              valueToAdd = activityStatsToSave.steps || 0
+            } else if (activeQuest.unit === "calories") {
+              valueToAdd = activityStatsToSave.calories || calories || 0 // Use calories from finalStats if available
+            }
+
+            // Update progress safely
+            // This is the crucial part: add current session's value to existing progress
+            const newProgressValue = (progress[userId] || 0) + valueToAdd
+
+            // Determine new status
+            const newStatusValue = goal > 0 && newProgressValue >= goal ? "completed" : "in_progress"
+
+            // Update Firestore document with only defined values
+            await updateDoc(challengeRef, {
+              [`progress.${userId}`]: newProgressValue,
+            })
+
+            await updateDoc(challengeRef, {
+              [`status.${userId}`]: newStatusValue,
+            })
+          }
+        } catch (err) {
+          console.error("Error updating challenge progress:", err)
+        }
       }
     },
     [
@@ -797,11 +1026,9 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
       clearActivity,
       formatDuration,
       showModal,
-      stats,
-      coordinates,
-    ]
-  );
-
+      stats, // Added stats to dependencies as activityStatsToSave is derived from it
+    ],
+  )
 
   const resumeTracking = useCallback(() => {
     console.log("ActivityScreen: Resuming activity tracking")
@@ -1077,29 +1304,23 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
   // NEW: Callback function after FaceProximityPushUpCounter finishes
   const handleFaceCounterFinish = useCallback(
     (finalStatsFromCounter) => {
-      // 1️⃣ Hide the face counter UI when finished
-      setShowFaceCounter(false);
+      // Accept finalStats
+      setShowFaceCounter(false)
+      console.log("ActivityScreen: FaceProximityPushUpCounter finished. Final stats:", finalStatsFromCounter)
 
-      // 2️⃣ Log the final stats for debugging (should show reps, duration, etc.)
-      console.log(
-        "ActivityScreen: FaceProximityPushUpCounter finished. Final stats:",
-        finalStatsFromCounter
-      );
-
-      // 3️⃣ Safely call saveActivity with a strength flag
+      // Immediately call saveActivity with the stats received from the counter
       if (finalStatsFromCounter) {
-        saveActivity({ ...finalStatsFromCounter, isStrengthActivity: true });
+        saveActivity(finalStatsFromCounter)
       } else {
-        // 4️⃣ Fallback in case FaceProximityPushUpCounter didn't send data
+        // Fallback if for some reason finalStatsFromCounter is null/undefined
         console.warn(
-          "ActivityScreen: No final stats received from FaceProximityPushUpCounter. Saving current stats as fallback."
-        );
-        saveActivity(); // fallback to local stats
+          "ActivityScreen: No final stats received from FaceProximityPushUpCounter. Saving current stats as fallback.",
+        )
+        saveActivity() // Call with no args, so it uses local 'stats'
       }
     },
-    [saveActivity]
-  );
-
+    [saveActivity],
+  ) // Add saveActivity to dependencies
 
   if (showFaceCounter && selectedActivity === "pushup") {
     return (
@@ -1110,7 +1331,6 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
           stakeXP={activeQuest?.stakeXP}
           onRepUpdate={handleFaceCounterRep}
           onFinish={handleFaceCounterFinish}
-          activeQuest={activeQuest || null} 
         />
       </View>
     )
@@ -1126,48 +1346,73 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
       <StatusBar barStyle="light-content" backgroundColor="#121826" />
 
       {/* Enhanced Responsive Header */}
-      <View style={twrnc`bg-[#1A1F2E] px-4 py-4 flex-row items-center justify-between shadow-lg`}>
-        <TouchableOpacity
-          onPress={navigateToDashboard}
-          style={twrnc`p-2 rounded-xl bg-[#2A2E3A]`}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="chevron-back" size={20} color="#FFFFFF" />
-        </TouchableOpacity>
+      <View
+        style={[
+          twrnc`bg-[#2A2E3A] shadow-lg`,
+          {
+            paddingTop: isAndroid ? responsivePadding.xl * 2.5 : responsivePadding.xl * 3,
+            paddingBottom: responsivePadding.base * 4,
+          },
+        ]}
+      >
+        <View style={[twrnc`flex-row items-center justify-between`, { paddingHorizontal: responsivePadding.base * 5 }]}>
+          <TouchableOpacity
+            style={[
+              twrnc`rounded-full bg-white bg-opacity-10`,
+              {
+                padding: responsivePadding.sm * 2,
+                marginLeft: -responsivePadding.sm * 2,
+              },
+            ]}
+            onPress={navigateToDashboard}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Ionicons name="chevron-back" size={responsiveSizes.iconLarge} color="#FFFFFF" />
+          </TouchableOpacity>
 
-        <View style={twrnc`items-center flex-1 mx-4`}>
-          <CustomText weight="bold" style={twrnc`text-white text-xl text-center`}>
-            {activeQuest ? activeQuest.title : currentActivity.name}
-          </CustomText>
-          <View style={twrnc`flex-row items-center justify-center mt-1`}>
-            <View
-              style={[
-                twrnc`bg-[${currentActivity.color}] rounded-xl mr-2 px-3 py-1`,
-              ]}
-            >
-              <CustomText style={twrnc`text-white font-medium text-xs`}>
-                Level {userStats.level}
+          <View style={twrnc`flex-1 items-center`}>
+            <CustomText weight="bold" style={[twrnc`text-white`, { fontSize: responsiveFontSizes.xl }]}>
+              {activeQuest ? activeQuest.title : currentActivity.name}
+            </CustomText>
+            <View style={[twrnc`flex-row items-center`, { marginTop: responsivePadding.xs }]}>
+              <View
+                style={[
+                  twrnc`bg-[${currentActivity.color}] rounded-full mr-2`,
+                  {
+                    paddingHorizontal: responsivePadding.sm * 2,
+                    paddingVertical: responsivePadding.xs,
+                  },
+                ]}
+              >
+                <CustomText style={[twrnc`text-white font-medium`, { fontSize: responsiveFontSizes.xs }]}>
+                  Level {userStats.level}
+                </CustomText>
+              </View>
+              <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.sm }]}>
+                {userStats.totalXP} XP
               </CustomText>
             </View>
-            <CustomText style={twrnc`text-gray-400 text-sm`}>
-              {userStats.totalXP} XP
-            </CustomText>
           </View>
+
+          <TouchableOpacity
+            style={[
+              twrnc`rounded-full bg-white bg-opacity-10`,
+              {
+                padding: responsivePadding.sm * 2,
+                marginRight: -responsivePadding.sm * 2,
+              },
+            ]}
+            onPress={() => setShowSettings(!showSettings)}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Ionicons
+              name={showSettings ? "close" : "settings-outline"}
+              size={responsiveSizes.iconLarge}
+              color="#FFFFFF"
+            />
+          </TouchableOpacity>
         </View>
-
-        <TouchableOpacity
-          style={twrnc`p-2 rounded-xl bg-[#2A2E3A]`}
-          onPress={() => setShowSettings(!showSettings)}
-          activeOpacity={0.7}
-        >
-          <Ionicons
-            name={showSettings ? "close" : "settings-outline"}
-            size={20}
-            color="#FFFFFF"
-          />
-        </TouchableOpacity>
       </View>
-
 
       <ScrollView
         contentContainerStyle={[{ paddingBottom: responsivePadding.xl * 5 }]}
@@ -1487,7 +1732,7 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
 
 
         {/* Responsive Activity Selection */}
-        {!showSettings && !shouldDisableActivitySelection() && (
+        {!showSettings && (
           <View style={[{ paddingHorizontal: responsivePadding.base * 5, marginBottom: responsivePadding.lg * 6 }]}>
             <View style={[twrnc`flex-row items-center`, { marginBottom: responsivePadding.base * 4 }]}>
               <Ionicons
@@ -1550,56 +1795,241 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
           </View>
         )}
 
-        {/* Show locked activity info when in challenge/quest mode */}
-        {!showSettings && shouldDisableActivitySelection() && (
+        {/* Responsive Settings Section */}
+        {showSettings && (
           <View style={[{ paddingHorizontal: responsivePadding.base * 5, marginBottom: responsivePadding.lg * 6 }]}>
             <View style={[twrnc`flex-row items-center`, { marginBottom: responsivePadding.base * 4 }]}>
               <Ionicons
-                name="lock-closed"
+                name="options-outline"
                 size={responsiveSizes.iconMedium}
-                color="#FFC107"
+                color="#FFFFFF"
                 style={[{ marginRight: responsivePadding.sm * 2 }]}
               />
               <CustomText weight="bold" style={[twrnc`text-white`, { fontSize: responsiveFontSizes.lg }]}>
-                Challenge Activity
+                Activity Settings
               </CustomText>
             </View>
-            <View style={[twrnc`bg-[#2A2E3A] rounded-2xl p-5 items-center`]}>
-              <View style={[twrnc`flex-row items-center justify-center mb-3`]}>
-                <View
-                  style={[
-                    twrnc`rounded-2xl items-center justify-center mr-4`,
-                    {
-                      backgroundColor: currentActivity.color,
-                      width: responsiveSizes.iconXL * 2,
-                      height: responsiveSizes.iconXL * 2,
-                    },
-                  ]}
-                >
-                  <Image
-                    source={currentActivity.icon}
+            <View
+              style={[
+                twrnc`bg-[#2A2E3A] rounded-2xl shadow-sm overflow-hidden`,
+                { marginBottom: responsivePadding.base * 4 },
+              ]}
+            >
+              {isStrengthActivity ? (
+                <>
+                  <View style={[twrnc`border-b border-[#3A3F4B]`, { padding: responsivePadding.base * 4 }]}>
+                    <View style={twrnc`flex-row justify-between items-center`}>
+                      <View style={twrnc`flex-row items-center`}>
+                        <Ionicons
+                          name="fitness-outline"
+                          size={responsiveSizes.iconMedium}
+                          color="#FFFFFF"
+                          style={[{ marginRight: responsivePadding.sm * 3 }]}
+                        />
+                        <CustomText weight="medium" style={[twrnc`text-white`, { fontSize: responsiveFontSizes.base }]}>
+                          Rep Goal
+                        </CustomText>
+                      </View>
+                      <View style={twrnc`flex-row items-center`}>
+                        <TextInput
+                          style={[
+                            twrnc`text-white bg-[#3A3F4B] rounded-l text-right`,
+                            {
+                              fontSize: responsiveFontSizes.base,
+                              paddingHorizontal: responsivePadding.sm * 3,
+                              paddingVertical: responsivePadding.sm * 2,
+                              width: isSmallDevice ? 60 : 64,
+                            },
+                          ]}
+                          value={repGoal.toString()}
+                          onChangeText={handleRepGoalChange}
+                          keyboardType="numeric"
+                          placeholder="20"
+                          placeholderTextColor="#888"
+                        />
+                        <View
+                          style={[
+                            twrnc`bg-[#3A3F4B] rounded-r`,
+                            {
+                              paddingHorizontal: responsivePadding.sm * 2,
+                              paddingVertical: responsivePadding.sm * 2,
+                            },
+                          ]}
+                        >
+                          <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.sm }]}>
+                            reps
+                          </CustomText>
+                        </View>
+                      </View>
+                    </View>
+                    <CustomText
+                      style={[
+                        twrnc`text-gray-400`,
+                        {
+                          fontSize: responsiveFontSizes.xs,
+                          marginTop: responsivePadding.sm * 2,
+                          marginLeft: responsivePadding.xl * 8,
+                        },
+                      ]}
+                    >
+                      Set a target number of repetitions
+                    </CustomText>
+                  </View>
+                </>
+              ) : (
+                <>
+                  <View style={[twrnc`border-b border-[#3A3F4B]`, { padding: responsivePadding.base * 4 }]}>
+                    <View style={twrnc`flex-row justify-between items-center`}>
+                      <View style={twrnc`flex-row items-center`}>
+                        <Ionicons
+                          name="map-outline"
+                          size={responsiveSizes.iconMedium}
+                          color="#FFFFFF"
+                          style={[{ marginRight: responsivePadding.sm * 3 }]}
+                        />
+                        <CustomText weight="medium" style={[twrnc`text-white`, { fontSize: responsiveFontSizes.base }]}>
+                          Target Distance
+                        </CustomText>
+                      </View>
+                      <View style={twrnc`flex-row items-center`}>
+                        <TextInput
+                          style={[
+                            twrnc`text-white bg-[#3A3F4B] rounded-l text-right`,
+                            {
+                              fontSize: responsiveFontSizes.base,
+                              paddingHorizontal: responsivePadding.sm * 3,
+                              paddingVertical: responsivePadding.sm * 2,
+                              width: isSmallDevice ? 60 : 64,
+                            },
+                          ]}
+                          value={distance}
+                          onChangeText={handleDistanceChange}
+                          keyboardType="numeric"
+                          placeholder="0.00"
+                          placeholderTextColor="#888"
+                        />
+                        <View
+                          style={[
+                            twrnc`bg-[#3A3F4B] rounded-r`,
+                            {
+                              paddingHorizontal: responsivePadding.sm * 2,
+                              paddingVertical: responsivePadding.sm * 2,
+                            },
+                          ]}
+                        >
+                          <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.sm }]}>
+                            km
+                          </CustomText>
+                        </View>
+                      </View>
+                    </View>
+                  </View>
+
+                  <View style={[twrnc`border-b border-[#3A3F4B]`, { padding: responsivePadding.base * 4 }]}>
+                    <View
+                      style={[twrnc`flex-row justify-between items-center`, { marginBottom: responsivePadding.sm * 3 }]}
+                    >
+                      <View style={twrnc`flex-row items-center`}>
+                        <Ionicons
+                          name="time-outline"
+                          size={responsiveSizes.iconMedium}
+                          color="#FFFFFF"
+                          style={[{ marginRight: responsivePadding.sm * 3 }]}
+                        />
+                        <CustomText weight="medium" style={[twrnc`text-white`, { fontSize: responsiveFontSizes.base }]}>
+                          Target Duration
+                        </CustomText>
+                      </View>
+                    </View>
+                    <View style={[twrnc`flex-row flex-wrap justify-between`, { marginLeft: responsivePadding.xl * 8 }]}>
+                      {[10, 20, 30, 45, 60, 90].map((mins) => (
+                        <TouchableOpacity
+                          key={mins}
+                          style={[
+                            twrnc`items-center rounded-lg`,
+                            {
+                              width: isSmallDevice ? "48%" : "30%",
+                              marginBottom: responsivePadding.sm * 3,
+                              paddingVertical: responsivePadding.sm * 2,
+                              backgroundColor: time === String(mins) ? currentActivity.color : "#3A3F4B", // Compare with string
+                            },
+                          ]}
+                          onPress={() => setTime(String(mins))} // Set as string
+                        >
+                          <CustomText style={[twrnc`text-white`, { fontSize: responsiveFontSizes.sm }]}>
+                            {mins} min
+                          </CustomText>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+
+                  <View style={[twrnc`border-b border-[#3A3F4B]`, { padding: responsivePadding.base * 4 }]}>
+                    <View style={twrnc`flex-row justify-between items-center`}>
+                      <View style={twrnc`flex-row items-center`}>
+                        <Ionicons
+                          name="location-outline"
+                          size={responsiveSizes.iconMedium}
+                          color="#FFFFFF"
+                          style={[{ marginRight: responsivePadding.sm * 3 }]}
+                        />
+                        <View>
+                          <CustomText
+                            weight="medium"
+                            style={[twrnc`text-white`, { fontSize: responsiveFontSizes.base }]}
+                          >
+                            GPS Tracking
+                          </CustomText>
+                          <CustomText
+                            style={[
+                              twrnc`text-gray-400`,
+                              { fontSize: responsiveFontSizes.xs, marginTop: responsivePadding.xs },
+                            ]}
+                          >
+                            Required for accurate tracking
+                          </CustomText>
+                        </View>
+                      </View>
+                      <Switch
+                        trackColor={{ false: "#3A3F4B", true: "#4361EE" }}
+                        thumbColor="#FFFFFF"
+                        ios_backgroundColor="#3A3F4B"
+                        onValueChange={setGpsEnabled}
+                        value={gpsEnabled}
+                      />
+                    </View>
+                  </View>
+                </>
+              )}
+
+              <View style={[{ padding: responsivePadding.base * 4 }]}>
+                <View style={twrnc`flex-row justify-between items-center`}>
+                  <View style={twrnc`flex-row items-center`}>
+                    <Ionicons
+                      name="flame-outline"
+                      size={responsiveSizes.iconMedium}
+                      color="#FFFFFF"
+                      style={[{ marginRight: responsivePadding.sm * 3 }]}
+                    />
+                    <CustomText weight="medium" style={[twrnc`text-white`, { fontSize: responsiveFontSizes.base }]}>
+                      Estimated Calories
+                    </CustomText>
+                  </View>
+                  <View
                     style={[
+                      twrnc`bg-[#FFC107] rounded`,
                       {
-                        tintColor: currentActivity.iconColor,
-                        width: responsiveSizes.iconXL,
-                        height: responsiveSizes.iconXL,
+                        paddingHorizontal: responsivePadding.sm * 3,
+                        paddingVertical: responsivePadding.xs,
                       },
                     ]}
-                    resizeMode="contain"
-                  />
-                </View>
-                <View style={twrnc`flex-1`}>
-                  <CustomText weight="bold" style={[twrnc`text-white`, { fontSize: responsiveFontSizes.lg }]}>
-                    {currentActivity.name}
-                  </CustomText>
-                  <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.sm }]}>
-                    Required for {activeQuest?.title}
-                  </CustomText>
+                  >
+                    <CustomText weight="semibold" style={[twrnc`text-[#121826]`, { fontSize: responsiveFontSizes.sm }]}>
+                      {calories} kcal
+                    </CustomText>
+                  </View>
                 </View>
               </View>
-              <CustomText style={[twrnc`text-gray-400 text-center`, { fontSize: responsiveFontSizes.sm }]}>
-                Activity selection is locked for this challenge
-              </CustomText>
             </View>
           </View>
         )}

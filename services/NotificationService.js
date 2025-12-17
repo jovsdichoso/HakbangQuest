@@ -1,7 +1,6 @@
 import * as Notifications from "expo-notifications"
 import * as Device from "expo-device"
 import { Platform } from "react-native"
-import AsyncStorage from "@react-native-async-storage/async-storage"
 import { db, auth } from "../firebaseConfig"
 import {
   doc,
@@ -9,7 +8,6 @@ import {
   addDoc,
   updateDoc,
   serverTimestamp,
-  getDoc,
   getDocs,
   query,
   where,
@@ -21,6 +19,23 @@ import {
   deleteDoc,
 } from "firebase/firestore"
 import { startAfter } from "firebase/firestore"
+
+const removeUndefined = (obj) => {
+  if (obj === null || obj === undefined) return null
+  if (Array.isArray(obj)) {
+    return obj.map(removeUndefined).filter((v) => v !== undefined)
+  }
+  if (typeof obj === "object") {
+    return Object.entries(obj).reduce((acc, [key, value]) => {
+      const cleaned = removeUndefined(value)
+      if (cleaned !== undefined) {
+        acc[key] = cleaned
+      }
+      return acc
+    }, {})
+  }
+  return obj
+}
 
 class NotificationService {
   static instance = null
@@ -51,8 +66,8 @@ class NotificationService {
           const { data } = notification.request.content
 
           return {
-            shouldShowBanner: true,  
-            shouldShowList: true,   
+            shouldShowBanner: true,
+            shouldShowList: true,
             shouldShowAlert: true,
             shouldPlaySound: true,
             shouldSetBadge: true,
@@ -337,12 +352,12 @@ class NotificationService {
       return null
     }
   }
+
+  // Challenge Invitation Notifications
   static async sendChallengeInvitationNotification(toUserId, fromUserData, challengeData) {
     try {
-      // Create detailed challenge message based on challenge type
       let challengeMessage = `${fromUserData.username || fromUserData.displayName || "Someone"} invited you to join "${challengeData.title}"`
 
-      // Add challenge details if available
       if (challengeData.goal && challengeData.unit) {
         challengeMessage += ` - Complete ${challengeData.goal} ${challengeData.unit}`
       }
@@ -362,7 +377,7 @@ class NotificationService {
         fromUserId: fromUserData.id,
         fromUserName: fromUserData.username || fromUserData.displayName,
         fromUserAvatar: fromUserData.avatar,
-        actionData: {
+        actionData: removeUndefined({
           challengeId: challengeData.id,
           challengeTitle: challengeData.title,
           challengeType: challengeData.type,
@@ -373,7 +388,7 @@ class NotificationService {
           navigateTo: "community",
           tab: "challenges",
           fromUserId: fromUserData.id,
-        },
+        }),
         priority: "normal",
       }
 
@@ -383,6 +398,7 @@ class NotificationService {
       return null
     }
   }
+
 
   // Activity Achievement Notifications
   static async sendActivityAchievementNotification(userId, achievementData) {
@@ -865,55 +881,80 @@ class NotificationService {
       console.error("❌ Error during cleanup:", error)
     }
   }
-  // Challenge Progress Notifications
-  static async sendChallengeProgressNotification(userId, challengeData, progressData) {
-    try {
-      const progressPercentage = Math.round((progressData.current / progressData.goal) * 100)
 
-      const notificationData = {
-        type: "challengeProgress",
-        title: "Challenge Progress Update 📈",
-        message: `You're ${progressPercentage}% complete with "${challengeData.title}"! Keep going!`,
-        actionData: {
-          challengeId: challengeData.id,
-          challengeTitle: challengeData.title,
-          progress: progressPercentage,
-          navigateTo: "community",
-          tab: "challenges",
-        },
-        priority: "low",
+  static async createNotification(userId, notificationData) {
+    try {
+      if (!userId || !notificationData) {
+        throw new Error("User ID and notification data are required")
       }
 
-      return await this.createNotification(userId, notificationData)
+      const notificationRef = collection(db, "notifications")
+      const notification = {
+        userId: userId,
+        type: notificationData.type || "general",
+        title: notificationData.title || "Notification",
+        message: notificationData.message || "",
+        read: false,
+        createdAt: serverTimestamp(),
+        actionData: removeUndefined(notificationData.actionData || {}),
+        priority: notificationData.priority || "normal",
+        fromUserId: notificationData.fromUserId || null,
+        fromUserName: notificationData.fromUserName || null,
+        fromUserAvatar: notificationData.fromUserAvatar || null,
+      }
+
+      const docRef = await addDoc(notificationRef, notification)
+
+      // Queue for push notification
+      this.notificationQueue.push({
+        userId: userId,
+        data: notificationData,
+      })
+
+      if (!this.isProcessingQueue) {
+        this.processNotificationQueue()
+      }
+
+      await this.updateBadgeCount()
+
+      console.log(`✅ Notification created: ${docRef.id}`)
+      return docRef.id
     } catch (error) {
-      console.error("❌ Error sending challenge progress notification:", error)
+      console.error("❌ Error creating notification:", error)
       return null
     }
   }
 
-  // Challenge Completion Notifications
-  static async sendChallengeCompletionNotification(userId, challengeData, completionData) {
+  static async sendPushNotification(userId, notificationData) {
     try {
-      const notificationData = {
-        type: "challengeComplete",
-        title: "Challenge Completed! 🎉",
-        message: `Congratulations! You've completed "${challengeData.title}" and earned ${completionData.xpEarned || 0} XP!`,
-        actionData: {
-          challengeId: challengeData.id,
-          challengeTitle: challengeData.title,
-          xpEarned: completionData.xpEarned,
-          navigateTo: "community",
-          tab: "challenges",
-        },
-        priority: "high",
+      const currentUser = auth.currentUser
+      if (!currentUser) return false
+
+      // Only show local notification if the current device is the recipient
+      if (currentUser.uid !== userId) {
+        console.log(`📭 Skipping local notification: not recipient (to ${userId})`)
+        return false
       }
 
-      return await this.createNotification(userId, notificationData)
+      console.log(`📱 Sending push notification to user ${userId}:`, notificationData)
+
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: notificationData.title,
+          body: notificationData.message,
+          sound: true,
+          data: notificationData.actionData || {},
+        },
+        trigger: null,
+      })
+
+      return true
     } catch (error) {
-      console.error("❌ Error sending challenge completion notification:", error)
-      return null
+      console.error("❌ Error sending push notification:", error)
+      return false
     }
   }
+
 }
 
 export default NotificationService

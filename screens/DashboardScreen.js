@@ -1,5 +1,5 @@
-"use client";
-import { useState, useEffect, useCallback, useMemo } from "react";
+"use client"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import {
   View,
   TouchableOpacity,
@@ -10,34 +10,36 @@ import {
   Dimensions,
   StyleSheet,
   Pressable,
-} from "react-native";
-import MapView, { Polyline, PROVIDER_GOOGLE } from "react-native-maps";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import twrnc from "twrnc";
-import CustomText from "../components/CustomText";
-import { Ionicons } from "@expo/vector-icons";
-import * as Location from "expo-location";
-import { getDocs, collection, query, where } from "firebase/firestore";
-import { db, auth } from "../firebaseConfig";
-import { formatTime } from "../utils/activityUtils";
+} from "react-native"
+
+import MapView, { Polyline, PROVIDER_GOOGLE } from "react-native-maps"
+import AsyncStorage from "@react-native-async-storage/async-storage"
+import twrnc from "twrnc"
+import CustomText from "../components/CustomText"
+import { Ionicons } from "@expo/vector-icons"
+import * as Location from "expo-location"
+import { getDocs, collection, query, where, onSnapshot, doc } from "firebase/firestore"
+import { db, auth } from "../firebaseConfig"
+import { formatTime, unifyUnits} from "../utils/activityUtils"
+import { QuestProgressManager } from "../utils/QuestProgressManager"
 
 // Badge System Imports - Keep imports, but remove usage on dashboard
-import { getUserQuestHistory, completeQuest } from "./BadgeSystem";
-import { BadgeModal, BadgeNotification, AllBadgesModal } from "../components/BadgeComponents";
+import { getUserQuestHistory } from "./BadgeSystem"
+import { BadgeModal, BadgeNotification, AllBadgesModal } from "../components/BadgeComponents"
 
-const { width } = Dimensions.get("window");
+const { width } = Dimensions.get("window")
 
 // Helper function to safely parse JSON
 const safeParseJSON = (str, defaultValue = {}) => {
   try {
-    return str ? JSON.parse(str) : defaultValue;
+    return str ? JSON.parse(str) : defaultValue
   } catch (error) {
-    console.error("JSON parse error:", error.message);
-    return defaultValue;
+    console.error("JSON parse error:", error.message)
+    return defaultValue
   }
-};
+}
 const formatDate = (date = new Date()) => {
-  const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
   const months = [
     "January",
     "February",
@@ -51,12 +53,12 @@ const formatDate = (date = new Date()) => {
     "October",
     "November",
     "December",
-  ];
-  const dayName = days[date.getDay()];
-  const day = date.getDate();
-  const month = months[date.getMonth()];
-  return `${dayName}, ${day} ${month}`;
-};
+  ]
+  const dayName = days[date.getDay()]
+  const day = date.getDate()
+  const month = months[date.getMonth()]
+  return `${dayName}, ${day} ${month}`
+}
 
 const calculateMapRegion = (coordinates) => {
   if (!Array.isArray(coordinates) || coordinates.length === 0) {
@@ -65,12 +67,10 @@ const calculateMapRegion = (coordinates) => {
       longitude: 0,
       latitudeDelta: 0.005,
       longitudeDelta: 0.005,
-    };
+    }
   }
-  const latitudes = coordinates.map((coord) => coord.latitude).filter((lat) => typeof lat === "number" && !isNaN(lat));
-  const longitudes = coordinates
-    .map((coord) => coord.longitude)
-    .filter((lon) => typeof lon === "number" && !isNaN(lon));
+  const latitudes = coordinates.map((coord) => coord.latitude).filter((lat) => typeof lat === "number" && !isNaN(lat))
+  const longitudes = coordinates.map((coord) => coord.longitude).filter((lon) => typeof lon === "number" && !isNaN(lon))
 
   if (latitudes.length === 0 || longitudes.length === 0) {
     return {
@@ -78,77 +78,77 @@ const calculateMapRegion = (coordinates) => {
       longitude: 0,
       latitudeDelta: 0.005,
       longitudeDelta: 0.005,
-    };
+    }
   }
 
-  const minLat = Math.min(...latitudes);
-  const maxLat = Math.max(...latitudes);
-  const minLon = Math.min(...longitudes);
-  const maxLon = Math.max(...longitudes);
+  const minLat = Math.min(...latitudes)
+  const maxLat = Math.max(...latitudes)
+  const minLon = Math.min(...longitudes)
+  const maxLon = Math.max(...longitudes)
 
-  const latitude = (minLat + maxLat) / 2;
-  const longitude = (minLon + maxLon) / 2;
+  const latitude = (minLat + maxLat) / 2
+  const longitude = (minLon + maxLon) / 2
 
-  const latitudeDelta = (maxLat - minLat) * 1.5 || 0.005;
-  const longitudeDelta = (maxLon - minLon) * 1.5 || 0.005;
+  const latitudeDelta = (maxLat - minLat) * 1.5 || 0.005
+  const longitudeDelta = (maxLon - minLon) * 1.5 || 0.005
 
-  return { latitude, longitude, latitudeDelta, longitudeDelta };
-};
+  return { latitude, longitude, latitudeDelta, longitudeDelta }
+}
 
 const getWeekDates = () => {
-  const today = new Date();
-  const dayOfWeek = today.getDay();
-  const startOfWeek = new Date(today);
-  startOfWeek.setDate(today.getDate() - dayOfWeek);
+  const today = new Date()
+  const dayOfWeek = today.getDay()
+  const startOfWeek = new Date(today)
+  startOfWeek.setDate(today.getDate() - dayOfWeek)
 
-  const weekDates = [];
+  const weekDates = []
   for (let i = 0; i < 7; i++) {
-    const date = new Date(startOfWeek);
-    date.setDate(startOfWeek.getDate() + i);
+    const date = new Date(startOfWeek)
+    date.setDate(startOfWeek.getDate() + i)
     weekDates.push({
       day: date.getDate(),
       isToday: date.toDateString() === today.toDateString(),
       date: date,
-    });
+    })
   }
-  return weekDates;
-};
+  return weekDates
+}
 
 // Enhanced function to get month calendar data
 const getMonthCalendar = (year, month) => {
-  const today = new Date();
-  const firstDayOfMonth = new Date(year, month, 1);
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const today = new Date()
+  const firstDayOfMonth = new Date(year, month, 1)
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
 
-  const firstDayWeekday = firstDayOfMonth.getDay(); // 0 = Sunday, 6 = Saturday
+  const firstDayWeekday = firstDayOfMonth.getDay() // 0 = Sunday, 6 = Saturday
 
-  const calendarDays = [];
+  const calendarDays = []
 
   // Add empty slots for days before the 1st of the month
   for (let i = 0; i < firstDayWeekday; i++) {
-    calendarDays.push({ day: null, isCurrentMonth: false, date: null });
+    calendarDays.push({ day: null, isCurrentMonth: false, date: null })
   }
 
   // Add days of the current month
   for (let day = 1; day <= daysInMonth; day++) {
-    const date = new Date(year, month, day);
+    const date = new Date(year, month, day)
     calendarDays.push({
       day: day,
       isToday: date.toDateString() === today.toDateString(),
       isCurrentMonth: true,
       date: date,
-    });
+    })
   }
 
   // Fill remaining slots in the grid (if needed)
-  const remainingSlots = 42 - calendarDays.length; // 6 rows x 7 columns = 42
+  const remainingSlots = 42 - calendarDays.length // 6 rows x 7 columns = 42
   if (remainingSlots > 0 && remainingSlots < 7) {
     for (let i = 1; i <= remainingSlots; i++) {
-      calendarDays.push({ day: i, isCurrentMonth: false, date: new Date(year, month + 1, i) });
+      calendarDays.push({ day: i, isCurrentMonth: false, date: new Date(year, month + 1, i) })
     }
   }
-  return calendarDays;
-};
+  return calendarDays
+}
 
 // Get month name and year for display
 const getMonthYearString = (date) => {
@@ -165,9 +165,9 @@ const getMonthYearString = (date) => {
     "October",
     "November",
     "December",
-  ];
-  return `${months[date.getMonth()]} ${date.getFullYear()}`;
-};
+  ]
+  return `${months[date.getMonth()]} ${date.getFullYear()}`
+}
 
 // Enhanced Dynamic Quest Generator with distance-based quests
 const generateDynamicQuests = (userStats, userLevel = 1, preferences = {}) => {
@@ -244,28 +244,31 @@ const generateDynamicQuests = (userStats, userLevel = 1, preferences = {}) => {
       category: "flexibility",
       activityType: "yoga",
     },
-  ];
+  ]
   // Add level-based multipliers
-  const levelMultiplier = 1 + (userLevel - 1) * 0.1;
+  const levelMultiplier = 1 + (userLevel - 1) * 0.1
   return baseQuests.map((quest) => ({
     ...quest,
     goal: Math.round(quest.goal * levelMultiplier * 100) / 100, // Keep 2 decimal places for distance
     xpReward: Math.round(quest.xpReward * levelMultiplier),
     createdAt: new Date(),
     expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours from now
-  }));
-};
+  }))
+}
 
 // Enhanced function to get activity display info based on type
 const getActivityDisplayInfo = (activity) => {
-  const activityType = activity.activityType || "unknown";
+  const activityType = activity.activityType || "unknown"
 
   // Distance-based activities
   if (["walking", "running", "jogging", "cycling"].includes(activityType)) {
+    // ✅ Convert meters → km before displaying
+    const distanceKm = activity.distance ? (Number(activity.distance) / 1000).toFixed(2) : "0.00"
+
     return {
       primaryMetric: {
         label: "Distance",
-        value: activity.distance ? `${Number.parseFloat(activity.distance).toFixed(2)} km` : "0 km",
+        value: `${distanceKm} km`,
         icon: "map-outline",
         color: "#06D6A0",
       },
@@ -294,7 +297,7 @@ const getActivityDisplayInfo = (activity) => {
         icon: "speedometer-outline",
         color: "#4361EE",
       },
-    };
+    }
   }
 
   // Strength-based activities
@@ -331,7 +334,7 @@ const getActivityDisplayInfo = (activity) => {
         icon: "stopwatch-outline",
         color: "#4361EE",
       },
-    };
+    }
   }
 
   // Flexibility/Yoga activities
@@ -359,7 +362,7 @@ const getActivityDisplayInfo = (activity) => {
         icon: "pulse-outline",
         color: "#4361EE",
       },
-    };
+    }
   }
 
   // Default fallback for unknown activity types
@@ -386,15 +389,15 @@ const getActivityDisplayInfo = (activity) => {
       icon: "checkmark-circle-outline",
       color: "#4361EE",
     },
-  };
-};
+  }
+}
 
 const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
   // Get responsive dimensions
-  const { width, height } = Dimensions.get("window");
-  const isSmallDevice = width < 375; // iPhone SE and similar small Android devices
-  const isMediumDevice = width >= 375 && width < 414; // Standard phones
-  const isLargeDevice = width >= 414; // Large phones
+  const { width, height } = Dimensions.get("window")
+  const isSmallDevice = width < 375 // iPhone SE and similar small Android devices
+  const isMediumDevice = width >= 375 && width < 414 // Standard phones
+  const isLargeDevice = width >= 414 // Large phones
 
   // Responsive font sizes
   const responsiveFontSizes = {
@@ -404,13 +407,13 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
     lg: isSmallDevice ? 16 : isMediumDevice ? 18 : 20,
     xl: isSmallDevice ? 18 : isMediumDevice ? 20 : 22,
     "2xl": isSmallDevice ? 20 : isMediumDevice ? 22 : 24,
-  };
+  }
 
   // Responsive padding/margin
   const responsivePadding = {
     base: isSmallDevice ? 3 : isMediumDevice ? 4 : 5,
     lg: isSmallDevice ? 4 : isMediumDevice ? 5 : 6,
-  };
+  }
 
   const [activityData, setActivityData] = useState({
     coordinates: [],
@@ -419,13 +422,13 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
     steps: 0,
     activityType: "walking",
     stats: { pace: "0:00/km", avgSpeed: "0 km/h" },
-  });
-  const [userLocation, setUserLocation] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  })
+  const [userLocation, setUserLocation] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
   // Dynamic Quest States
-  const [dynamicQuests, setDynamicQuests] = useState([]);
+  const [dynamicQuests, setDynamicQuests] = useState([])
   const [userStats, setUserStats] = useState({
     avgDailySteps: userData.avgDailySteps || 5000,
     avgDailyDistance: userData.avgDailyDistance || 2.5, // in kilometers
@@ -433,57 +436,97 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
     avgDailyReps: userData.avgDailyReps || 20, // Added for strength quests
     level: userData.level || 1,
     totalXP: userData.totalXP || 0,
-  });
-  const [questLoading, setQuestLoading] = useState(true);
-  const [weeklyProgress, setWeeklyProgress] = useState([]);
-  const [monthlyProgress, setMonthlyProgress] = useState([]);
-  const [isQuestModalVisible, setIsQuestModalVisible] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [isDateActivitiesModalVisible, setIsDateActivitiesModalVisible] = useState(false);
-  const [dateActivities, setDateActivities] = useState([]);
-  const [questHistory, setQuestHistory] = useState([]);
+  })
+  const [questLoading, setQuestLoading] = useState(true)
+  const [weeklyProgress, setWeeklyProgress] = useState([])
+  const [monthlyProgress, setMonthlyProgress] = useState([])
+  const [isQuestModalVisible, setIsQuestModalVisible] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [isDateActivitiesModalVisible, setIsDateActivitiesModalVisible] = useState(false)
+  const [dateActivities, setDateActivities] = useState([])
+  const [questHistory, setQuestHistory] = useState([])
   // const [isAllBadgesModalVisible, setIsAllBadgesModalVisible] = useState(false);
 
+  const [periodStats, setPeriodStats] = useState({
+    avgDailySteps: 0,
+    avgDailyDistance: 0,
+    avgActiveDuration: 0,
+    avgDailyReps: 0,
+  })
+
+  // Normalize Firestore timestamp or JS Date to a JS Date
+  const toJsDate = (t) => (t?.toDate ? t.toDate() : t instanceof Date ? t : t ? new Date(t) : null)
+
+  const startOfDay = (d) => {
+    const x = new Date(d)
+    x.setHours(0, 0, 0, 0)
+    return x
+  }
+  const endOfDay = (d) => {
+    const x = new Date(d)
+    x.setHours(23, 59, 59, 999)
+    return x
+  }
+
+  // Convert a distance that may be meters or km to kilometers for display
+  const toKm = (val) => {
+    const n = typeof val === "string" ? Number.parseFloat(val) : typeof val === "number" ? val : 0
+    if (!isFinite(n)) return 0
+    return n / 1000
+  }
+
+  const toSeconds = (duration) => {
+    if (typeof duration === "number") return isFinite(duration) ? duration : 0
+    if (typeof duration === "string") {
+      const parts = duration.split(":").map((p) => Number.parseInt(p, 10) || 0)
+      if (parts.length === 3) return parts * 3600 + parts[1] * 60 + parts[2]
+      if (parts.length === 2) return parts * 60 + parts[1]
+    }
+    return 0
+  }
+
+  const formatKm = (km) => `${(km || 0).toFixed(2)} km`
+
   // Time period dropdown state - KEPT FOR DATA AGGREGATION
-  const [timePeriod, setTimePeriod] = useState("week"); // 'week' or 'month'
-  const [isTimeDropdownVisible, setIsTimeDropdownVisible] = useState(false);
+  const [timePeriod, setTimePeriod] = useState("week") // 'week' or 'month'
+  const [isTimeDropdownVisible, setIsTimeDropdownVisible] = useState(false)
 
   // New state for activity details modal
-  const [isActivityModalVisible, setIsActivityModalVisible] = useState(false);
-  const [selectedActivity, setSelectedActivity] = useState(null);
+  const [isActivityModalVisible, setIsActivityModalVisible] = useState(false)
+  const [selectedActivity, setSelectedActivity] = useState(null)
 
   // Calendar State for month navigation
-  const [currentMonthDate, setCurrentMonthDate] = useState(new Date()); // For month navigation
-  const [selectedCalendarDate, setSelectedCalendarDate] = useState(new Date()); // For highlighting selected day
+  const [currentMonthDate, setCurrentMonthDate] = useState(new Date()) // For month navigation
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(new Date()) // For highlighting selected day
 
-  const weekDates = useMemo(() => getWeekDates(), []);
+  const weekDates = useMemo(() => getWeekDates(), [])
   const monthCalendar = useMemo(
     () => getMonthCalendar(currentMonthDate.getFullYear(), currentMonthDate.getMonth()),
     [currentMonthDate],
-  );
+  )
 
   // Initialize user data from AsyncStorage
   const initializeUserData = useCallback(async () => {
-    try {
-      const defaultUserStats = {
-        avgDailySteps: 5000,
-        avgDailyDistance: 2.5,
-        avgActiveDuration: 45,
-        avgDailyReps: 20,
-        level: 1,
-        totalXP: 0,
-      };
+    const defaultUserStats = {
+      avgDailySteps: 5000,
+      avgDailyDistance: 2.5,
+      avgActiveDuration: 45,
+      avgDailyReps: 20,
+      level: 1,
+      totalXP: 0,
+    }
 
-      const storedUserData = await AsyncStorage.getItem("userData");
-      const storedSession = await AsyncStorage.getItem("userSession");
-      const userDataParsed = safeParseJSON(storedUserData, defaultUserStats);
-      const sessionData = safeParseJSON(storedSession, null);
+    try {
+      const storedUserData = await AsyncStorage.getItem("userData")
+      const storedSession = await AsyncStorage.getItem("userSession")
+      const userDataParsed = safeParseJSON(storedUserData, defaultUserStats)
+      const sessionData = safeParseJSON(storedSession, null)
 
       // Check if session is valid and matches current user
       const isValidSession =
         sessionData?.uid &&
         sessionData.emailVerified &&
-        (auth.currentUser ? auth.currentUser.uid === sessionData.uid : true);
+        (auth.currentUser ? auth.currentUser.uid === sessionData.uid : true)
 
       if (isValidSession) {
         setUserStats({
@@ -493,45 +536,60 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
           avgDailyReps: userDataParsed.avgDailyReps || defaultUserStats.avgDailyReps,
           level: userDataParsed.level || defaultUserStats.level,
           totalXP: userDataParsed.totalXP || defaultUserStats.totalXP,
-        });
-        return { isValidSession: true, userData: { ...userDataParsed, uid: sessionData.uid, email: sessionData.email } };
+        })
+        return { isValidSession: true, userData: { ...userDataParsed, uid: sessionData.uid, email: sessionData.email } }
       } else {
-        setError("No valid user session found. Please sign in.");
-        setLoading(false);
-        return { isValidSession: false, userData: defaultUserStats };
+        setError("No valid user session found. Please sign in.")
+        setLoading(false)
+        return { isValidSession: false, userData: defaultUserStats }
       }
     } catch (error) {
-      console.error("Error initializing user data:", error.message);
-      setError("Failed to load user data. Please try again.");
-      setLoading(false);
-      return { isValidSession: false, userData: defaultUserStats };
+      console.error("Error initializing user data:", error.message)
+      setError("Failed to load user data. Please try again.")
+      setLoading(false)
+      return { isValidSession: false, userData: defaultUserStats }
     }
-  }, []);
-
+  }, [])
 
   useEffect(() => {
     const getUserLocation = async () => {
       try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
+        const { status } = await Location.requestForegroundPermissionsAsync()
         if (status !== "granted") {
-          setError("Permission to access location was denied");
-          console.warn("Location permission denied");
-          return;
+          setError("Permission to access location was denied")
+          console.warn("Location permission denied")
+          return
         }
         const location = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Balanced,
           timeInterval: 10000,
           distanceInterval: 10,
-        });
-        setUserLocation(location.coords);
+        })
+        setUserLocation(location.coords)
       } catch (err) {
-        console.error("Location error:", err.message);
-        setError("Failed to get location. Please ensure location services are enabled.");
+        console.error("Location error:", err.message)
+        setError("Failed to get location. Please ensure location services are enabled.")
       }
-    };
-    getUserLocation();
-    initializeUserData();
-  }, [initializeUserData]);
+    }
+    getUserLocation()
+    initializeUserData()
+  }, [initializeUserData])
+
+  // Add this useEffect to sync userStats with userData prop
+  useEffect(() => {
+    if (userData && (userData.level || userData.totalXP)) {
+      setUserStats(prevStats => ({
+        ...prevStats,
+        avgDailySteps: userData.avgDailySteps || prevStats.avgDailySteps,
+        avgDailyDistance: userData.avgDailyDistance || prevStats.avgDailyDistance,
+        avgActiveDuration: userData.avgActiveDuration || prevStats.avgActiveDuration,
+        avgDailyReps: userData.avgDailyReps || prevStats.avgDailyReps,
+        level: userData.level || prevStats.level,
+        totalXP: userData.totalXP || prevStats.totalXP,
+      }));
+    }
+  }, [userData]); // Re-run when userData prop changes
+
 
   // Enhanced Calculate user statistics from historical data
   const calculateUserStats = (activitiesData) => {
@@ -543,29 +601,29 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
         avgDailyReps: 20, // Default for strength activities
         level: 1,
         totalXP: 0,
-      };
+      }
     }
 
-    const totalSteps = activitiesData.reduce((sum, act) => sum + (Number(act.steps) || 0), 0);
-    const totalDistance = activitiesData.reduce((sum, act) => sum + (Number(act.distance) || 0), 0); // in kilometers
-    const totalDuration = activitiesData.reduce((sum, act) => sum + (Number(act.duration) || 0), 0);
-    const totalReps = activitiesData.reduce((sum, act) => sum + (Number(act.reps) || 0), 0); // Added reps calculation
+    const totalSteps = activitiesData.reduce((sum, act) => sum + (Number(act.steps) || 0), 0)
+    const totalDistance = activitiesData.reduce((sum, act) => sum + (Number(act.distance) || 0), 0) // in kilometers
+    const totalDuration = activitiesData.reduce((sum, act) => sum + (Number(act.duration) || 0), 0)
+    const totalReps = activitiesData.reduce((sum, act) => sum + (Number(act.reps) || 0), 0) // Added reps calculation
 
     // Get unique days to calculate daily averages
     const uniqueDays = new Set(
       activitiesData
         .map((act) => (act.createdAt?.toDate ? act.createdAt.toDate().toDateString() : new Date().toDateString()))
         .filter(Boolean),
-    ).size;
+    ).size
 
-    const avgDailySteps = Math.round(totalSteps / Math.max(uniqueDays, 1));
-    const avgDailyDistance = Number((totalDistance / Math.max(uniqueDays, 1)).toFixed(2)); // in kilometers
-    const avgActiveDuration = Math.round(totalDuration / Math.max(activitiesData.length, 1));
-    const avgDailyReps = Math.round(totalReps / Math.max(uniqueDays, 1)); // Added reps average
+    const avgDailySteps = Math.round(totalSteps / Math.max(uniqueDays, 1))
+    const avgDailyDistance = Number((totalDistance / Math.max(uniqueDays, 1)).toFixed(2)) // in kilometers
+    const avgActiveDuration = Math.round(totalDuration / Math.max(activitiesData.length, 1))
+    const avgDailyReps = Math.round(totalReps / Math.max(uniqueDays, 1)) // Added reps average
 
     // Calculate level based on total activities and performance
-    const level = Math.max(1, Math.floor(activitiesData.length / 10) + 1);
-    const totalXP = activitiesData.length * 25 + Math.floor(totalDistance * 10) + Math.floor(totalReps / 10) * 3;
+    const level = Math.max(1, Math.floor(activitiesData.length / 10) + 1)
+    const totalXP = activitiesData.length * 25 + Math.floor(totalDistance * 10) + Math.floor(totalReps / 10) * 3
 
     return {
       avgDailySteps,
@@ -574,83 +632,126 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
       avgDailyReps, // Added to return object
       level,
       totalXP,
-    };
-  };
+    }
+  }
 
   const fetchData = useCallback(async () => {
     try {
-      setLoading(true);
-      let user = auth.currentUser;
-      let sessionData = null;
+      setLoading(true)
+      const user = auth.currentUser
+      let sessionData = null
 
       // Check cached session if no active user
       if (!user) {
-        const storedSession = await AsyncStorage.getItem("userSession");
-        sessionData = safeParseJSON(storedSession, null);
+        const storedSession = await AsyncStorage.getItem("userSession")
+        sessionData = safeParseJSON(storedSession, null)
         if (!sessionData?.uid || !sessionData.emailVerified) {
-          setError("Please sign in to view activities");
-          setLoading(false);
-          setQuestLoading(false);
-          setRefreshing(false);
-          return;
+          setError("Please sign in to view activities")
+          setLoading(false)
+          setQuestLoading(false)
+          setRefreshing(false)
+          return
         }
       }
 
-      const userId = user ? user.uid : sessionData.uid;
+      const userId = user ? user.uid : sessionData.uid
 
       // Determine date range based on selected time period
-      let startDate, endDate;
+      let startDate, endDate
       if (timePeriod === "week") {
-        const weekDates = getWeekDates();
-        startDate = new Date(weekDates[0].date);
-        startDate.setHours(0, 0, 0, 0);
-        endDate = new Date(weekDates[6].date);
-        endDate.setHours(23, 59, 59, 999);
+        const weekDates = getWeekDates()
+        startDate = new Date(weekDates[0].date)
+        startDate.setHours(0, 0, 0, 0)
+        endDate = new Date(weekDates[6].date)
+        endDate.setHours(23, 59, 59, 999)
       } else {
-        const year = currentMonthDate.getFullYear();
-        const month = currentMonthDate.getMonth();
-        startDate = new Date(year, month, 1);
-        startDate.setHours(0, 0, 0, 0);
-        endDate = new Date(year, month + 1, 0);
-        // Remove `concentración` from here since it's not a valid parameter
-        endDate.setHours(23, 59, 59, 999);  // Corrected line
+        const year = currentMonthDate.getFullYear()
+        const month = currentMonthDate.getMonth()
+        startDate = new Date(year, month, 1)
+        startDate.setHours(0, 0, 0, 0)
+        endDate = new Date(year, month + 1, 0)
+        endDate.setHours(23, 59, 59, 999)
       }
 
-      const activitiesRef = collection(db, "activities");
+      const activitiesRef = collection(db, "activities")
       const activitiesQuery = query(
         activitiesRef,
         where("userId", "==", userId),
         where("createdAt", ">=", startDate),
         where("createdAt", "<=", endDate),
-      );
-      const activitiesSnapshot = await getDocs(activitiesQuery);
+      )
+      const activitiesSnapshot = await getDocs(activitiesQuery)
       const activitiesData = activitiesSnapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
-      }));
+      }))
 
       if (activitiesData.length > 0) {
-        const latestActivity = activitiesData.sort(
-          (a, b) => (b.createdAt?.toDate() || new Date()) - (a.createdAt?.toDate() || new Date())
-        )[0];
-        const formattedDistance = latestActivity.distance
-          ? `${Number.parseFloat(latestActivity.distance).toFixed(2)} km`
-          : "0 km";
-        const formattedDuration = latestActivity.duration ? formatTime(latestActivity.duration) : "0:00";
-        const formattedPace = latestActivity.pace ? formatTime(latestActivity.pace) + "/km" : "0:00/km";
+        // Sort to find the latest activity in the queried period
+        const sorted = [...activitiesData].sort(
+          (a, b) => (toJsDate(b.createdAt) || new Date()) - (toJsDate(a.createdAt) || new Date()),
+        )
+        const latestActivity = sorted[0] // newest activity
+
+        const toSeconds = (duration) => {
+          if (typeof duration === "number") return isFinite(duration) ? duration : 0
+          if (typeof duration === "string") {
+            const parts = duration.split(":").map((p) => Number.parseInt(p, 10) || 0)
+            if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
+            if (parts.length === 2) return parts[0] * 60 + parts[1]
+          }
+          return 0
+        }
+
+        // Compute TODAY totals
+        const now = new Date()
+        const todayStart = startOfDay(now)
+        const todayEnd = endOfDay(now)
+
+        const todaysActivities = activitiesData.filter((a) => {
+          const d = toJsDate(a.createdAt)
+          return d && d >= todayStart && d <= todayEnd
+        })
+
+        const todayTotals = todaysActivities.reduce(
+          (acc, a) => {
+            acc.distanceKm += toKm(a.distance || 0) // convert meters -> km
+            acc.durationSec += toSeconds(a.duration || 0)
+            return acc
+          },
+          { distanceKm: 0, durationSec: 0 },
+        )
+
+        // Format primary cards strictly for today
+        const formattedTodayDistance = formatKm(todayTotals.distanceKm)
+        const formattedTodayDuration = formatTime
+          ? formatTime(todayTotals.durationSec)
+          : `${Math.floor(todayTotals.durationSec / 60)
+            .toString()
+            .padStart(2, "0")}:${Math.floor(todayTotals.durationSec % 60)
+              .toString()
+              .padStart(2, "0")}`
+
+        // Preserve latest activity stats for the "Recent Activity" section
+        const formattedPace = latestActivity?.pace
+          ? (typeof latestActivity.pace === "number" ? formatTime(latestActivity.pace) : latestActivity.pace) + "/km"
+          : "0:00/km"
 
         setActivityData({
-          coordinates: Array.isArray(latestActivity.coordinates) ? latestActivity.coordinates : [],
-          distance: formattedDistance,
-          duration: formattedDuration,
-          steps: Number(latestActivity.steps) || 0,
-          activityType: latestActivity.activityType || "walking",
+          coordinates: Array.isArray(latestActivity?.coordinates) ? latestActivity.coordinates : [],
+          activityType: latestActivity?.activityType || "walking",
+          steps: Number(latestActivity?.steps) || 0,
           stats: {
             pace: formattedPace,
-            avgSpeed: latestActivity.avgSpeed ? `${Number.parseFloat(latestActivity.avgSpeed).toFixed(1)} km/h` : "0 km/h",
+            avgSpeed: latestActivity?.avgSpeed
+              ? `${Number.parseFloat(latestActivity.avgSpeed).toFixed(1)} km/h`
+              : "0 km/h",
           },
-        });
+          distance: formattedTodayDistance,
+          duration: formattedTodayDuration,
+        })
       } else {
+        // No data: cards show zero
         setActivityData({
           coordinates: [],
           distance: "0 km",
@@ -658,162 +759,204 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
           steps: 0,
           activityType: "walking",
           stats: { pace: "0:00/km", avgSpeed: "0 km/h" },
-        });
+        })
       }
 
       // Calculate user statistics and generate dynamic quests
-      const calculatedStats = calculateUserStats(activitiesData);
-      setUserStats(calculatedStats);
+      const calculatedStats = calculateUserStats(activitiesData)
 
-      // Generate dynamic quests based on user performance
-      const generatedQuests = generateDynamicQuests(calculatedStats, calculatedStats.level);
-      setDynamicQuests(generatedQuests);
+      setPeriodStats({
+        avgDailySteps: calculatedStats.avgDailySteps,
+        avgDailyDistance: calculatedStats.avgDailyDistance,
+        avgActiveDuration: calculatedStats.avgActiveDuration,
+        avgDailyReps: calculatedStats.avgDailyReps,
+      })
+
+      // Generate quests based on period averages but keep overall userStats intact
+      const generatedQuests = generateDynamicQuests(userStats, userStats.level)
+      setDynamicQuests(generatedQuests)
 
       // Load quest history
-      const userQuestHistory = await getUserQuestHistory(userId);
-      setQuestHistory(userQuestHistory);
+      const userQuestHistory = await getUserQuestHistory(userId)
+      setQuestHistory(userQuestHistory)
 
-      // Process weekly and monthly progress (unchanged from original)
-      const todayQuest = generatedQuests[0];
+      // Process weekly and monthly progress
+      const todayQuest = generatedQuests[0]
       if (todayQuest) {
         const weekProgress = weekDates.map(({ date }) => {
-          const startOfDay = new Date(date);
-          startOfDay.setHours(0, 0, 0, 0);
-          const endOfDay = new Date(date);
-          endOfDay.setHours(23, 59, 59, 999);
+          const startOfDay = new Date(date)
+          startOfDay.setHours(0, 0, 0, 0)
+          const endOfDay = new Date(date)
+          endOfDay.setHours(23, 59, 59, 999)
 
           const dayActivities = activitiesData.filter((act) => {
-            const actDate = act.createdAt?.toDate();
-            return actDate && actDate >= startOfDay && actDate <= endOfDay;
-          });
+            const actDate = act.createdAt?.toDate()
+            return actDate && actDate >= startOfDay && actDate <= endOfDay
+          })
 
-          let totalValue = 0;
+          let totalValue = 0
           if (todayQuest.unit === "steps") {
-            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.steps) || 0), 0);
+            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.steps) || 0), 0)
           } else if (todayQuest.unit === "distance") {
-            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.distance) || 0), 0);
+            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.distance) || 0) / 1000, 0) // ✅ convert meters→km
           } else if (todayQuest.unit === "duration") {
-            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.duration) || 0), 0);
+            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.duration) || 0), 0)
           } else if (todayQuest.unit === "reps") {
-            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.reps) || 0), 0);
+            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.reps) || 0), 0)
           }
 
-          const progress = todayQuest.goal ? Math.min(totalValue / todayQuest.goal, 1) : 0;
-          return { date, progress, completed: progress >= 1, activities: dayActivities };
-        });
-        setWeeklyProgress(weekProgress);
+          const progress = todayQuest.goal ? Math.min(totalValue / todayQuest.goal, 1) : 0
+          return { date, progress, completed: progress >= 1, activities: dayActivities }
+        })
+        setWeeklyProgress(weekProgress)
 
         const monthProgress = monthCalendar.map(({ date, isCurrentMonth }) => {
-          if (!date || !isCurrentMonth) return { date, progress: 0, completed: false, activities: [] };
+          if (!date || !isCurrentMonth) return { date, progress: 0, completed: false, activities: [] }
 
-          const startOfDay = new Date(date);
-          startOfDay.setHours(0, 0, 0, 0);
-          const endOfDay = new Date(date);
-          endOfDay.setHours(23, 59, 59, 999);
+          const startOfDay = new Date(date)
+          startOfDay.setHours(0, 0, 0, 0)
+          const endOfDay = new Date(date)
+          endOfDay.setHours(23, 59, 59, 999)
 
           const dayActivities = activitiesData.filter((act) => {
-            const actDate = act.createdAt?.toDate();
-            return actDate && actDate >= startOfDay && actDate <= endOfDay;
-          });
+            const actDate = act.createdAt?.toDate()
+            return actDate && actDate >= startOfDay && actDate <= endOfDay
+          })
 
-          let totalValue = 0;
+          let totalValue = 0
           if (todayQuest.unit === "steps") {
-            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.steps) || 0), 0);
+            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.steps) || 0), 0)
           } else if (todayQuest.unit === "distance") {
-            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.distance) || 0), 0);
+            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.distance) || 0) / 1000, 0) // ✅ convert meters→km
           } else if (todayQuest.unit === "duration") {
-            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.duration) || 0), 0);
+            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.duration) || 0), 0)
           } else if (todayQuest.unit === "reps") {
-            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.reps) || 0), 0);
+            totalValue = dayActivities.reduce((sum, act) => sum + (Number(act.reps) || 0), 0)
           }
 
-          const progress = todayQuest.goal ? Math.min(totalValue / todayQuest.goal, 1) : 0;
-          return { date, progress, completed: progress >= 1, activities: dayActivities };
-        });
-        setMonthlyProgress(monthProgress);
+          const progress = todayQuest.goal ? Math.min(totalValue / todayQuest.goal, 1) : 0
+          return { date, progress, completed: progress >= 1, activities: dayActivities }
+        })
+        setMonthlyProgress(monthProgress)
       }
 
-      setLoading(false);
-      setQuestLoading(false);
-      setRefreshing(false);
+      setLoading(false)
+      setQuestLoading(false)
+      setRefreshing(false)
     } catch (err) {
-      console.error("Error fetching data:", err.message);
-      setError("Failed to load dashboard data. Please try again.");
-      setLoading(false);
-      setQuestLoading(false);
-      setRefreshing(false);
+      console.error("Error fetching data:", err.message)
+      setError("Failed to load dashboard data. Please try again.")
+      setLoading(false)
+      setQuestLoading(false)
+      setRefreshing(false)
     }
-  }, [timePeriod, weekDates, monthCalendar, currentMonthDate]);
+  }, [timePeriod, weekDates, monthCalendar, currentMonthDate])
+
 
 
   useEffect(() => {
     const init = async () => {
-      const { isValidSession } = await initializeUserData();
+      const { isValidSession } = await initializeUserData()
       if (isValidSession) {
-        fetchData();
+        fetchData()
       } else {
-        setError("Please sign in to view activities");
-        setLoading(false);
+        setError("Please sign in to view activities")
+        setLoading(false)
       }
-    };
-    init();
-  }, [initializeUserData, fetchData]);
+    }
+    init()
+  }, [initializeUserData, fetchData])
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    fetchData()
+  }, [fetchData])
+
 
   const onRefresh = useCallback(() => {
-    setRefreshing(true);
-    fetchData();
-  }, [fetchData]);
+    setRefreshing(true)
+    fetchData()
+  }, [fetchData])
 
   const calculateQuestProgress = (quest) => {
     if (!quest || !activityData) return 0;
 
     let currentValue = 0;
+
+    // 🕒 Handle time-based challenges
+    if (quest.mode === "time" && quest.startDate && quest.endDate) {
+      const now = Date.now();
+      const start = quest.startDate.seconds * 1000; // Firestore timestamp
+      const end = new Date(quest.endDate).getTime();
+      const totalDuration = end - start;
+      const elapsed = Math.max(0, now - start);
+
+      return Math.min(elapsed / totalDuration, 1); // progress as fraction
+    }
+
+    // 👣 Steps
     if (quest.unit === "steps") {
       currentValue = Number(activityData.steps) || 0;
-    } else if (quest.unit === "distance") {
-      currentValue = Number.parseFloat(activityData.distance) || 0;
-    } else if (quest.unit === "duration") {
-      const durationParts = activityData.duration.split(":");
-      currentValue = Number.parseInt(durationParts[0]) * 60 + Number.parseInt(durationParts[1]) || 0;
-    } else if (quest.unit === "reps") {
-      currentValue = 0; // This will be calculated from today's activities
     }
+    // 📏 Distance (stored as meters → km)
+    else if (quest.unit === "distance") {
+      const meters = unifyUnits(activityData.distance, "meters");
+      currentValue = meters / 1000;
+    }
+    // ⏱️ Duration (convert to minutes)
+    else if (quest.unit === "duration") {
+      if (typeof activityData.duration === "string") {
+        const durationParts = activityData.duration.split(":").map(Number);
+        if (durationParts.length === 3) {
+          const [h, m, s] = durationParts;
+          currentValue = h * 60 + m + s / 60;
+        } else {
+          const [m, s] = durationParts;
+          currentValue = m + s / 60;
+        }
+      } else {
+        currentValue = (Number(activityData.duration) || 0) / 60;
+      }
+    }
+    // 💪 Reps
+    else if (quest.unit === "reps") {
+      const totalReps = Array.isArray(activityData)
+        ? activityData
+          .filter((a) => typeof a.reps === "number" && a.reps > 0)
+          .reduce((sum, a) => sum + a.reps, 0)
+        : Number(activityData.reps) || 0;
+
+      return QuestProgressManager.getSessionValue(quest, { reps: totalReps });
+    }
+
     return quest.goal ? Math.min(currentValue / quest.goal, 1) : 0;
   };
 
   const getQuestStatus = (quest) => {
-    const progress = calculateQuestProgress(quest);
-    if (progress >= 1) return "completed";
-    if (progress > 0) return "in_progress";
-    return "not_started";
-  };
+    const progress = calculateQuestProgress(quest)
+    if (progress >= 1) return "completed"
+    if (progress > 0) return "in_progress"
+    return "not_started"
+  }
 
   const getCurrentQuestValue = (quest) => {
-    if (!quest) return 0;
+    if (!quest || !activityData) return 0
 
-    if (quest.unit === "steps") {
-      return Math.min(Number(activityData.steps) || 0, quest.goal);
-    } else if (quest.unit === "distance") {
-      const currentDistance = Number.parseFloat(activityData.distance) || 0;
-      return Math.min(currentDistance, quest.goal);
-    } else if (quest.unit === "duration") {
-      const durationParts = activityData.duration.split(":");
-      const currentMinutes = Number.parseInt(durationParts[0]) * 60 + Number.parseInt(durationParts[1]) || 0;
-      return Math.min(currentMinutes, quest.goal);
-    } else if (quest.unit === "reps") {
-      return 0; // This will be updated from today's activities
+    const stats = {
+      steps: Number(activityData.steps) || 0,
+      reps: Number(activityData.reps) || 0,
+      distance: Number(activityData.distanceRaw || 0),
+      duration: Number(activityData.durationSeconds || 0),
     }
-    return 0;
-  };
+
+    const calories = Number(activityData.calories) || 0
+
+    return QuestProgressManager.getSessionValue(quest, stats, calories)
+  }
 
   // Enhanced Navigate to activity screen with quest details
   const navigateToQuestActivity = async (quest) => {
     try {
-      setIsQuestModalVisible(false);
+      setIsQuestModalVisible(false)
 
       navigateToActivity({
         questId: quest.id,
@@ -821,27 +964,27 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
         description: quest.description,
         goal: quest.goal,
         unit: quest.unit,
-        progress: calculateQuestProgress(quest), 
+        progress: calculateQuestProgress(quest),
         status: getQuestStatus(quest),
-        activityType: quest.activityType, 
+        activityType: quest.activityType,
         xpReward: quest.xpReward,
         difficulty: quest.difficulty,
         category: quest.category,
-      });
+      })
     } catch (error) {
-      console.error("Error starting quest:", error);
+      console.error("Error starting quest:", error)
     }
-  };
+  }
 
   // Simplified function to view activity details in modal
   const viewActivityDetails = (activity) => {
-    setSelectedActivity(activity);
-    setIsActivityModalVisible(true);
-  };
+    setSelectedActivity(activity)
+    setIsActivityModalVisible(true)
+  }
 
   // Function to resume activity from modal
   const resumeActivity = () => {
-    setIsActivityModalVisible(false);
+    setIsActivityModalVisible(false)
     if (selectedActivity) {
       navigateToActivity({
         activityType: selectedActivity.activityType,
@@ -860,26 +1003,26 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
           avgSpeed: Number.parseFloat(selectedActivity.stats?.avgSpeed) || 0,
           steps: Number(selectedActivity.steps) || 0,
         },
-      });
+      })
     }
-  };
+  }
 
   // Function to clear activity from modal
   const clearActivity = () => {
-    setIsActivityModalVisible(false);
+    setIsActivityModalVisible(false)
     // Additional logic for clearing activity can be added here if needed
-  };
+  }
 
   // Toggle time period dropdown
   const toggleTimeDropdown = () => {
-    setIsTimeDropdownVisible(!isTimeDropdownVisible);
-  };
+    setIsTimeDropdownVisible(!isTimeDropdownVisible)
+  }
 
   // Select time period and close dropdown
   const selectTimePeriod = (period) => {
-    setTimePeriod(period);
-    setIsTimeDropdownVisible(false);
-  };
+    setTimePeriod(period)
+    setIsTimeDropdownVisible(false)
+  }
 
   // Function to render a day cell in the month calendar
   const renderCalendarDay = (dayInfo, index) => {
@@ -888,31 +1031,31 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
         <View key={index} style={twrnc`w-[14.28%] aspect-square items-center justify-center opacity-30`}>
           {dayInfo.day && <CustomText style={twrnc`text-gray-500 text-xs`}>{dayInfo.day}</CustomText>}
         </View>
-      );
+      )
     }
     // Find progress data for this day
     const progressData = monthlyProgress.find(
       (p) => p.date && p.date.toDateString() === dayInfo.date.toDateString(),
-    ) || { progress: 0, completed: false, activities: [] };
-    const isCompleted = progressData.completed;
-    const progress = progressData.progress;
-    const isToday = dayInfo.isToday;
-    const hasActivities = Array.isArray(progressData.activities) && progressData.activities.length > 0;
+    ) || { progress: 0, completed: false, activities: [] }
+    const isCompleted = progressData.completed
+    const progress = progressData.progress
+    const isToday = dayInfo.isToday
+    const hasActivities = Array.isArray(progressData.activities) && progressData.activities.length > 0
 
     // Determine background color based on progress
-    let bgColor = "bg-[#2A2E3A]"; // No activity
+    let bgColor = "bg-[#2A2E3A]" // No activity
     if (progress > 0 && progress < 1) {
-      bgColor = "bg-[#4361EE]"; // Partial progress
+      bgColor = "bg-[#4361EE]" // Partial progress
     } else if (hasActivities && !isCompleted) {
-      bgColor = "bg-[#FFC107]"; // Activity done, but goal not completed
+      bgColor = "bg-[#FFC107]" // Activity done, but goal not completed
     } else if (isCompleted) {
-      bgColor = "bg-[#06D6A0]"; // Goal achieved
+      bgColor = "bg-[#06D6A0]" // Goal achieved
     }
 
     // Accessibility label for screen readers
     const accessibilityLabel = `Day ${dayInfo.day}, ${isToday ? "Today, " : ""}${Math.round(progress * 100)}% progress, ${isCompleted ? "goal completed" : hasActivities ? "activity recorded" : "no activity"
-      }.`;
-    const accessibilityHint = `Double tap to view activities for ${formatDate(dayInfo.date)}.`;
+      }.`
+    const accessibilityHint = `Double tap to view activities for ${formatDate(dayInfo.date)}.`
 
     return (
       <TouchableOpacity
@@ -960,45 +1103,45 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
           )}
         </View>
       </TouchableOpacity>
-    );
-  };
+    )
+  }
 
   // Function to handle day selection from the calendar
   const handleDaySelection = async (date) => {
     try {
-      setSelectedCalendarDate(date); // Update selected date for highlighting
-      setLoading(true);
-      const user = auth.currentUser;
+      setSelectedCalendarDate(date) // Update selected date for highlighting
+      setLoading(true)
+      const user = auth.currentUser
       if (!user) {
-        setError("Please sign in to view activities");
-        setLoading(false);
-        return;
+        setError("Please sign in to view activities")
+        setLoading(false)
+        return
       }
 
       // Verify session from AsyncStorage
-      const storedSession = await AsyncStorage.getItem("userSession");
-      const sessionData = safeParseJSON(storedSession, null);
+      const storedSession = await AsyncStorage.getItem("userSession")
+      const sessionData = safeParseJSON(storedSession, null)
       if (!sessionData?.uid || !sessionData.emailVerified || sessionData.uid !== user.uid) {
-        setError("Invalid or expired session. Please sign in again.");
-        setLoading(false);
-        return;
+        setError("Invalid or expired session. Please sign in again.")
+        setLoading(false)
+        return
       }
 
       // Set start and end of the selected day
-      const startOfDay = new Date(date);
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(date);
-      endOfDay.setHours(23, 59, 59, 999);
+      const startOfDay = new Date(date)
+      startOfDay.setHours(0, 0, 0, 0)
+      const endOfDay = new Date(date)
+      endOfDay.setHours(23, 59, 59, 999)
 
       // Query activities for the selected day
-      const activitiesRef = collection(db, "activities");
+      const activitiesRef = collection(db, "activities")
       const activitiesQuery = query(
         activitiesRef,
         where("userId", "==", user.uid),
         where("createdAt", ">=", startOfDay),
         where("createdAt", "<=", endOfDay),
-      );
-      const activitiesSnapshot = await getDocs(activitiesQuery);
+      )
+      const activitiesSnapshot = await getDocs(activitiesQuery)
       const activitiesData = activitiesSnapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
@@ -1007,33 +1150,33 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
         formattedTime: doc.data().createdAt?.toDate
           ? doc.data().createdAt.toDate().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
           : "",
-      }));
+      }))
 
       if (activitiesData.length > 0) {
         // Sort activities by time (newest first)
-        activitiesData.sort((a, b) => (b.createdAt?.toDate() || new Date()) - (a.createdAt?.toDate() || new Date()));
-        setDateActivities(activitiesData);
+        activitiesData.sort((a, b) => (b.createdAt?.toDate() || new Date()) - (a.createdAt?.toDate() || new Date()))
+        setDateActivities(activitiesData)
       } else {
-        setDateActivities([]);
+        setDateActivities([])
       }
 
-      setIsDateActivitiesModalVisible(true);
-      setLoading(false);
+      setIsDateActivitiesModalVisible(true)
+      setLoading(false)
     } catch (err) {
-      console.error("Error fetching day activities:", err);
-      setError("Failed to load activities. Please try again.");
-      setLoading(false);
+      console.error("Error fetching day activities:", err)
+      setError("Failed to load activities. Please try again.")
+      setLoading(false)
     }
-  };
+  }
 
   // Function to navigate month in calendar
   const navigateMonth = useCallback((direction) => {
     setCurrentMonthDate((prevDate) => {
-      const newDate = new Date(prevDate);
-      newDate.setMonth(prevDate.getMonth() + direction);
-      return newDate;
-    });
-  }, []);
+      const newDate = new Date(prevDate)
+      newDate.setMonth(prevDate.getMonth() + direction)
+      return newDate
+    })
+  }, [])
 
   if (loading || questLoading) {
     return (
@@ -1041,7 +1184,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
         <ActivityIndicator size="large" color="#4361EE" />
         <CustomText style={twrnc`text-white mt-4`}>Loading Dashboard...</CustomText>
       </View>
-    );
+    )
   }
 
   if (error) {
@@ -1062,11 +1205,11 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
           </TouchableOpacity>
         </View>
       </View>
-    );
+    )
   }
 
   // Get today's main quest
-  const todayQuest = dynamicQuests[0];
+  const todayQuest = dynamicQuests[0]
 
   return (
     <View style={twrnc`flex-1 bg-[#121826]`}>
@@ -1138,10 +1281,10 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
           {timePeriod === "week" && (
             <View style={twrnc`flex-row justify-between mb-6`}>
               {weekDates.map((day, index) => {
-                const progressData = weeklyProgress[index] || { progress: 0, completed: false, activities: [] };
-                const isCompleted = progressData.completed;
-                const progress = progressData.progress;
-                const hasActivities = Array.isArray(progressData.activities) && progressData.activities.length > 0;
+                const progressData = weeklyProgress[index] || { progress: 0, completed: false, activities: [] }
+                const isCompleted = progressData.completed
+                const progress = progressData.progress
+                const hasActivities = Array.isArray(progressData.activities) && progressData.activities.length > 0
                 return (
                   <TouchableOpacity
                     key={index}
@@ -1170,7 +1313,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                       </CustomText>
                     )}
                   </TouchableOpacity>
-                );
+                )
               })}
             </View>
           )}
@@ -1194,9 +1337,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
               <View style={twrnc`flex-row justify-between mb-3`}>
                 {["S", "M", "T", "W", "T", "F", "S"].map((day, index) => (
                   <View key={index} style={twrnc`w-[14.28%] items-center`}>
-                    <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.sm }]}>
-                      {day}
-                    </CustomText>
+                    <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.sm }]}>{day}</CustomText>
                   </View>
                 ))}
               </View>
@@ -1221,7 +1362,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                 <View style={twrnc`flex-row items-center mx-2 my-1`}>
                   <View style={twrnc`w-3 h-3 rounded-full bg-[#06D6A0] mr-2`} />
                   <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.xs }]}>
-                    Goal Achieved
+                    Quest Achieved
                   </CustomText>
                 </View>
               </View>
@@ -1306,9 +1447,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
               {/* Progress Bar */}
               <View style={twrnc`mb-4`}>
                 <View style={twrnc`flex-row justify-between items-center mb-2`}>
-                  <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.sm }]}>
-                    Progress
-                  </CustomText>
+                  <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.sm }]}>Progress</CustomText>
                   <CustomText style={[twrnc`text-[#FFC107]`, { fontSize: responsiveFontSizes.sm }]}>
                     {Math.round(calculateQuestProgress(todayQuest) * 100)}% •{" "}
                     {getCurrentQuestValue(todayQuest).toFixed(2)}/{todayQuest.goal.toFixed(2)} {todayQuest.unit}
@@ -1407,9 +1546,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                       </CustomText>
                     </View>
                     <View style={twrnc`items-center flex-1`}>
-                      <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.xs }]}>
-                        Pace
-                      </CustomText>
+                      <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.xs }]}>Pace</CustomText>
                       <CustomText weight="bold" style={[twrnc`text-[#4361EE]`, { fontSize: responsiveFontSizes.base }]}>
                         {activityData.stats.pace}
                       </CustomText>
@@ -1426,7 +1563,9 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                 <CustomText weight="bold" style={[twrnc`text-white`, { fontSize: responsiveFontSizes.xl }]}>
                   Ready to Start?
                 </CustomText>
-                <CustomText style={[twrnc`text-gray-400 text-center mb-6 leading-5`, { fontSize: responsiveFontSizes.sm }]}>
+                <CustomText
+                  style={[twrnc`text-gray-400 text-center mb-6 leading-5`, { fontSize: responsiveFontSizes.sm }]}
+                >
                   No activities yet. Start tracking your first workout to see your progress here!
                 </CustomText>
                 <View style={twrnc`flex-row flex-wrap justify-center gap-3 w-full`}>
@@ -1453,19 +1592,25 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                 <View style={twrnc`flex-row justify-between w-full mt-6 pt-4 border-t border-[#3A3F4B]`}>
                   <View style={twrnc`items-center flex-1`}>
                     <CustomText style={[twrnc`text-[#FFC107]`, { fontSize: responsiveFontSizes.lg }]}>0</CustomText>
-                    <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.xs }]}>Activities</CustomText>
+                    <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.xs }]}>
+                      Activities
+                    </CustomText>
                   </View>
                   <View style={twrnc`items-center flex-1`}>
                     <CustomText style={[twrnc`text-[#4361EE]`, { fontSize: responsiveFontSizes.lg }]}>
                       Level {userStats.level}
                     </CustomText>
-                    <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.xs }]}>Current Level</CustomText>
+                    <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.xs }]}>
+                      Current Level
+                    </CustomText>
                   </View>
                   <View style={twrnc`items-center flex-1`}>
                     <CustomText style={[twrnc`text-[#06D6A0]`, { fontSize: responsiveFontSizes.lg }]}>
                       {userStats.totalXP}
                     </CustomText>
-                    <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.xs }]}>Total XP</CustomText>
+                    <CustomText style={[twrnc`text-gray-400`, { fontSize: responsiveFontSizes.xs }]}>
+                      Total XP
+                    </CustomText>
                   </View>
                 </View>
               </View>
@@ -1493,24 +1638,18 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                   Personalized challenges based on your performance
                 </CustomText>
               </View>
-              <TouchableOpacity
-                style={twrnc`bg-gray-800 p-2 rounded-xl`}
-                onPress={() => setIsQuestModalVisible(false)}
-              >
+              <TouchableOpacity style={twrnc`bg-gray-800 p-2 rounded-xl`} onPress={() => setIsQuestModalVisible(false)}>
                 <Ionicons name="close" size={24} color="#FFFFFF" />
               </TouchableOpacity>
             </View>
 
             {/* Quest List */}
-            <ScrollView
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={twrnc`pb-4`}
-            >
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={twrnc`pb-4`}>
               {dynamicQuests.length > 0 ? (
                 dynamicQuests.map((quest, index) => {
-                  const progress = calculateQuestProgress(quest);
-                  const status = getQuestStatus(quest);
-                  const isCompleted = status === "completed";
+                  const progress = calculateQuestProgress(quest)
+                  const status = getQuestStatus(quest)
+                  const isCompleted = status === "completed"
 
                   return (
                     <View
@@ -1519,17 +1658,23 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                     >
                       {/* Quest Header */}
                       <View style={twrnc`flex-row items-start mb-4`}>
-                        <View style={[
-                          twrnc`rounded-xl p-3 mr-4`,
-                          isCompleted ? twrnc`bg-emerald-500` : twrnc`bg-[#4361EE]`
-                        ]}>
+                        <View
+                          style={[
+                            twrnc`rounded-xl p-3 mr-4`,
+                            isCompleted ? twrnc`bg-emerald-500` : twrnc`bg-[#4361EE]`,
+                          ]}
+                        >
                           <Ionicons
                             name={
-                              quest.category === "endurance" ? "flash-outline" :
-                                quest.category === "fitness" ? "heart-outline" :
-                                  quest.category === "strength" ? "barbell-outline" :
-                                    quest.category === "flexibility" ? "body-outline" :
-                                      "trophy-outline"
+                              quest.category === "endurance"
+                                ? "flash-outline"
+                                : quest.category === "fitness"
+                                  ? "heart-outline"
+                                  : quest.category === "strength"
+                                    ? "barbell-outline"
+                                    : quest.category === "flexibility"
+                                      ? "body-outline"
+                                      : "trophy-outline"
                             }
                             size={22}
                             color="#FFFFFF"
@@ -1552,10 +1697,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                             </View>
                           </View>
 
-                          <CustomText
-                            style={twrnc`text-gray-400 text-sm mb-2`}
-                            numberOfLines={2}
-                          >
+                          <CustomText style={twrnc`text-gray-400 text-sm mb-2`} numberOfLines={2}>
                             {quest.description}
                           </CustomText>
 
@@ -1577,9 +1719,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                       {/* Progress Bar */}
                       <View style={twrnc`mb-4`}>
                         <View style={twrnc`flex-row justify-between items-center mb-2`}>
-                          <CustomText style={twrnc`text-gray-400 text-xs`}>
-                            Progress
-                          </CustomText>
+                          <CustomText style={twrnc`text-gray-400 text-xs`}>Progress</CustomText>
                           <CustomText
                             style={[
                               twrnc`text-xs font-medium`,
@@ -1611,20 +1751,13 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                         onPress={() => !isCompleted && navigateToQuestActivity(quest)}
                         disabled={isCompleted}
                       >
-                        {isCompleted && (
-                          <Ionicons
-                            name="checkmark"
-                            size={20}
-                            color="#FFFFFF"
-                            style={twrnc`mr-2`}
-                          />
-                        )}
+                        {isCompleted && <Ionicons name="checkmark" size={20} color="#FFFFFF" style={twrnc`mr-2`} />}
                         <CustomText weight="bold" style={twrnc`text-white`}>
                           {isCompleted ? "Quest Completed" : "Start Quest"}
                         </CustomText>
                       </TouchableOpacity>
                     </View>
-                  );
+                  )
                 })
               ) : (
                 <View style={twrnc`items-center justify-center py-16`}>
@@ -1651,10 +1784,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
         visible={isActivityModalVisible}
         onRequestClose={() => setIsActivityModalVisible(false)}
       >
-        <Pressable
-          style={twrnc`flex-1 bg-black/70 justify-end`}
-          onPress={() => setIsActivityModalVisible(false)}
-        >
+        <Pressable style={twrnc`flex-1 bg-black/70 justify-end`} onPress={() => setIsActivityModalVisible(false)}>
           <View style={twrnc`max-h-4/5 bg-gray-900 rounded-t-3xl`}>
             {/* Prevent modal close when touching content */}
             <Pressable onPress={(e) => e.stopPropagation()}>
@@ -1703,115 +1833,123 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                     {/* Activity Type Badge */}
                     <View style={twrnc`absolute top-4 left-4 bg-gray-900/80 rounded-full px-3 py-1.5`}>
                       <CustomText style={twrnc`text-white text-sm font-medium`}>
-                        {selectedActivity.activityType?.charAt(0).toUpperCase() + selectedActivity.activityType?.slice(1) || 'Activity'}
+                        {selectedActivity.activityType?.charAt(0).toUpperCase() +
+                          selectedActivity.activityType?.slice(1) || "Activity"}
                       </CustomText>
                     </View>
                   </View>
                 ) : (
-                  <View style={twrnc`w-full h-40 bg-gray-800 justify-center items-center rounded-2xl mb-6 border border-dashed border-gray-600`}>
+                  <View
+                    style={twrnc`w-full h-40 bg-gray-800 justify-center items-center rounded-2xl mb-6 border border-dashed border-gray-600`}
+                  >
                     <Ionicons name="map-outline" size={36} color="#6B7280" style={twrnc`mb-2`} />
-                    <CustomText style={twrnc`text-gray-400 text-sm text-center`}>
-                      No route data available
-                    </CustomText>
+                    <CustomText style={twrnc`text-gray-400 text-sm text-center`}>No route data available</CustomText>
                   </View>
                 )}
 
-                {/* Activity Stats */}
-                {selectedActivity && (
-                  <View style={twrnc`bg-gray-800 rounded-2xl p-5 mb-6`}>
-                    <CustomText weight="bold" style={twrnc`text-white text-lg mb-4`}>
-                      Activity Summary
-                    </CustomText>
-
-                    {/* Top Row Stats */}
-                    <View style={twrnc`flex-row justify-between mb-5`}>
-                      <View style={twrnc`items-center flex-1`}>
-                        <Ionicons name="location-outline" size={16} color="#9CA3AF" style={twrnc`mb-1`} />
-                        <CustomText style={twrnc`text-gray-400 text-xs mb-1`}>Distance</CustomText>
-                        <CustomText weight="bold" style={twrnc`text-emerald-400 text-xl`}>
-                          {selectedActivity.distance
-                            ? `${Number.parseFloat(selectedActivity.distance).toFixed(2)} km`
-                            : "0 km"}
+                {/* Activity Stats - Using unified display mapper */}
+                {selectedActivity &&
+                  (() => {
+                    const displayInfo = getActivityDisplayInfo(selectedActivity)
+                    return (
+                      <View style={twrnc`bg-gray-800 rounded-2xl p-5 mb-6`}>
+                        <CustomText weight="bold" style={twrnc`text-white text-lg mb-4`}>
+                          Activity Summary
                         </CustomText>
-                      </View>
 
-                      <View style={twrnc`items-center flex-1 border-l border-r border-gray-700`}>
-                        <Ionicons name="time-outline" size={16} color="#9CA3AF" style={twrnc`mb-1`} />
-                        <CustomText style={twrnc`text-gray-400 text-xs mb-1`}>Duration</CustomText>
-                        <CustomText weight="bold" style={twrnc`text-amber-400 text-xl`}>
-                          {selectedActivity.duration
-                            ? typeof selectedActivity.duration === "number"
-                              ? formatTime(selectedActivity.duration)
-                              : selectedActivity.duration
-                            : "0:00"}
-                        </CustomText>
-                      </View>
+                        {/* Top Row Stats */}
+                        <View style={twrnc`flex-row justify-between mb-5`}>
+                          <View style={twrnc`items-center flex-1`}>
+                            <Ionicons
+                              name={displayInfo.primaryMetric.icon}
+                              size={16}
+                              color="#9CA3AF"
+                              style={twrnc`mb-1`}
+                            />
+                            <CustomText style={twrnc`text-gray-400 text-xs mb-1`}>
+                              {displayInfo.primaryMetric.label}
+                            </CustomText>
+                            <CustomText
+                              weight="bold"
+                              style={[twrnc`text-xl`, { color: displayInfo.primaryMetric.color }]}
+                            >
+                              {displayInfo.primaryMetric.value}
+                            </CustomText>
+                          </View>
 
-                      <View style={twrnc`items-center flex-1`}>
-                        <Ionicons
-                          name={selectedActivity.activityType === "cycling" ? "speedometer-outline" : "walk-outline"}
-                          size={16}
-                          color="#9CA3AF"
-                          style={twrnc`mb-1`}
-                        />
-                        <CustomText style={twrnc`text-gray-400 text-xs mb-1`}>
-                          {selectedActivity.activityType === "cycling" ? "Speed" : "Pace"}
-                        </CustomText>
-                        <CustomText weight="bold" style={twrnc`text-blue-400 text-xl`}>
-                          {selectedActivity.activityType === "cycling"
-                            ? (selectedActivity.avgSpeed ?? selectedActivity.stats?.avgSpeed ?? "0")
-                              .toString()
-                              .includes("km/h")
-                              ? (selectedActivity.avgSpeed ?? selectedActivity.stats?.avgSpeed ?? "0 km/h")
-                              : `${Number.parseFloat(selectedActivity.avgSpeed ?? selectedActivity.stats?.avgSpeed ?? 0).toFixed(1)} km/h`
-                            : selectedActivity.pace
-                              ? (typeof selectedActivity.pace === "number"
-                                ? formatTime(selectedActivity.pace)
-                                : selectedActivity.pace) + "/km"
-                              : selectedActivity.stats?.pace || "0:00/km"}
-                        </CustomText>
-                      </View>
-                    </View>
+                          <View style={twrnc`items-center flex-1 border-l border-r border-gray-700`}>
+                            <Ionicons
+                              name={displayInfo.secondaryMetric.icon}
+                              size={16}
+                              color="#9CA3AF"
+                              style={twrnc`mb-1`}
+                            />
+                            <CustomText style={twrnc`text-gray-400 text-xs mb-1`}>
+                              {displayInfo.secondaryMetric.label}
+                            </CustomText>
+                            <CustomText
+                              weight="bold"
+                              style={[twrnc`text-xl`, { color: displayInfo.secondaryMetric.color }]}
+                            >
+                              {displayInfo.secondaryMetric.value}
+                            </CustomText>
+                          </View>
 
-                    {/* Bottom Row Info */}
-                    <View style={twrnc`flex-row justify-between`}>
-                      <View style={twrnc`flex-1 mr-4`}>
-                        <CustomText style={twrnc`text-gray-400 text-xs mb-1`}>Activity Type</CustomText>
-                        <View style={twrnc`flex-row items-center`}>
-                          <Ionicons
-                            name={
-                              selectedActivity.activityType === "running" ? "footsteps-outline" :
-                                selectedActivity.activityType === "cycling" ? "bicycle-outline" :
-                                  "walk-outline"
-                            }
-                            size={16}
-                            color="#FFFFFF"
-                            style={twrnc`mr-2`}
-                          />
-                          <CustomText style={twrnc`text-white`}>
-                            {selectedActivity.activityType?.charAt(0).toUpperCase() + selectedActivity.activityType?.slice(1) || 'Unknown'}
-                          </CustomText>
+                          <View style={twrnc`items-center flex-1`}>
+                            <Ionicons
+                              name={displayInfo.tertiaryMetric.icon}
+                              size={16}
+                              color="#9CA3AF"
+                              style={twrnc`mb-1`}
+                            />
+                            <CustomText style={twrnc`text-gray-400 text-xs mb-1`}>
+                              {displayInfo.tertiaryMetric.label}
+                            </CustomText>
+                            <CustomText
+                              weight="bold"
+                              style={[twrnc`text-xl`, { color: displayInfo.tertiaryMetric.color }]}
+                            >
+                              {displayInfo.tertiaryMetric.value}
+                            </CustomText>
+                          </View>
+                        </View>
+
+                        {/* Bottom Row Info */}
+                        <View style={twrnc`flex-row justify-between`}>
+                          <View style={twrnc`flex-1 mr-4`}>
+                            <CustomText style={twrnc`text-gray-400 text-xs mb-1`}>Activity Type</CustomText>
+                            <View style={twrnc`flex-row items-center`}>
+                              <Ionicons name={displayInfo.icon} size={16} color="#FFFFFF" style={twrnc`mr-2`} />
+                              <CustomText style={twrnc`text-white`}>
+                                {selectedActivity.activityType?.charAt(0).toUpperCase() +
+                                  selectedActivity.activityType?.slice(1) || "Unknown"}
+                              </CustomText>
+                            </View>
+                          </View>
+
+                          <View style={twrnc`flex-1`}>
+                            <CustomText style={twrnc`text-gray-400 text-xs mb-1`}>Date</CustomText>
+                            <View style={twrnc`flex-row items-center`}>
+                              <Ionicons name="calendar-outline" size={16} color="#FFFFFF" style={twrnc`mr-2`} />
+                              <CustomText style={twrnc`text-white`}>
+                                {(() => {
+                                  const raw = selectedActivity.createdAt
+                                  const created = raw?.toDate
+                                    ? raw.toDate()
+                                    : raw instanceof Date
+                                      ? raw
+                                      : typeof raw === "number" || typeof raw === "string"
+                                        ? new Date(raw)
+                                        : null
+                                  return created ? formatDate(created) : "Unknown date"
+                                })()}
+                              </CustomText>
+                            </View>
+                          </View>
                         </View>
                       </View>
-
-                      <View style={twrnc`flex-1`}>
-                        <CustomText style={twrnc`text-gray-400 text-xs mb-1`}>Date</CustomText>
-                        <View style={twrnc`flex-row items-center`}>
-                          <Ionicons name="calendar-outline" size={16} color="#FFFFFF" style={twrnc`mr-2`} />
-                          <CustomText style={twrnc`text-white`}>
-                            {selectedActivity.createdAt
-                              ? formatDate(
-                                selectedActivity.createdAt.toDate
-                                  ? selectedActivity.createdAt.toDate()
-                                  : selectedActivity.createdAt,
-                              )
-                              : "Unknown date"}
-                          </CustomText>
-                        </View>
-                      </View>
-                    </View>
-                  </View>
-                )}
+                    )
+                  })()}
 
                 {/* Action Buttons */}
                 <View style={twrnc`flex-row gap-3`}>
@@ -1841,133 +1979,117 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
         </Pressable>
       </Modal>
 
-      {/* Date Activities Modal - Enhanced for all activity types */}
+      {/* Date Activities Modal - Styled like Quest Modal */}
       <Modal
         animationType="slide"
         transparent={true}
         visible={isDateActivitiesModalVisible}
         onRequestClose={() => setIsDateActivitiesModalVisible(false)}
       >
-        <Pressable style={styles.modalOverlay} onPress={() => setIsDateActivitiesModalVisible(false)}>
-          <View style={styles.modalContainer}>
-            {/* Changed from Pressable to View */}
-            <View style={styles.modalContent}>
-              {/* Modal Header */}
-              <View style={twrnc`flex-row justify-between items-center mb-6`}>
-                <CustomText weight="bold" style={twrnc`text-white text-xl`}>
+        <View style={twrnc`flex-1 bg-black/50 justify-end`}>
+          <View style={twrnc`bg-gray-900 rounded-t-3xl p-6 h-4/5`}>
+            {/* Header */}
+            <View style={twrnc`flex-row justify-between items-start mb-6`}>
+              <View style={twrnc`flex-1 pr-4`}>
+                <CustomText weight="bold" style={twrnc`text-white text-2xl mb-1`}>
                   Activities for {formatDate(selectedCalendarDate)}
                 </CustomText>
-                <TouchableOpacity
-                  style={twrnc`bg-[#2A2E3A] p-3 rounded-2xl`}
-                  onPress={() => setIsDateActivitiesModalVisible(false)}
-                >
-                  <Ionicons name="close" size={20} color="#FFFFFF" />
-                </TouchableOpacity>
+                <CustomText style={twrnc`text-gray-400 text-sm`}>
+                  Track your activities and performance for this day
+                </CustomText>
               </View>
-              <ScrollView style={twrnc`max-h-96`}>
-                {dateActivities.length > 0 ? (
-                  dateActivities.map((activity, index) => {
-                    const displayInfo = activity.displayInfo || getActivityDisplayInfo(activity)
-                    return (
-                      <View key={index} style={twrnc`mb-4 bg-[#2A2E3A] rounded-2xl p-4`}>
-                        {/* Activity Header */}
-                        <View style={twrnc`flex-row justify-between items-center mb-3`}>
-                          <CustomText weight="bold" style={twrnc`text-white`}>
-                            {activity.activityType.charAt(0).toUpperCase() + activity.activityType.slice(1)}
-                          </CustomText>
-                          <CustomText style={twrnc`text-gray-400 text-sm`}>{activity.formattedTime}</CustomText>
-                        </View>
-                        {/* Mini Map for distance-based activities */}
-                        {activity.coordinates && activity.coordinates.length > 0 && (
-                          <View style={twrnc`h-32 rounded-2xl overflow-hidden mb-3`}>
-                            <MapView
-                              style={twrnc`w-full h-full`}
-                              initialRegion={calculateMapRegion(activity.coordinates)}
-                              scrollEnabled={false}
-                              zoomEnabled={false}
-                              pitchEnabled={false}
-                              rotateEnabled={false}
-                            >
-                              <Polyline coordinates={activity.coordinates} strokeColor="#4361EE" strokeWidth={3} />
-                            </MapView>
-                          </View>
-                        )}
-                        {/* Dynamic Activity Stats based on type */}
-                        <View style={twrnc`flex-row justify-between mb-4`}>
-                          <View style={twrnc`items-center flex-1`}>
-                            <View style={twrnc`flex-row items-center mb-1`}>
-                              <Ionicons
-                                name={displayInfo.primaryMetric.icon}
-                                size={14}
-                                color={displayInfo.primaryMetric.color}
-                                style={twrnc`mr-1`}
-                              />
-                              <CustomText style={twrnc`text-gray-400 text-xs`}>
-                                {displayInfo.primaryMetric.label}
-                              </CustomText>
-                            </View>
-                            <CustomText style={twrnc`text-white font-bold`}>
-                              {displayInfo.primaryMetric.value}
-                            </CustomText>
-                          </View>
-                          <View style={twrnc`items-center flex-1`}>
-                            <View style={twrnc`flex-row items-center mb-1`}>
-                              <Ionicons
-                                name={displayInfo.secondaryMetric.icon}
-                                size={14}
-                                color={displayInfo.secondaryMetric.color}
-                                style={twrnc`mr-1`}
-                              />
-                              <CustomText style={twrnc`text-gray-400 text-xs`}>
-                                {displayInfo.secondaryMetric.label}
-                              </CustomText>
-                            </View>
-                            <CustomText style={twrnc`text-white font-bold`}>
-                              {displayInfo.secondaryMetric.value}
-                            </CustomText>
-                          </View>
-                          <View style={twrnc`items-center flex-1`}>
-                            <View style={twrnc`flex-row items-center mb-1`}>
-                              <Ionicons
-                                name={displayInfo.tertiaryMetric.icon}
-                                size={14}
-                                color={displayInfo.tertiaryMetric.color}
-                                style={twrnc`mr-1`}
-                              />
-                              <CustomText style={twrnc`text-gray-400 text-xs`}>
-                                {displayInfo.tertiaryMetric.label}
-                              </CustomText>
-                            </View>
-                            <CustomText style={twrnc`text-white font-bold`}>
-                              {displayInfo.tertiaryMetric.value}
-                            </CustomText>
-                          </View>
-                        </View>
-                        {/* View Details Button */}
-                        <TouchableOpacity
-                          style={twrnc`bg-[#4361EE] rounded-2xl py-3 items-center`}
-                          onPress={() => {
-                            setIsDateActivitiesModalVisible(false)
-                            viewActivityDetails(activity)
-                          }}
-                        >
-                          <CustomText weight="bold" style={twrnc`text-white`}>
-                            View Details
-                          </CustomText>
-                        </TouchableOpacity>
-                      </View>
-                    )
-                  })
-                ) : (
-                  <View style={twrnc`items-center justify-center py-10`}>
-                    <Ionicons name="calendar" size={48} color="#6B7280" />
-                    <CustomText style={twrnc`text-gray-400 mt-3`}>No activities for this day</CustomText>
-                  </View>
-                )}
-              </ScrollView>
+              <TouchableOpacity
+                style={twrnc`bg-gray-800 p-2 rounded-xl`}
+                onPress={() => setIsDateActivitiesModalVisible(false)}
+              >
+                <Ionicons name="close" size={24} color="#FFFFFF" />
+              </TouchableOpacity>
             </View>
+
+            {/* Activity List */}
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={twrnc`pb-4`}>
+              {dateActivities.length > 0 ? (
+                dateActivities.map((activity, index) => {
+                  const displayInfo = activity.displayInfo || getActivityDisplayInfo(activity)
+
+                  return (
+                    <View
+                      key={index}
+                      style={twrnc`bg-gray-800 rounded-2xl p-5 mb-4 shadow-lg border border-gray-700/50`}
+                    >
+                      {/* Activity Header */}
+                      <View style={twrnc`flex-row justify-between items-center mb-4`}>
+                        <CustomText weight="bold" style={twrnc`text-white text-lg`}>
+                          {activity.activityType.charAt(0).toUpperCase() + activity.activityType.slice(1)}
+                        </CustomText>
+                        <CustomText style={twrnc`text-gray-400 text-sm`}>{activity.formattedTime}</CustomText>
+                      </View>
+
+                      {/* Mini Map */}
+                      {activity.coordinates && activity.coordinates.length > 0 && (
+                        <View style={twrnc`h-32 rounded-xl overflow-hidden mb-4`}>
+                          <MapView
+                            style={twrnc`w-full h-full`}
+                            initialRegion={calculateMapRegion(activity.coordinates)}
+                            scrollEnabled={false}
+                            zoomEnabled={false}
+                            pitchEnabled={false}
+                            rotateEnabled={false}
+                          >
+                            <Polyline coordinates={activity.coordinates} strokeColor="#4361EE" strokeWidth={3} />
+                          </MapView>
+                        </View>
+                      )}
+
+                      {/* Dynamic Metrics */}
+                      <View style={twrnc`flex-row justify-between mb-5`}>
+                        {[displayInfo.primaryMetric, displayInfo.secondaryMetric, displayInfo.tertiaryMetric].map(
+                          (metric, idx) => (
+                            <View key={idx} style={twrnc`items-center flex-1`}>
+                              <View style={twrnc`flex-row items-center mb-1`}>
+                                <Ionicons name={metric.icon} size={14} color={metric.color} style={twrnc`mr-1`} />
+                                <CustomText style={twrnc`text-gray-400 text-xs`}>{metric.label}</CustomText>
+                              </View>
+                              <CustomText weight="bold" style={twrnc`text-white`}>
+                                {metric.value}
+                              </CustomText>
+                            </View>
+                          ),
+                        )}
+                      </View>
+
+                      {/* Action Button */}
+                      <TouchableOpacity
+                        style={twrnc`bg-[#4361EE] rounded-xl py-3 items-center flex-row justify-center`}
+                        onPress={() => {
+                          setIsDateActivitiesModalVisible(false)
+                          viewActivityDetails(activity)
+                        }}
+                      >
+                        <Ionicons name="eye-outline" size={18} color="#FFFFFF" style={twrnc`mr-2`} />
+                        <CustomText weight="bold" style={twrnc`text-white`}>
+                          View Details
+                        </CustomText>
+                      </TouchableOpacity>
+                    </View>
+                  )
+                })
+              ) : (
+                <View style={twrnc`items-center justify-center py-16`}>
+                  <View style={twrnc`bg-gray-800 p-6 rounded-2xl mb-5`}>
+                    <Ionicons name="calendar-outline" size={48} color="#6B7280" />
+                  </View>
+                  <CustomText weight="bold" style={twrnc`text-gray-300 text-lg mb-2 text-center`}>
+                    No Activities Found
+                  </CustomText>
+                  <CustomText style={twrnc`text-gray-500 text-center`}>
+                    Add or complete activities to track your progress!
+                  </CustomText>
+                </View>
+              )}
+            </ScrollView>
           </View>
-        </Pressable>
+        </View>
       </Modal>
 
       {/* Badge Detail Modal - KEPT */}

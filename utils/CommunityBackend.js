@@ -17,6 +17,7 @@ import {
   documentId,
   writeBatch,
   deleteDoc,
+  runTransaction,
 } from "firebase/firestore"
 import { db, auth } from "../firebaseConfig"
 import AsyncStorage from "@react-native-async-storage/async-storage"
@@ -35,45 +36,35 @@ export const ACTIVITY_TYPES = [
     name: "Walking",
     icon: "walk-outline",
     color: "#4361EE",
-    defaultGoal: 5,
     unit: "km",
-    goalOptions: [2, 3, 5, 8, 10],
   },
   {
     id: "running",
     name: "Running",
     icon: "fitness-outline",
     color: "#EF476F",
-    defaultGoal: 3,
     unit: "km",
-    goalOptions: [1, 2, 3, 5, 8],
   },
   {
     id: "cycling",
     name: "Cycling",
     icon: "bicycle-outline",
     color: "#06D6A0",
-    defaultGoal: 10,
     unit: "km",
-    goalOptions: [5, 10, 15, 20, 30],
   },
   {
     id: "jogging", // Added jogging for consistency with ActivityScreen
     name: "Jogging",
     icon: "walk-outline", // You might want a specific jogging icon
     color: "#FFC107",
-    defaultGoal: 5,
     unit: "km",
-    goalOptions: [2, 3, 5, 8, 10],
   },
   {
     id: "pushup",
     name: "Push-ups",
     icon: "fitness-outline",
     color: "#9B5DE5",
-    defaultGoal: 50,
     unit: "reps",
-    goalOptions: [20, 30, 50, 75, 100],
   },
 ]
 
@@ -87,10 +78,14 @@ export const DIFFICULTY_LEVELS = [
 
 // New: Challenge group types with their configurations
 export const CHALLENGE_GROUP_TYPES = [
-  { id: "public", name: "Public", maxParticipants: null, description: "Open to everyone in the community." },
   { id: "duo", name: "Duo Challenge", maxParticipants: 2, description: "A challenge for you and one friend." },
-  { id: "lobby", name: "Lobby Challenge", maxParticipants: 5, description: "A challenge for you and a small group of friends (up to 4 others)." },
-];
+  {
+    id: "lobby",
+    name: "Lobby Challenge",
+    maxParticipants: 5,
+    description: "A challenge for you and up to 4 friends.",
+  },
+]
 
 // Helper function to serialize user objects for Firestore
 export const serializeUserForFirestore = (user) => {
@@ -202,64 +197,64 @@ export const loadUserProfile = async (callbacks) => {
 
 // Friends Management
 export const loadInitialFriends = async (friendIds, callbacks) => {
-  const { setFriends, setHasMoreFriends, setFriendsPage, setLoadingMoreFriends } = callbacks;
+  const { setFriends, setHasMoreFriends, setFriendsPage, setLoadingMoreFriends } = callbacks
 
   if (!friendIds || friendIds.length === 0) {
-    setFriends([]);
-    setHasMoreFriends(false);
-    setFriendsPage(1);
-    setLoadingMoreFriends(false);
-    return;
+    setFriends([])
+    setHasMoreFriends(false)
+    setFriendsPage(1)
+    setLoadingMoreFriends(false)
+    return
   }
 
   try {
     // Check cache first
-    const cachedFriends = await getCachedData("friends");
+    const cachedFriends = await getCachedData("friends")
     if (cachedFriends) {
-      const validCachedFriends = cachedFriends.filter((friend) => friendIds.includes(friend.id));
+      const validCachedFriends = cachedFriends.filter((friend) => friendIds.includes(friend.id))
       if (validCachedFriends.length > 0) {
-        setFriends(validCachedFriends);
+        setFriends(validCachedFriends)
         // Load all friends in the background to refresh cache
-        loadAllFriends(friendIds, callbacks, true);
-        return;
+        loadAllFriends(friendIds, callbacks, true)
+        return
       }
     }
 
     // Load all friends if no valid cache
-    await loadAllFriends(friendIds, callbacks, false);
+    await loadAllFriends(friendIds, callbacks, false)
   } catch (err) {
-    console.error("Error loading initial friends:", err);
-    throw err; // Let the caller handle the error
+    console.error("Error loading initial friends:", err)
+    throw err // Let the caller handle the error
   }
-};
+}
 
 export const loadAllFriends = async (allFriendIds, callbacks, isBackgroundRefresh = false) => {
-  const { setFriends, setHasMoreFriends, setFriendsPage, setLoadingMoreFriends } = callbacks;
+  const { setFriends, setHasMoreFriends, setFriendsPage, setLoadingMoreFriends } = callbacks
 
   if (!allFriendIds || allFriendIds.length === 0) {
-    setFriends([]);
-    setHasMoreFriends(false);
-    setFriendsPage(1);
-    setLoadingMoreFriends(false);
-    return;
+    setFriends([])
+    setHasMoreFriends(false)
+    setFriendsPage(1)
+    setLoadingMoreFriends(false)
+    return
   }
 
   if (!isBackgroundRefresh) {
-    setLoadingMoreFriends(true);
+    setLoadingMoreFriends(true)
   }
 
   try {
-    const friendsData = [];
+    const friendsData = []
     // Batch friend IDs into chunks of 10 due to Firestore's 'in' query limit
-    const chunks = [];
+    const chunks = []
     for (let i = 0; i < allFriendIds.length; i += 10) {
-      chunks.push(allFriendIds.slice(i, i + 10));
+      chunks.push(allFriendIds.slice(i, i + 10))
     }
 
     // Fetch all friends in batches
     for (const chunk of chunks) {
-      const friendsQuery = query(collection(db, "users"), where(documentId(), "in", chunk));
-      const friendsSnapshot = await getDocs(friendsQuery);
+      const friendsQuery = query(collection(db, "users"), where(documentId(), "in", chunk))
+      const friendsSnapshot = await getDocs(friendsQuery)
 
       for (const friendDoc of friendsSnapshot.docs) {
         const friendData = {
@@ -270,26 +265,26 @@ export const loadAllFriends = async (allFriendIds, callbacks, isBackgroundRefres
           totalDistance: 0,
           totalActivities: 0,
           isOnline: friendDoc.data().isOnline || false,
-        };
-        friendsData.push(friendData);
+        }
+        friendsData.push(friendData)
         // Load friend activities in the background
-        loadFriendActivities(friendDoc.id, friendData, callbacks);
+        loadFriendActivities(friendDoc.id, friendData, callbacks)
       }
     }
 
-    setFriends(friendsData);
+    setFriends(friendsData)
 
-    await setCachedData("friends", friendsData);
+    await setCachedData("friends", friendsData)
 
-    setFriendsPage(1);
-    setHasMoreFriends(false);
+    setFriendsPage(1)
+    setHasMoreFriends(false)
   } catch (err) {
-    console.error("Error loading all friends:", err);
-    throw err;
+    console.error("Error loading all friends:", err)
+    throw err
   } finally {
-    setLoadingMoreFriends(false);
+    setLoadingMoreFriends(false)
   }
-};
+}
 
 export const loadFriendActivities = async (friendId, friendData, callbacks) => {
   const { setFriends } = callbacks
@@ -483,47 +478,76 @@ export const acceptFriendRequest = async (requestId, fromUserId, callbacks) => {
 
   try {
     const user = auth.currentUser
-    const requestRef = doc(db, "friendRequests", requestId)
-    const requestDoc = await getDoc(requestRef)
-
-    if (!requestDoc.exists()) {
-      throw new Error("Friend request not found. It may have been deleted or already processed.")
+    if (!user) {
+      throw new Error("User not authenticated")
     }
 
-    const currentUserRef = doc(db, "users", user.uid)
-    const fromUserRef = doc(db, "users", fromUserId)
-    const [currentUserDoc, fromUserDoc] = await Promise.all([getDoc(currentUserRef), getDoc(fromUserRef)])
+    // Use transaction for atomic friend acceptance
+    const result = await runTransaction(db, async (transaction) => {
+      // Read all required documents first
+      const requestRef = doc(db, "friendRequests", requestId)
+      const currentUserRef = doc(db, "users", user.uid)
+      const fromUserRef = doc(db, "users", fromUserId)
 
-    if (!currentUserDoc.exists()) {
-      throw new Error("Your user profile could not be found. Please try refreshing the app.")
-    }
-    if (!fromUserDoc.exists()) {
-      throw new Error("The other user's profile could not be found. They may have deleted their account.")
-    }
+      const [requestDoc, currentUserDoc, fromUserDoc] = await Promise.all([
+        transaction.get(requestRef),
+        transaction.get(currentUserRef),
+        transaction.get(fromUserRef),
+      ])
 
-    await updateDoc(requestRef, {
-      status: "accepted",
-      updatedAt: serverTimestamp(),
-    })
+      // Validate all documents exist
+      if (!requestDoc.exists()) {
+        throw new Error("Friend request not found. It may have been deleted or already processed.")
+      }
+      if (!currentUserDoc.exists()) {
+        throw new Error("Your user profile could not be found. Please try refreshing the app.")
+      }
+      if (!fromUserDoc.exists()) {
+        throw new Error("The other user's profile could not be found. They may have deleted their account.")
+      }
 
-    const currentUserFriends = currentUserDoc.data().friends || []
-    if (!currentUserFriends.includes(fromUserId)) {
-      await updateDoc(currentUserRef, {
-        friends: [...currentUserFriends, fromUserId],
+      // Check if request is already processed
+      const requestData = requestDoc.data()
+      if (requestData.status === "accepted") {
+        throw new Error("Friend request has already been accepted.")
+      }
+      if (requestData.status === "declined") {
+        throw new Error("Friend request has already been declined.")
+      }
+
+      // Update request status
+      transaction.update(requestRef, {
+        status: "accepted",
+        updatedAt: serverTimestamp(),
       })
-    }
 
-    try {
-      const fromUserFriends = fromUserDoc.data().friends || []
-      if (!fromUserFriends.includes(user.uid)) {
-        await updateDoc(fromUserRef, {
-          friends: [...fromUserFriends, user.uid],
+      // Update both users' friends arrays atomically using arrayUnion
+      const currentUserData = currentUserDoc.data()
+      const fromUserData = fromUserDoc.data()
+
+      // Only add if not already friends (arrayUnion handles duplicates, but check for safety)
+      const currentUserFriends = currentUserData.friends || []
+      const fromUserFriends = fromUserData.friends || []
+
+      if (!currentUserFriends.includes(fromUserId)) {
+        transaction.update(currentUserRef, {
+          friends: arrayUnion(fromUserId),
         })
       }
-    } catch (updateError) {
-      console.error("Error updating friend's document:", updateError)
-    }
 
+      if (!fromUserFriends.includes(user.uid)) {
+        transaction.update(fromUserRef, {
+          friends: arrayUnion(user.uid),
+        })
+      }
+
+      return {
+        fromUserData: fromUserData,
+        success: true,
+      }
+    })
+
+    // Only after successful transaction, create chat room and update UI
     try {
       const chatRoomId = [user.uid, fromUserId].sort().join("_")
       const chatRoomRef = doc(db, "chatRooms", chatRoomId)
@@ -539,11 +563,20 @@ export const acceptFriendRequest = async (requestId, fromUserId, callbacks) => {
       }
     } catch (err) {
       console.warn("Could not create chat room:", err)
+      // Don't fail the entire operation for chat room creation
     }
 
+    // Clear AsyncStorage caches to force refresh from server
+    try {
+      await AsyncStorage.removeItem(`userProfile_${user.uid}`)
+      await AsyncStorage.removeItem(`friends_${user.uid}`)
+    } catch (cacheError) {
+      console.warn("Could not clear cache:", cacheError)
+    }
+
+    // Update UI state only after successful transaction
     setFriendRequests((prev) => prev.filter((req) => req.id !== requestId))
 
-    // Update user profile and friends list
     setUserProfile((prev) => ({
       ...prev,
       friends: [...(prev?.friends || []), fromUserId],
@@ -551,12 +584,12 @@ export const acceptFriendRequest = async (requestId, fromUserId, callbacks) => {
 
     const friendData = {
       id: fromUserId,
-      ...fromUserDoc.data(),
+      ...result.fromUserData,
       lastActivity: null,
       streak: 0,
       totalDistance: 0,
       totalActivities: 0,
-      isOnline: fromUserDoc.data().isOnline || false,
+      isOnline: result.fromUserData.isOnline || false,
     }
     setFriends((prev) => [friendData, ...prev])
     loadFriendActivities(fromUserId, friendData, { setFriends })
@@ -697,8 +730,8 @@ export const normalizeChallengeForClient = (rawChallenge, id) => {
     activityType: activityTypeId, // Ensure this is always the ID
     type: activityDisplayName, // Ensure this issetNewChallenge always the display name
     endDate: rawChallenge.endDate?.toDate ? rawChallenge.endDate.toDate() : new Date(rawChallenge.endDate),
-    difficulty: rawChallenge.difficulty ? rawChallenge.difficulty.toLowerCase() : 'medium', // Normalize difficulty
-    goal: rawChallenge.goal || activityConfig.defaultGoal, // Fallback to default goal
+    difficulty: rawChallenge.difficulty ? rawChallenge.difficulty.toLowerCase() : "medium", // Normalize difficulty
+    goal: rawChallenge.goal ?? null,
     unit: activityConfig.unit, // Fallback to default unit
   }
 }
@@ -765,82 +798,109 @@ export const loadChallenges = async (callbacks) => {
   }
 }
 
-export const createChallenge = async (challengeData, friendIds = [], groupType = "public") => {
+export const createChallenge = async (challengeData, friendIds = [], groupType = "duo") => {
   try {
-    if (!challengeData.title.trim()) {
-      throw new Error("Please enter a challenge title");
+    // 🧩 Validate title
+    if (!challengeData.title?.trim()) {
+      throw new Error("Please enter a challenge title")
     }
 
-    const user = auth.currentUser;
-    const safeFriendIds = Array.isArray(friendIds) ? friendIds : [];
-    const serializedFriendIds = safeFriendIds.map((id) => String(id));
+    const user = auth.currentUser
+    if (!user) throw new Error("User not authenticated.")
 
-    // Determine maxParticipants based on groupType
-    const selectedGroupType = CHALLENGE_GROUP_TYPES.find(type => type.id === groupType);
+    // ✅ Ensure friend IDs are valid strings
+    const safeFriendIds = Array.isArray(friendIds) ? friendIds : []
+    const serializedFriendIds = safeFriendIds.map((id) => String(id))
+
+    // ✅ Validate group type
+    const selectedGroupType = CHALLENGE_GROUP_TYPES.find((type) => type.id === groupType)
     if (!selectedGroupType) {
-      throw new Error("Invalid challenge group type provided.");
+      throw new Error("Invalid challenge group type provided.")
     }
 
-    let maxParticipants = selectedGroupType.maxParticipants;
-    let isPublic = selectedGroupType.id === "public";
+    const maxParticipants = selectedGroupType.maxParticipants
 
+    // ✅ Enforce participant limits
     if (selectedGroupType.id === "duo" && serializedFriendIds.length !== 1) {
-      throw new Error("Duo challenges require exactly one invited friend.");
+      throw new Error("Duo challenges require exactly one invited friend.")
     }
-    if (selectedGroupType.id === "lobby" && serializedFriendIds.length > (maxParticipants - 1)) {
-      throw new Error(`Lobby challenges can invite up to ${maxParticipants - 1} friends.`);
-    }
-
-    const activityTypeId = resolveActivityTypeId(challengeData.type);
-    const activityDisplayName = resolveActivityDisplayName(challengeData.type);
-    const activityConfig = ACTIVITY_TYPES.find(a => a.id === activityTypeId) || ACTIVITY_TYPES[0]; // Default to walking
-
-    // ✅ Compute duration and endDate
-    let totalDurationMs =
-      (challengeData.durationDays || 0) * 24 * 60 * 60 * 1000 +
-      (challengeData.durationHours || 0) * 60 * 60 * 1000 +
-      (challengeData.durationMinutes || 0) * 60 * 1000;
-
-    if (totalDurationMs === 0) {
-      totalDurationMs = 7 * 24 * 60 * 60 * 1000; // default 7 days
+    if (selectedGroupType.id === "lobby" && serializedFriendIds.length > maxParticipants - 1) {
+      throw new Error(`Lobby challenges can invite up to ${maxParticipants - 1} friends.`)
     }
 
-    const now = new Date();
-    const endDate = new Date(now.getTime() + totalDurationMs);
+    // ✅ Resolve activity type
+    const activityTypeId = resolveActivityTypeId(challengeData.type)
+    const activityDisplayName = resolveActivityDisplayName(challengeData.type)
+    const activityConfig = ACTIVITY_TYPES.find((a) => a.id === activityTypeId) || ACTIVITY_TYPES[0]
 
-    const allInvitedUsers = isPublic ? [] : [user.uid, ...serializedFriendIds];
+    const now = new Date()
+    const endDate = new Date(now.getTime() + 24 * 60 * 60 * 1000) // 1-day default
 
+    // 🧍‍♂️ All participants (creator + invited)
+    const allInvitedUsers = [user.uid, ...serializedFriendIds]
+
+    // 💰 Compute proper stakes
+    const individualStake = Number(challengeData.individualStake) || Number(challengeData.stakeXP) || 0
+    const participantCount = allInvitedUsers.length
+    const totalStake = individualStake * participantCount // For prize pool display only
+
+    // 🏗️ Build challenge document
     const newChallengeData = {
       title: challengeData.title,
-      description: challengeData.description,
+      description: challengeData.description || "",
       activityType: activityTypeId,
       type: activityDisplayName,
       createdBy: user.uid,
       createdAt: serverTimestamp(),
-      endDate: Timestamp.fromDate(endDate), // ✅ now properly defined
-      isPublic,
+      endDate: Timestamp.fromDate(endDate),
+      startDate: null,
       groupType: selectedGroupType.id,
       maxParticipants,
       participants: [user.uid],
       invitedUsers: allInvitedUsers,
-      xpReward: challengeData.xpReward || 50,
-      xpPenalty: challengeData.xpPenalty || 10,
-      goal: challengeData.goal || activityConfig.defaultGoal,
-      unit: activityConfig.unit,
-      durationDays: challengeData.durationDays || 0,
-      durationHours: challengeData.durationHours || 0,
-      durationMinutes: challengeData.durationMinutes || 0,
-      completionRequirement: challengeData.completionRequirement || "complete_goal",
+
+      // 💰 Stakes
+      individualStake: individualStake, // per player
+      stakeXP: totalStake, // total pool
+
+      // ⚙️ Challenge properties
+      mode: "time",
+      completionRequirement: "betterthanothers",
+      goal: null,
+      unit: activityConfig.unit || null,
+      durationMinutes: Number(challengeData.durationMinutes) || 30,
+
+      // 📊 Progress
       progress: {},
-      status: {},
+      status: { global: "pending" },
       completedBy: [],
-    };
+    }
 
-    const challengeRef = await addDoc(collection(db, "challenges"), newChallengeData);
+    // ✅ Save to Firestore
+    const challengeRef = await addDoc(collection(db, "challenges"), newChallengeData)
 
-    // Send notifications
-    const currentUserDoc = await getDoc(doc(db, "users", user.uid));
-    const currentUserData = currentUserDoc.data();
+    // ⚡ Deduct XP for all participants (creator + invited)
+    const xpDeductionPromises = allInvitedUsers.map(async (uid) => {
+      try {
+        const userRef = doc(db, "users", uid)
+        const userSnap = await getDoc(userRef)
+        if (userSnap.exists()) {
+          const userData = userSnap.data()
+          const currentXP = Number(userData.xp) || 0
+          const newXP = Math.max(currentXP - individualStake, 0)
+
+          await updateDoc(userRef, { xp: newXP })
+          console.log(`✅ Deducted ${individualStake} XP from ${uid}`)
+        }
+      } catch (err) {
+        console.error(`❌ Failed to deduct XP for ${uid}:`, err)
+      }
+    })
+    await Promise.allSettled(xpDeductionPromises)
+
+    // 📣 Send notifications to invited friends
+    const currentUserDoc = await getDoc(doc(db, "users", user.uid))
+    const currentUserData = currentUserDoc.data()
 
     const notificationPromises = serializedFriendIds.map(async (friendId) => {
       try {
@@ -858,59 +918,59 @@ export const createChallenge = async (challengeData, friendIds = [], groupType =
             type: activityDisplayName,
             groupType: selectedGroupType.name,
           },
-        );
+        )
 
         if (notificationId) {
-          console.log(`✅ Challenge invitation notification sent to ${friendId}: ${notificationId}`);
+          console.log(`✅ Challenge invitation notification sent to ${friendId}: ${notificationId}`)
         } else {
-          console.warn(`⚠️ Failed to send challenge invitation notification to ${friendId}`);
+          console.warn(`⚠️ Failed to send challenge invitation notification to ${friendId}`)
         }
       } catch (notificationError) {
-        console.error(`❌ Error sending challenge invitation notification to ${friendId}:`, notificationError);
+        console.error(`❌ Error sending challenge invitation notification to ${friendId}:`, notificationError)
       }
-    });
+    })
 
-    await Promise.allSettled(notificationPromises);
+    await Promise.allSettled(notificationPromises)
 
+    // 🎉 Return challenge result
     return {
       success: true,
       message: `Challenge created and ${serializedFriendIds.length} friends invited!`,
       challenge: {
         id: challengeRef.id,
         ...newChallengeData,
-        endDate, // return plain Date for frontend convenience
+        endDate, // Convert for frontend
       },
-    };
+    }
   } catch (err) {
-    console.error("Error creating challenge:", err);
-    throw new Error(err.message || "Failed to create challenge. Please try again.");
+    console.error("Error creating challenge:", err)
+    throw new Error(err.message || "Failed to create challenge. Please try again.")
   }
-};
-
+}
 
 export const createCustomChallenge = async (customChallenge, targetFriend) => {
   try {
     if (!targetFriend) {
-      throw new Error("No target friend selected for challenge.");
+      throw new Error("No target friend selected for challenge.")
     }
 
     if (!customChallenge.title.trim()) {
-      throw new Error("Please enter a challenge title.");
+      throw new Error("Please enter a challenge title.")
     }
 
-    const user = auth.currentUser;
+    const user = auth.currentUser
 
-    const activityConfig = ACTIVITY_TYPES.find((a) => a.id === customChallenge.activityType);
+    const activityConfig = ACTIVITY_TYPES.find((a) => a.id === customChallenge.activityType)
     if (!activityConfig) {
-      throw new Error("Invalid activity type selected.");
+      throw new Error("Invalid activity type selected.")
     }
 
-    const difficultyConfig = DIFFICULTY_LEVELS.find((d) => d.id === customChallenge.difficulty);
+    const difficultyConfig = DIFFICULTY_LEVELS.find((d) => d.id === customChallenge.difficulty)
     if (!difficultyConfig) {
-      throw new Error("Invalid difficulty level selected.");
+      throw new Error("Invalid difficulty level selected.")
     }
 
-    const adjustedGoal = Math.round(customChallenge.goal * difficultyConfig.multiplier);
+    const adjustedGoal = Math.round(customChallenge.goal * difficultyConfig.multiplier)
 
     const challengeData = {
       title: customChallenge.title,
@@ -939,14 +999,14 @@ export const createCustomChallenge = async (customChallenge, targetFriend) => {
       },
       status: "pending",
       xpReward: 100,
-    };
+    }
 
-    console.log("🏆 Creating custom challenge:", challengeData);
+    console.log("🏆 Creating custom challenge:", challengeData)
 
-    const challengeRef = await addDoc(collection(db, "challenges"), challengeData);
+    const challengeRef = await addDoc(collection(db, "challenges"), challengeData)
 
-    const currentUserDoc = await getDoc(doc(db, "users", user.uid));
-    const currentUserData = currentUserDoc.data();
+    const currentUserDoc = await getDoc(doc(db, "users", user.uid))
+    const currentUserData = currentUserDoc.data()
 
     try {
       const notificationId = await NotificationService.sendChallengeInvitationNotification(
@@ -967,15 +1027,15 @@ export const createCustomChallenge = async (customChallenge, targetFriend) => {
           duration: customChallenge.duration,
           groupType: "Duo Challenge",
         },
-      );
+      )
 
       if (notificationId) {
-        console.log(`✅ Custom challenge notification sent: ${notificationId}`);
+        console.log(`✅ Custom challenge notification sent: ${notificationId}`)
       } else {
-        console.warn("⚠️ Failed to send custom challenge notification");
+        console.warn("⚠️ Failed to send custom challenge notification")
       }
     } catch (notificationError) {
-      console.error("❌ Error sending custom challenge notification:", notificationError);
+      console.error("❌ Error sending custom challenge notification:", notificationError)
     }
 
     return {
@@ -986,10 +1046,10 @@ export const createCustomChallenge = async (customChallenge, targetFriend) => {
         ...challengeData,
         endDate: new Date(Date.now() + customChallenge.duration * 24 * 60 * 60 * 1000),
       },
-    };
+    }
   } catch (err) {
-    console.error("Error creating custom challenge:", err);
-    throw new Error(err.message || "Failed to create challenge. Please try again.");
+    console.error("Error creating custom challenge:", err)
+    throw new Error(err.message || "Failed to create challenge. Please try again.")
   }
 }
 
@@ -999,30 +1059,108 @@ export const joinChallenge = async (challengeId) => {
     if (!user) throw new Error("You must be signed in to join challenges.")
 
     const challengeRef = doc(db, "challenges", challengeId)
-    const challengeDoc = await getDoc(challengeRef)
 
-    if (!challengeDoc.exists()) {
-      throw new Error("Challenge not found.")
-    }
+    // Use transaction to ensure atomic updates
+    const result = await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(challengeRef)
+      if (!snap.exists()) throw new Error("Challenge not found.")
 
-    const challengeData = challengeDoc.data()
+      const challengeData = snap.data()
+      const participants = challengeData.participants || []
 
-    if (challengeData.participants?.includes(user.uid)) {
-      return {
-        success: false,
-        message: "You are already participating in this challenge.",
-        updatedParticipants: challengeData.participants,
+      if (participants.includes(user.uid)) {
+        // Already joined
+        return { participants, shouldStart: false, challengeData }
+      }
+
+      const newParticipants = [...participants, user.uid]
+
+      // Update participants
+      transaction.update(challengeRef, { participants: newParticipants })
+
+      // Check if we should auto-start (duo challenge with 2 participants)
+      const shouldStart =
+        challengeData.groupType === "duo" && newParticipants.length === 2 && challengeData.status?.global === "pending"
+
+      return { participants: newParticipants, shouldStart, challengeData }
+    })
+
+    // If we should auto-start, handle stakes and start challenge
+    if (result.shouldStart) {
+      const challengeData = result.challengeData
+      const participants = result.participants
+      const totalPrizePool = challengeData.stakeXP || 0
+      const individualStake = totalPrizePool / participants.length // For duo: stakeXP / 2
+
+      try {
+        // Check if all participants have enough XP
+        const participantChecks = await Promise.all(
+          participants.map(async (participantId) => {
+            const userDoc = await getDoc(doc(db, "users", participantId))
+            const userData = userDoc.data()
+            return {
+              id: participantId,
+              currentXP: userData?.xp || 0,
+              hasEnoughXP: (userData?.xp || 0) >= individualStake,
+            }
+          }),
+        )
+
+        // Check if all participants have enough XP
+        const allHaveEnoughXP = participantChecks.every((p) => p.hasEnoughXP)
+
+        if (!allHaveEnoughXP) {
+          // Cancel challenge and notify
+          await updateDoc(challengeRef, {
+            "status.global": "cancelled",
+            cancelledReason: "Insufficient XP from participants",
+            updatedAt: serverTimestamp(),
+          })
+
+          throw new Error("One or more participants don't have enough XP to stake.")
+        }
+
+        // Deduct stakes from all participants
+        const stakeDeductions = participants.map((participantId) =>
+          updateDoc(doc(db, "users", participantId), {
+            xp: increment(-individualStake),
+          }),
+        )
+
+        await Promise.all(stakeDeductions)
+
+        // Start the challenge with prize pool confirmation
+        await updateDoc(challengeRef, {
+          "status.global": "active",
+          startDate: serverTimestamp(),
+          prizePool: totalPrizePool, // Confirm prize pool is set
+          stakesDeducted: true, // Track that stakes have been deducted
+          individualStake: individualStake, // Store for potential refunds
+          updatedAt: serverTimestamp(),
+        })
+
+        console.log(`✅ Stakes deducted: ${individualStake} XP from each participant. Prize pool: ${totalPrizePool} XP`)
+      } catch (stakeError) {
+        console.error("❌ Error handling stakes:", stakeError)
+
+        // If stake deduction fails, cancel the challenge
+        await updateDoc(challengeRef, {
+          "status.global": "cancelled",
+          cancelledReason: stakeError.message,
+          updatedAt: serverTimestamp(),
+        })
+
+        throw stakeError
       }
     }
 
-    await updateDoc(challengeRef, {
-      participants: arrayUnion(user.uid),
-    })
-
     return {
       success: true,
-      message: "Successfully joined the challenge!",
-      updatedParticipants: [...(challengeData.participants || []), user.uid],
+      message: result.shouldStart
+        ? "You joined and the duo challenge has started! Stakes have been deducted."
+        : "Successfully joined the challenge!",
+      updatedParticipants: result.participants,
+      challengeStarted: result.shouldStart,
     }
   } catch (err) {
     console.error("Error joining challenge:", err)
@@ -1030,234 +1168,294 @@ export const joinChallenge = async (challengeId) => {
       success: false,
       message: err.message || "Failed to join challenge. Please try again.",
       updatedParticipants: [],
+      challengeStarted: false,
     }
   }
 }
 
 export const completeChallenge = async (challengeId, userId) => {
   try {
-    console.log(`Starting challenge completion check for user ${userId} on challenge ${challengeId}`);
+    console.log(`Starting challenge completion check for user ${userId} on challenge ${challengeId}`)
 
-    const challengeRef = doc(db, "challenges", challengeId);
-    const challengeDoc = await getDoc(challengeRef);
+    return await runTransaction(db, async (transaction) => {
+      // Check idempotency receipt
+      const receiptId = `${challengeId}_${userId}`
+      const receiptRef = doc(db, "challenge_receipts", receiptId)
+      const receiptDoc = await transaction.get(receiptRef)
 
-    if (!challengeDoc.exists()) {
-      console.error(`Challenge ${challengeId} not found`);
-      throw new Error("Challenge not found.");
-    }
-
-    const challengeData = challengeDoc.data();
-    const userRef = doc(db, "users", userId);
-    const userDoc = await getDoc(userRef);
-
-    if (!userDoc.exists()) {
-      console.error(`User ${userId} not found`);
-      throw new Error("User not found.");
-    }
-
-    const userData = userDoc.data();
-
-    if (challengeData.completedBy?.includes(userId)) {
-      console.log(`User ${userId} already completed challenge ${challengeId}`);
-      return { success: false, message: "Already completed this challenge." };
-    }
-
-    const userProgress = challengeData.progress?.[userId] || 0;
-    const isCompleted = checkChallengeCompletion(challengeData, userId, userProgress);
-
-    console.log(`Challenge completion check: User progress ${userProgress}, Goal ${challengeData.goal}, Completed: ${isCompleted}`);
-
-    if (isCompleted) {
-
-      const xpReward = challengeData.xpReward || 50;
-      const newTotalXP = (userData.totalXP || 0) + xpReward;
-
-      console.log(`Awarding ${xpReward} XP to user ${userId}`);
-
-      await updateDoc(userRef, {
-        totalXP: newTotalXP,
-        completedChallenges: arrayUnion(challengeId)
-      });
-
-      await updateDoc(challengeRef, {
-        completedBy: arrayUnion(userId),
-        [`status.${userId}`]: "completed",
-        [`completedAt.${userId}`]: serverTimestamp()
-      });
-
-      console.log(`Challenge ${challengeId} marked as completed for user ${userId}`);
-
-      return {
-        success: true,
-        message: "Challenge completed!",
-        xpReward: xpReward
-      };
-    } else {
-      const endDate = challengeData.endDate?.toDate ? challengeData.endDate.toDate() : new Date(challengeData.endDate);
-      const now = new Date();
-
-      console.log(`Current time: ${now}, End date: ${endDate}, Expired: ${now > endDate}`);
-
-      if (now > endDate) {
-        const xpPenalty = challengeData.xpPenalty || 10;
-        const newTotalXP = Math.max(0, (userData.totalXP || 0) - xpPenalty);
-
-        console.log(`Deducting ${xpPenalty} XP from user ${userId}`);
-
-        await updateDoc(userRef, {
-          totalXP: newTotalXP
-        });
-
-        await updateDoc(challengeRef, {
-          [`status.${userId}`]: "failed",
-          [`failedAt.${userId}`]: serverTimestamp()
-        });
-
-        console.log(`Challenge ${challengeId} marked as failed for user ${userId}`);
-
+      if (receiptDoc.exists()) {
+        const receiptData = receiptDoc.data()
         return {
-          success: false,
-          message: "Challenge failed. XP deducted.",
-          xpPenalty: xpPenalty
-        };
-      }
-
-      console.log(`Challenge ${challengeId} not yet completed for user ${userId}`);
-      return {
-        success: false,
-        message: "Challenge not yet completed."
-      };
-    }
-  } catch (err) {
-    console.error("Error completing challenge:", err);
-    throw new Error(err.message || "Failed to complete challenge.");
-  }
-};
-
-export const updateChallengeProgress = async (challengeId, userId, progress) => {
-  try {
-    console.log(`Updating progress for user ${userId} on challenge ${challengeId} to ${progress}`);
-
-    const challengeRef = doc(db, "challenges", challengeId);
-
-    await updateDoc(challengeRef, {
-      [`progress.${userId}`]: progress,
-      updatedAt: serverTimestamp()
-    });
-
-    const challengeDoc = await getDoc(challengeRef);
-    const challengeData = challengeDoc.data();
-
-    const isCompleted = checkChallengeCompletion(challengeData, userId, progress);
-
-    if (completionRequirement === "complete_goal") {
-      const participants = challengeData.participants || [];
-      for (const participantId of participants) {
-        if (participantId !== userId && (challengeData.progress?.[participantId] || 0) < challengeData.goal) {
-          const loserRef = doc(db, "users", participantId);
-          const loserDoc = await getDoc(loserRef);
-          const loserData = loserDoc.data();
-          const newXP = Math.max(0, (loserData.totalXP || 0) - challengeData.xpPenalty);
-          await updateDoc(loserRef, { totalXP: newXP });
-
-          await updateDoc(challengeRef, {
-            [`status.${participantId}`]: "failed",
-            [`failedAt.${participantId}`]: serverTimestamp()
-          });
+          success: receiptData.success,
+          message: receiptData.message,
+          xpReward: receiptData.xpReward || 0,
+          xpPenalty: receiptData.xpPenalty || 0,
+          alreadyProcessed: true,
         }
       }
 
-    }
+      // Read challenge + user
+      const challengeRef = doc(db, "challenges", challengeId)
+      const userRef = doc(db, "users", userId)
+      const [challengeDoc, userDoc] = await Promise.all([transaction.get(challengeRef), transaction.get(userRef)])
 
-    else {
-      console.log(`Progress update did not complete challenge ${challengeId} for user ${userId}`);
-    }
+      if (!challengeDoc.exists()) throw new Error("Challenge not found.")
+      if (!userDoc.exists()) throw new Error("User not found.")
 
-    return { success: true, message: "Progress updated" };
+      const challengeData = challengeDoc.data()
+      const userData = userDoc.data()
+
+      // Timers
+      const startDate = challengeData.startDate?.toMillis?.()
+      const durationMs = (challengeData.durationMinutes || 0) * 60000
+      const timerCutoff = startDate ? startDate + durationMs : null
+      const endDate = challengeData.endDate?.toMillis?.()
+      const now = Date.now()
+
+      // Progress
+      const userProgress = challengeData.progress?.[userId] || 0
+      const normalizedProgress = normalizeUnits(userProgress, challengeData.unit)
+      const normalizedGoal = normalizeUnits(challengeData.goal, challengeData.unit)
+
+      const isCompleted = checkChallengeCompletion(challengeData, userId, normalizedProgress, normalizedGoal)
+
+      const isTimerExpired = timerCutoff && now > timerCutoff
+      const isLobbyExpired = endDate && now > endDate
+      const isExpired = isTimerExpired || isLobbyExpired
+
+      const stakeXP = challengeData.stakeXP || 100 // default fallback
+      let receiptData = {
+        challengeId,
+        userId,
+        processedAt: serverTimestamp(),
+        success: false,
+        xpReward: 0,
+        xpPenalty: 0,
+      }
+
+      if (isCompleted && !isExpired) {
+        // ✅ Reward stake XP
+        const xpReward = stakeXP
+        const newTotalXP = (userData.totalXP || 0) + xpReward
+
+        transaction.update(userRef, {
+          totalXP: newTotalXP,
+          completedChallenges: arrayUnion(challengeId),
+        })
+
+        transaction.update(challengeRef, {
+          completedBy: arrayUnion(userId),
+          [`status.${userId}`]: "completed",
+          [`completedAt.${userId}`]: serverTimestamp(),
+        })
+
+        receiptData = {
+          ...receiptData,
+          success: true,
+          xpReward,
+          message: `Challenge completed! +${xpReward} XP`,
+        }
+      } else if (isExpired && !isCompleted) {
+        // ❌ Deduct stake XP
+        const xpPenalty = stakeXP
+        const newTotalXP = Math.max(0, (userData.totalXP || 0) - xpPenalty)
+
+        transaction.update(userRef, { totalXP: newTotalXP })
+
+        transaction.update(challengeRef, {
+          [`status.${userId}`]: "failed",
+          [`failedAt.${userId}`]: serverTimestamp(),
+          "status.global": "ended",
+        })
+
+        receiptData = {
+          ...receiptData,
+          success: false,
+          xpPenalty,
+          message: `Challenge failed. -${xpPenalty} XP`,
+        }
+      } else {
+        receiptData = {
+          ...receiptData,
+          message: "Challenge not yet completed.",
+        }
+      }
+
+      // Save receipt
+      transaction.set(receiptRef, receiptData)
+      return receiptData
+    })
   } catch (err) {
-    console.error("Error updating challenge progress:", err);
-    throw new Error(err.message || "Failed to update progress.");
+    console.error("Error completing challenge:", err)
+    throw new Error(err.message || "Failed to complete challenge.")
   }
-};
+}
 
+export const updateChallengeProgress = async (challengeId, userId, progress) => {
+  try {
+    console.log(`Updating progress for user ${userId} on challenge ${challengeId} to ${progress}`)
+
+    return await runTransaction(db, async (transaction) => {
+      const challengeRef = doc(db, "challenges", challengeId)
+      const challengeDoc = await transaction.get(challengeRef)
+
+      if (!challengeDoc.exists()) {
+        throw new Error("Challenge not found.")
+      }
+
+      const challengeData = challengeDoc.data()
+
+      // Normalize units before comparison
+      const normalizedProgress = normalizeUnits(progress, challengeData.unit)
+      const normalizedGoal = normalizeUnits(challengeData.goal, challengeData.unit)
+
+      // Update progress
+      transaction.update(challengeRef, {
+        [`progress.${userId}`]: normalizedProgress,
+        updatedAt: serverTimestamp(),
+      })
+
+      // Check completion requirement with up-to-date state
+      const completionRequirement = challengeData.completionRequirement || "complete_goal"
+      const endDate = challengeData.endDate?.toDate ? challengeData.endDate.toDate() : new Date(challengeData.endDate)
+      const now = new Date()
+      const isExpired = now > endDate
+
+      // Only apply penalties at end of challenge, not during progress updates
+      if (isExpired && completionRequirement === "better_than_others") {
+        const participants = challengeData.participants || []
+        const progressMap = challengeData.progress || {}
+
+        // Find winner (highest progress)
+        let winnerId = null
+        let highestProgress = -1
+
+        for (const participantId of participants) {
+          const participantProgress = normalizeUnits(progressMap[participantId] || 0, challengeData.unit)
+          if (participantProgress > highestProgress) {
+            highestProgress = participantProgress
+            winnerId = participantId
+          }
+        }
+
+        // Apply penalties to losers only if challenge is expired
+        if (winnerId && winnerId !== userId) {
+          const userRef = doc(db, "users", userId)
+          const userDoc = await transaction.get(userRef)
+
+          if (userDoc.exists()) {
+            const userData = userDoc.data()
+            const xpPenalty = challengeData.xpPenalty || 10
+            const newXP = Math.max(0, (userData.totalXP || 0) - xpPenalty)
+
+            transaction.update(userRef, { totalXP: newXP })
+            transaction.update(challengeRef, {
+              [`status.${userId}`]: "failed",
+              [`failedAt.${userId}`]: serverTimestamp(),
+            })
+          }
+        }
+      }
+
+      return {
+        success: true,
+        normalizedProgress,
+        normalizedGoal,
+        isCompleted: normalizedProgress >= normalizedGoal,
+      }
+    })
+  } catch (err) {
+    console.error("Error updating challenge progress:", err)
+    throw new Error(err.message || "Failed to update challenge progress.")
+  }
+}
+
+const normalizeUnits = (value, unit) => {
+  if (!value || !unit) return 0
+
+  switch (unit.toLowerCase()) {
+    case "meters":
+    case "m":
+      return value / 1000 // Convert to kilometers
+    case "kilometers":
+    case "km":
+      return value
+    case "seconds":
+    case "s":
+      return value / 60 // Convert to minutes
+    case "minutes":
+    case "min":
+      return value
+    case "hours":
+    case "h":
+      return value * 60 // Convert to minutes
+    default:
+      return value // Return as-is for steps, reps, calories, etc.
+  }
+}
+
+const checkChallengeCompletion = (challengeData, userId, normalizedProgress, normalizedGoal) => {
+  const completionRequirement = challengeData.completionRequirement || "complete_goal"
+
+  switch (completionRequirement) {
+    case "complete_goal":
+      return normalizedProgress >= normalizedGoal
+
+    case "better_than_others":
+      const participants = challengeData.participants || []
+      const progressMap = challengeData.progress || {}
+
+      // Check if user has highest progress among all participants
+      for (const participantId of participants) {
+        if (participantId !== userId) {
+          const otherProgress = normalizeUnits(progressMap[participantId] || 0, challengeData.unit)
+          if (otherProgress >= normalizedProgress) {
+            return false
+          }
+        }
+      }
+      return normalizedProgress > 0 // Must have some progress to win
+
+    case "time_based":
+      const endDate = challengeData.endDate?.toDate ? challengeData.endDate.toDate() : new Date(challengeData.endDate)
+      const now = new Date()
+      return now <= endDate && normalizedProgress >= normalizedGoal
+
+    default:
+      return normalizedProgress >= normalizedGoal
+  }
+}
 
 export const getUserChallenges = async (userId) => {
   try {
-    console.log(`Getting active challenges for user ${userId}`);
+    console.log(`Getting active challenges for user ${userId}`)
 
-    const challengesRef = collection(db, "challenges");
-    const now = new Date();
+    const challengesRef = collection(db, "challenges")
+    const now = new Date()
 
     const userChallengesQuery = query(
       challengesRef,
       where("participants", "array-contains", userId),
-      where("endDate", ">", Timestamp.fromDate(now))
-    );
+      where("endDate", ">", Timestamp.fromDate(now)),
+    )
 
-    const challengesSnapshot = await getDocs(userChallengesQuery);
-    const challengesData = challengesSnapshot.docs.map(doc => {
-      const data = doc.data();
+    const challengesSnapshot = await getDocs(userChallengesQuery)
+    const challengesData = challengesSnapshot.docs.map((doc) => {
+      const data = doc.data()
       return {
         id: doc.id,
         ...data,
-        endDate: data.endDate?.toDate ? data.endDate.toDate() : new Date(data.endDate)
-      };
-    });
+        endDate: data.endDate?.toDate ? data.endDate.toDate() : new Date(data.endDate),
+      }
+    })
 
-    console.log(`Found ${challengesData.length} active challenges for user ${userId}`);
-    return challengesData;
+    console.log(`Found ${challengesData.length} active challenges for user ${userId}`)
+    return challengesData
   } catch (err) {
-    console.error("Error getting user challenges:", err);
-    throw new Error(err.message || "Failed to get challenges.");
+    console.error("Error getting user challenges:", err)
+    throw new Error(err.message || "Failed to get challenges.")
   }
-};
-
-const checkChallengeCompletion = (challengeData, userId, userProgress) => {
-  const goal = Number(challengeData.goal) || 0;
-  const completionRequirement = challengeData.completionRequirement || "complete_goal";
-
-  console.log(`Checking completion: Requirement ${completionRequirement}, Progress ${userProgress}, Goal ${goal}`);
-
-  switch (completionRequirement) {
-    case "complete_goal":
-      return userProgress >= goal;
-
-    case "better_than_others":
-      const participants = challengeData.participants || [];
-      let allProgress = [];
-
-      for (const participantId of participants) {
-        const progress = challengeData.progress?.[participantId] || 0;
-        allProgress.push({
-          userId: participantId,
-          progress: progress
-        });
-      }
-
-      const maxProgress = allProgress.length > 0
-        ? Math.max(...allProgress.map(p => p.progress))
-        : 0;
-
-      console.log(`Better than others check: User progress ${userProgress}, Max progress ${maxProgress}, Goal ${goal}`);
-
-      return userProgress >= maxProgress && userProgress >= goal;
-
-    case "time_based":
-      const minRequirement = challengeData.minimumRequirement || 0;
-      const endDate = challengeData.endDate?.toDate ? challengeData.endDate.toDate() : new Date(challengeData.endDate);
-      const now = new Date();
-
-      console.log(`Time-based check: User progress ${userProgress}, Min requirement ${minRequirement}, Time expired: ${now > endDate}`);
-
-      if (now > endDate) {
-        return userProgress >= minRequirement;
-      }
-      return false;
-
-    default:
-      return userProgress >= goal;
-  }
-};
+}
 
 export const loadLeaderboardData = async (callbacks) => {
   const { setLeaderboard, setError } = callbacks
@@ -1277,7 +1475,6 @@ export const loadLeaderboardData = async (callbacks) => {
     const userAvatars = {}
     const userDocs = {}
     const userOnlineStatus = {}
-
 
     const usersRef = collection(db, "users")
     const usersQuery = query(usersRef, limit(50))
@@ -1310,7 +1507,7 @@ export const loadLeaderboardData = async (callbacks) => {
 
       const distanceInMeters =
         typeof activityData.distance === "number" && !isNaN(activityData.distance) ? activityData.distance : 0
-      userDistances[userId] += (distanceInMeters / 1000)
+      userDistances[userId] += distanceInMeters / 1000
     }
 
     const allUserIds = Object.keys(userNames)
@@ -1325,7 +1522,6 @@ export const loadLeaderboardData = async (callbacks) => {
       level: userDocs[userId]?.level || 1,
       totalActivities: userDocs[userId]?.totalActivities || 0,
     }))
-
 
     leaderboardData.sort((a, b) => {
       if (b.exp !== a.exp) {
@@ -1347,32 +1543,32 @@ export const loadLeaderboardData = async (callbacks) => {
 // Delete Challenge Management
 export const deleteChallenge = async (challengeId) => {
   try {
-    const user = auth.currentUser;
-    if (!user) throw new Error("You must be signed in to delete challenges.");
+    const user = auth.currentUser
+    if (!user) throw new Error("You must be signed in to delete challenges.")
 
-    const challengeRef = doc(db, "challenges", challengeId);
-    const challengeDoc = await getDoc(challengeRef);
+    const challengeRef = doc(db, "challenges", challengeId)
+    const challengeDoc = await getDoc(challengeRef)
 
     if (!challengeDoc.exists()) {
-      throw new Error("Challenge not found.");
+      throw new Error("Challenge not found.")
     }
 
-    const challengeData = challengeDoc.data();
+    const challengeData = challengeDoc.data()
 
     // Check if user is the creator
     if (challengeData.createdBy !== user.uid) {
-      throw new Error("Only the creator can delete this challenge.");
+      throw new Error("Only the creator can delete this challenge.")
     }
 
     // Delete the challenge from Firestore
-    await deleteDoc(challengeRef);
+    await deleteDoc(challengeRef)
 
-    return { success: true, message: "Challenge deleted successfully!" };
+    return { success: true, message: "Challenge deleted successfully!" }
   } catch (err) {
-    console.error("Error deleting challenge:", err);
-    throw new Error(err.message || "Failed to delete challenge. Please try again.");
+    console.error("Error deleting challenge:", err)
+    throw new Error(err.message || "Failed to delete challenge. Please try again.")
   }
-};
+}
 
 // Chat Management
 export const setupChatRoom = async (friendId) => {
@@ -1570,14 +1766,87 @@ export const formatActivityDescription = (activity) => {
   if (!activity) return "No recent activity"
 
   // Use activityType (ID) for lookup, fallback to 'type' (display name)
-  const activityTypeId = resolveActivityTypeId(activity.activityType || activity.type);
-  const activityDisplayName = resolveActivityDisplayName(activity.activityType || activity.type);
+  const activityTypeId = resolveActivityTypeId(activity.activityType || activity.type)
+  const activityDisplayName = resolveActivityDisplayName(activity.activityType || activity.type)
 
   // Treat activity.distance as meters and convert to km for display
-  const distanceInMeters = typeof activity.distance === "number" && !isNaN(activity.distance) ? activity.distance : 0;
-  const distanceInKm = (distanceInMeters / 1000).toFixed(2);
+  const distanceInMeters = typeof activity.distance === "number" && !isNaN(activity.distance) ? activity.distance : 0
+  const distanceInKm = (distanceInMeters / 1000).toFixed(2)
 
-  const timeAgo = activity.createdAt ? formatLastActive(activity.createdAt) : "Unknown time";
+  const timeAgo = activity.createdAt ? formatLastActive(activity.createdAt) : "Unknown time"
 
-  return `${activityDisplayName} ${distanceInKm} km • ${timeAgo}`;
+  return `${activityDisplayName} ${distanceInKm} km • ${timeAgo}`
+}
+
+export const startChallenge = async (challengeId) => {
+  const user = auth.currentUser
+  if (!user) throw new Error("You must be signed in.")
+
+  const challengeRef = doc(db, "challenges", challengeId)
+
+  await runTransaction(db, async (transaction) => {
+    const snap = await transaction.get(challengeRef)
+    if (!snap.exists()) throw new Error("Challenge not found.")
+
+    const challenge = snap.data()
+    const count = (challenge.participants || []).length
+
+    // 🔒 Ensure only creator can start
+    if (challenge.createdBy !== user.uid) {
+      throw new Error("Only the challenge creator can start this challenge.")
+    }
+
+    // 🔒 Ensure still pending
+    if (challenge.status?.global !== "pending") {
+      throw new Error("Challenge has already started or ended.")
+    }
+
+    // Validate participant count
+    if (challenge.groupType === "duo" && count !== 2) {
+      throw new Error("Both players must join before starting.")
+    }
+    if (challenge.groupType === "lobby" && count < 2) {
+      throw new Error("At least 2 players must join before starting.")
+    }
+
+    transaction.update(challengeRef, {
+      startDate: serverTimestamp(),
+      "status.global": "active",
+    })
+  })
+}
+
+// CommunityBackend.js
+export const stakeForChallenge = async (challengeId) => {
+  const user = auth.currentUser
+  if (!user) throw new Error("Not signed in")
+
+  const challengeRef = doc(db, "challenges", challengeId)
+  const userRef = doc(db, "users", user.uid)
+
+  return await runTransaction(db, async (t) => {
+    const chSnap = await t.get(challengeRef)
+    const userSnap = await t.get(userRef)
+
+    if (!chSnap.exists()) throw new Error("Challenge not found")
+    if (!userSnap.exists()) throw new Error("User not found")
+
+    const ch = chSnap.data()
+    const individualStake = Number(ch.individualStake) || Number(ch.stakeXP) / (ch.participants?.length || 1)
+
+    const currentXP = Number(userSnap.data()?.xp ?? userSnap.data()?.totalXP ?? 0)
+    if (currentXP < individualStake) throw new Error("Insufficient XP to stake")
+
+    // deduct user's xp (only their own doc -> allowed)
+    t.update(userRef, { xp: currentXP - individualStake })
+
+    // record that this user staked in the challenge (only the user's key in status -> allowed by your rules)
+    t.update(challengeRef, {
+      [`status.${user.uid}`]: "staked",
+      [`stakedAt.${user.uid}`]: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    })
+
+    return { success: true, individualStake }
+  })
 }

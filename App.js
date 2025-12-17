@@ -10,6 +10,7 @@ import {
   BackHandler,
   ToastAndroid,
   Animated,
+  Easing,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SplashScreen from "expo-splash-screen";
@@ -19,7 +20,7 @@ import * as Notifications from "expo-notifications";
 import twrnc from "twrnc";
 import { FontAwesome } from "@expo/vector-icons";
 import { onAuthStateChanged } from "firebase/auth";
-import { doc, getDoc, collection, query, where, onSnapshot } from "firebase/firestore";
+import { doc, getDoc, collection, query, where, onSnapshot, setDoc } from "firebase/firestore";
 import { auth, db } from "./firebaseConfig";
 import LandingScreen from "./screens/LandingScreen";
 import LoginScreen from "./screens/LoginScreen";
@@ -172,8 +173,6 @@ const initializeUserData = async (user, setUserData) => {
     } else if (sessionData?.uid && sessionData.emailVerified) {
       // No active Firebase user, but valid cached session
       try {
-        // Note: This assumes a mechanism to refresh or validate session; adjust as needed
-        // Since signInWithCredential(null) is not valid, we'll rely on cached data
         isValidSession = true;
         userData = await fetchUserDataFromFirestore(sessionData.uid, defaultUserData);
         setUserData(userData);
@@ -221,7 +220,7 @@ const fetchUserDataFromFirestore = async (uid, defaultUserData) => {
         totalXP: firestoreData.totalXP || defaultUserData.totalXP,
       };
     } else {
-      // Optionally create a new user document
+      // Create a new user document
       const newUserData = { ...defaultUserData, uid };
       await setDoc(userDocRef, newUserData);
       console.log("Created new user document for UID:", uid);
@@ -231,6 +230,129 @@ const fetchUserDataFromFirestore = async (uid, defaultUserData) => {
     console.error("Error fetching user data from Firestore:", error.message);
     return { ...defaultUserData };
   }
+};
+
+// Time-Based Greeting Component
+const TimeBasedGreeting = ({ userData }) => {
+  const [currentMessageIndex, setCurrentMessageIndex] = useState(0);
+  const fadeAnim = useRef(new Animated.Value(1)).current;
+  const slideAnim = useRef(new Animated.Value(0)).current;
+
+  // Time-based greetings and messages
+  const getTimeBasedGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return { greeting: "Good Morning", messages: motivationalMessages.morning };
+    if (hour < 17) return { greeting: "Good Afternoon", messages: motivationalMessages.afternoon };
+    if (hour < 20) return { greeting: "Good Evening", messages: motivationalMessages.evening };
+    return { greeting: "Good Night", messages: motivationalMessages.night };
+  };
+
+  const motivationalMessages = {
+    morning: [
+      "Rise and shine!",
+      "New day, new energy!",
+      "Make today count!",
+      "Morning moves matter!",
+      "Start strong!",
+      "Seize the day!"
+    ],
+    afternoon: [
+      "Keep it up!",
+      "Stay focused!",
+      "You're crushing it!",
+      "Halfway there!",
+      "Push forward!",
+      "Making progress!"
+    ],
+    evening: [
+      "Great work today!",
+      "Finish strong!",
+      "Almost there!",
+      "Proud of you!",
+      "End on a high note!",
+      "You did amazing!"
+    ],
+    night: [
+      "Rest and recover!",
+      "Dream big tonight!",
+      "Tomorrow awaits!",
+      "Recharge for tomorrow!",
+      "Sleep well, achieve more!",
+      "You earned this rest!"
+    ]
+  };
+
+  const { greeting, messages } = getTimeBasedGreeting();
+
+  // Rotate through messages with animation
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // Fade out and slide up current message
+      Animated.parallel([
+        Animated.timing(fadeAnim, {
+          toValue: 0,
+          duration: 500,
+          useNativeDriver: true,
+          easing: Easing.ease
+        }),
+        Animated.timing(slideAnim, {
+          toValue: -10,
+          duration: 500,
+          useNativeDriver: true,
+          easing: Easing.ease
+        })
+      ]).start(() => {
+        // Change to next message
+        setCurrentMessageIndex((prevIndex) =>
+          prevIndex >= messages.length - 1 ? 0 : prevIndex + 1
+        );
+
+        // Fade in and slide up new message
+        Animated.parallel([
+          Animated.timing(fadeAnim, {
+            toValue: 1,
+            duration: 500,
+            useNativeDriver: true,
+            easing: Easing.ease
+          }),
+          Animated.timing(slideAnim, {
+            toValue: 0,
+            duration: 500,
+            useNativeDriver: true,
+            easing: Easing.ease
+          })
+        ]).start();
+      });
+    }, 5000); // Change message every 5 seconds
+
+    return () => clearInterval(interval);
+  }, [messages.length]);
+
+  return (
+    <View style={twrnc`flex-1`}>
+      <CustomText
+        weight="bold"
+        style={twrnc`text-white text-[${isSmallDevice ? responsiveFontSizes.xl : responsiveFontSizes["2xl"]}px]`}
+        numberOfLines={null}
+        ellipsizeMode="tail"
+      >
+        {greeting}, {userData.username || "User"}!
+      </CustomText>
+      <Animated.View
+        style={{
+          opacity: fadeAnim,
+          transform: [{ translateY: slideAnim }],
+        }}
+      >
+        <CustomText
+          style={twrnc`text-[#FFC107] text-[${responsiveFontSizes.sm}px]`}
+          numberOfLines={2}
+        >
+          {messages[currentMessageIndex]}
+        </CustomText>
+      </Animated.View>
+    </View>
+  );
 };
 
 // Animated Screen Wrapper Component
@@ -671,6 +793,9 @@ export default function App() {
     const initApp = async () => {
       console.log("initApp started");
       try {
+        // Add a flag to track if this is a logout scenario
+        const isLogoutScenario = await AsyncStorage.getItem("isLoggingOut");
+
         // Initialize user data and session
         const { userData: loadedUserData, isValidSession } = await initializeUserData(auth.currentUser, setUserData);
         console.log("initializeUserData returned:", { userData: loadedUserData, isValidSession });
@@ -694,8 +819,13 @@ export default function App() {
             const { userData: loadedUserData, isValidSession } = await initializeUserData(user, setUserData);
             console.log("initializeUserData in auth state change:", { userData: loadedUserData, isValidSession });
 
+            // Check if this is a logout scenario
+            const isLogoutScenario = await AsyncStorage.getItem("isLoggingOut");
+
             if (user && user.emailVerified) {
               console.log("User is logged in and email verified");
+              // Clear logout flag if user logs back in
+              await AsyncStorage.removeItem("isLoggingOut");
               const lastScreen = await AsyncStorage.getItem("lastActiveScreen");
               const targetScreen = lastScreen && ["dashboard", "activity", "profile", "community", "Leaderboard"].includes(lastScreen)
                 ? lastScreen
@@ -711,6 +841,7 @@ export default function App() {
               fetchNotificationCount();
             } else if (user && !user.emailVerified) {
               console.log("User logged in but email not verified");
+              await AsyncStorage.removeItem("isLoggingOut");
               if (!verificationModalShown) {
                 setModalVisible(true);
                 setModalTitle("Email Verification Required");
@@ -718,8 +849,10 @@ export default function App() {
                 setVerificationModalShown(true);
                 navigateWithAnimation("signin", { email: user.email });
               }
-            } else if (isValidSession) {
-              console.log("No active user but valid cached session found");
+            } else if (isValidSession && user) {
+              // Only restore session if there's ALSO an active Firebase user
+              console.log("Active user with valid cached session found");
+              await AsyncStorage.removeItem("isLoggingOut");
               const lastScreen = await AsyncStorage.getItem("lastActiveScreen");
               const targetScreen = lastScreen && ["dashboard", "activity", "profile", "community", "Leaderboard"].includes(lastScreen)
                 ? lastScreen
@@ -734,27 +867,54 @@ export default function App() {
               }
               fetchNotificationCount();
             } else {
-              console.log("No user or valid cached session, navigating to landing");
-              await AsyncStorage.multiRemove(["userSession", "lastActiveScreen", "activityParams"]);
-              setUserData({
-                username: "User",
-                email: "user@example.com",
-                avatar: "https://randomuser.me/api/portraits/men/1.jpg",
-                uid: null,
-                privacySettings: {
-                  showProfile: true,
-                  showActivities: true,
-                  showStats: true,
-                },
-                avgDailySteps: 5000,
-                avgDailyDistance: 2.5,
-                avgActiveDuration: 45,
-                avgDailyReps: 20,
-                level: 1,
-                totalXP: 0,
-              });
-              navigateWithAnimation("landing");
-              setNotificationCount(0);
+              // CRITICAL FIX: Check if this is a logout vs fresh app start
+              if (isLogoutScenario === "true") {
+                console.log("User logged out, navigating to signin");
+                await AsyncStorage.removeItem("isLoggingOut");
+                await AsyncStorage.multiRemove(["userSession", "lastActiveScreen", "activityParams"]);
+                setUserData({
+                  username: "User",
+                  email: "user@example.com",
+                  avatar: "https://randomuser.me/api/portraits/men/1.jpg",
+                  uid: null,
+                  privacySettings: {
+                    showProfile: true,
+                    showActivities: true,
+                    showStats: true,
+                  },
+                  avgDailySteps: 5000,
+                  avgDailyDistance: 2.5,
+                  avgActiveDuration: 45,
+                  avgDailyReps: 20,
+                  level: 1,
+                  totalXP: 0,
+                });
+                navigateWithAnimation("signin"); // Go to signin instead of landing
+                setNotificationCount(0);
+              } else {
+                console.log("Fresh app start or no user, navigating to landing");
+                await AsyncStorage.multiRemove(["userSession", "lastActiveScreen", "activityParams"]);
+                setUserData({
+                  username: "User",
+                  email: "user@example.com",
+                  avatar: "https://randomuser.me/api/portraits/men/1.jpg",
+                  uid: null,
+                  privacySettings: {
+                    showProfile: true,
+                    showActivities: true,
+                    showStats: true,
+                  },
+                  avgDailySteps: 5000,
+                  avgDailyDistance: 2.5,
+                  avgActiveDuration: 45,
+                  avgDailyReps: 20,
+                  level: 1,
+                  totalXP: 0,
+                });
+                navigateWithAnimation("landing"); // Fresh app start goes to landing
+                setNotificationCount(0);
+              }
+
               if (notificationsUnsubscribe.current) {
                 notificationsUnsubscribe.current();
                 notificationsUnsubscribe.current = null;
@@ -762,6 +922,7 @@ export default function App() {
             }
           } catch (error) {
             console.error("Error in onAuthStateChanged:", error.message);
+            await AsyncStorage.multiRemove(["userSession", "lastActiveScreen", "activityParams", "isLoggingOut"]);
             navigateWithAnimation("landing");
             setNotificationCount(0);
             if (notificationsUnsubscribe.current) {
@@ -775,49 +936,11 @@ export default function App() {
           }
         });
 
-        // Timeout to handle delayed Firebase initialization
-        setTimeout(async () => {
-          if (!authInitialized) {
-            console.log("onAuthStateChanged did not fire, checking cached session");
-            const storedSession = await AsyncStorage.getItem("userSession");
-            const sessionData = safeParseJSON(storedSession, null);
-            if (sessionData?.uid && sessionData.emailVerified) {
-              const { userData: loadedUserData, isValidSession } = await initializeUserData(null, setUserData);
-              if (isValidSession) {
-                const lastScreen = await AsyncStorage.getItem("lastActiveScreen");
-                const targetScreen = lastScreen && ["dashboard", "activity", "profile", "community", "Leaderboard"].includes(lastScreen)
-                  ? lastScreen
-                  : "dashboard";
-                console.log(`Navigating to ${targetScreen}`);
-                navigateWithAnimation(targetScreen);
-                if (targetScreen === "activity") {
-                  const savedParams = await AsyncStorage.getItem("activityParams");
-                  if (savedParams) {
-                    setActivityParams(safeParseJSON(savedParams, {}));
-                  }
-                }
-                fetchNotificationCount();
-              } else {
-                await AsyncStorage.multiRemove(["userSession", "lastActiveScreen", "activityParams"]);
-                navigateWithAnimation("landing");
-                setNotificationCount(0);
-              }
-            } else {
-              console.log("No valid session, navigating to landing");
-              await AsyncStorage.multiRemove(["userSession", "lastActiveScreen", "activityParams"]);
-              navigateWithAnimation("landing");
-              setNotificationCount(0);
-            }
-            setIsNavigationLocked(false);
-            setIsInitializing(false);
-            await SplashScreen.hideAsync();
-          }
-        }, 7000);
-
+        // Rest of your timeout logic...
         return unsubscribe;
       } catch (error) {
         console.error("Error in initApp:", error.message);
-        await AsyncStorage.multiRemove(["userSession", "lastActiveScreen", "activityParams"]);
+        await AsyncStorage.multiRemove(["userSession", "lastActiveScreen", "activityParams", "isLoggingOut"]);
         navigateWithAnimation("landing");
         setIsNavigationLocked(false);
         setNotificationCount(0);
@@ -828,6 +951,8 @@ export default function App() {
 
     initApp();
   }, [fetchNotificationCount, verificationModalShown]);
+
+
 
   const onLayoutRootView = useCallback(async () => {
     if (fontsLoaded) await SplashScreen.hideAsync();
@@ -895,14 +1020,6 @@ export default function App() {
     setIsNavigationLocked(false);
   };
 
-  const getTimeBasedGreeting = () => {
-    const hour = new Date().getHours();
-    if (hour < 12) return "Good Morning! Let's start the day strong!";
-    if (hour < 17) return "Good Afternoon! Keep up the great work!";
-    if (hour < 20) return "Good Evening! You're doing awesome!";
-    return "Good Night! But if you're up for it, keep pushing your limits tonight!";
-  };
-
   if (isInitializing) {
     return (
       <View style={twrnc`flex-1 bg-[#121826] justify-center items-center`}>
@@ -965,19 +1082,10 @@ export default function App() {
             ]}
           >
             <AnimatedScreenWrapper isActive={activeScreen === "dashboard"} animationType="fade">
-              <View style={twrnc`p-[${responsivePadding.lg}px]`}>
+              <View style={twrnc`px-5 mb-2`}>
                 <CustomText style={twrnc`text-gray-400 text-[${responsiveFontSizes.sm}px]`}>{formatDate()}</CustomText>
                 <View style={twrnc`flex-row justify-between items-center mt-2`}>
-                  <View style={twrnc`flex-1 flex-row items-center`}>
-                    <CustomText
-                      weight="bold"
-                      style={twrnc`text-white text-[${isSmallDevice ? responsiveFontSizes.xl : responsiveFontSizes["2xl"]}px] flex-shrink-1`}
-                      numberOfLines={null}
-                      ellipsizeMode="tail"
-                    >
-                      {getTimeBasedGreeting()}, {userData.username || "User"}!
-                    </CustomText>
-                  </View>
+                  <TimeBasedGreeting userData={userData} />
                   <View style={twrnc`flex-row`}>
                     <TouchableOpacity
                       style={twrnc`bg-[#2A2E3A] rounded-full w-12 h-12 items-center justify-center mr-3 relative shadow-lg p-[${responsivePadding.base}px]`}
@@ -1003,7 +1111,10 @@ export default function App() {
                   </View>
                 </View>
               </View>
-              <DashboardScreen navigateToActivity={navigateToActivity} userData={userData} />
+              <DashboardScreen
+                navigateToActivity={navigateToActivity}
+                userData={userData}
+              />
             </AnimatedScreenWrapper>
 
             <AnimatedScreenWrapper isActive={activeScreen === "landing"} animationType="fade">
@@ -1081,7 +1192,7 @@ export default function App() {
             </AnimatedScreenWrapper>
           </Animated.View>
 
-          {(activeScreen === "dashboard" || activeScreen === "profile" || activeScreen === "Leaderboard") && (
+          {(activeScreen === "dashboard" || activeScreen === "Leaderboard") && (
             <Animated.View
               style={[
                 twrnc`flex-row justify-between items-center bg-[#1E2538] px-[${responsivePadding.lg}px] py-[${responsivePadding.base}px] absolute bottom-0 w-full shadow-2xl`,

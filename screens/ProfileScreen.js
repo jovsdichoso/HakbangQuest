@@ -1,6 +1,6 @@
-"use client";
+"use client"
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react"
 import {
   View,
   TouchableOpacity,
@@ -14,113 +14,137 @@ import {
   Modal,
   Animated,
   Dimensions,
-} from "react-native";
-import twrnc from "twrnc";
-import CustomText from "../components/CustomText";
-import { FontAwesome, Ionicons } from "@expo/vector-icons";
-import { auth, db } from "../firebaseConfig";
-import { signOut } from "firebase/auth";
-import { doc, getDoc, collection, query, where, getDocs, updateDoc, setDoc, orderBy, limit } from "firebase/firestore";
-import * as ImagePicker from "expo-image-picker";
-import axios from "axios";
-import CustomModal from "../components/CustomModal";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { loadBadgesFromFirestore } from "./BadgeSystem";
-import { BadgeGrid, BadgeModal, AllBadgesModal } from "../components/BadgeComponents";
+  SafeAreaView,
+  FlatList,
+} from "react-native"
+import twrnc from "twrnc"
+import CustomText from "../components/CustomText"
+import { FontAwesome, Ionicons } from "@expo/vector-icons"
+import { auth, db } from "../firebaseConfig"
+import { signOut } from "firebase/auth"
+import { doc, getDoc, collection, query, where, getDocs, updateDoc, setDoc, orderBy, limit } from "firebase/firestore"
+import * as ImagePicker from "expo-image-picker"
+import axios from "axios"
+import CustomModal from "../components/CustomModal"
+import AsyncStorage from "@react-native-async-storage/async-storage"
+import { BadgeGrid, BadgeModal, AllBadgesModal } from "../components/BadgeComponents"
 
-const { width, height } = Dimensions.get("window");
+const { width, height } = Dimensions.get("window")
 
 // Helper function to safely parse JSON
 const safeParseJSON = (str, defaultValue = {}) => {
   try {
-    return str ? JSON.parse(str) : defaultValue;
+    return str ? JSON.parse(str) : defaultValue
   } catch (error) {
-    console.error("JSON parse error:", error);
-    return defaultValue;
+    console.error("JSON parse error:", error)
+    return defaultValue
   }
-};
+}
 
 // Format duration helper
 const formatDuration = (seconds) => {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = seconds % 60;
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const secs = seconds % 60
   if (hours > 0) {
-    return `${hours}:${minutes.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+    return `${hours}:${minutes.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
   }
-  return `${minutes}:${secs.toString().padStart(2, "0")}`;
-};
+  return `${minutes}:${secs.toString().padStart(2, "0")}`
+}
 
 // Get activity icon
 const getActivityIcon = (activityType) => {
   switch (activityType) {
     case "running":
-      return "walk";
+      return "walk"
     case "cycling":
-      return "bicycle";
+      return "bicycle"
     case "walking":
-      return "walk";
+      return "walk"
     case "jogging":
-      return "walk";
+      return "walk"
     case "pushup":
     case "squat":
     case "situp":
-      return "fitness";
+      return "fitness"
     default:
-      return "fitness";
+      return "fitness"
   }
-};
+}
 
 // Get activity color
 const getActivityColor = (activityType) => {
   switch (activityType) {
     case "running":
-      return "#EF476F";
+      return "#EF476F"
     case "cycling":
-      return "#06D6A0";
+      return "#06D6A0"
     case "walking":
-      return "#4361EE";
+      return "#4361EE"
     case "jogging":
-      return "#FFC107";
+      return "#FFC107"
     case "pushup":
-      return "#9B5DE5";
+      return "#9B5DE5"
     case "squat":
-      return "#F15BB5";
+      return "#F15BB5"
     case "situp":
-      return "#00BBF9";
+      return "#00BBF9"
     default:
-      return "#4361EE";
+      return "#4361EE"
   }
-};
+}
+
+// Format Firestore timestamps
+const formatTimestamp = (timestamp) => {
+  if (!timestamp) return "—"
+  const date = timestamp?.toDate ? timestamp.toDate() : timestamp instanceof Date ? timestamp : null
+  return date ? date.toLocaleDateString() : "—"
+}
 
 const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignIn }) => {
   // Drawer animation
-  const drawerAnimation = useRef(new Animated.Value(-width)).current;
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const drawerAnimation = useRef(new Animated.Value(-width)).current
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false)
 
   // Modal states
-  const [showLogoutModal, setShowLogoutModal] = useState(false);
-  const [showEditProfileModal, setShowEditProfileModal] = useState(false);
-  const [showHelpSupportModal, setShowHelpSupportModal] = useState(false);
-  const [showPrivacySettingsModal, setShowPrivacySettingsModal] = useState(false);
+  const [showLogoutModal, setShowLogoutModal] = useState(false)
+  const [showEditProfileModal, setShowEditProfileModal] = useState(false)
+  const [showHelpSupportModal, setShowHelpSupportModal] = useState(false)
+  const [showPrivacySettingsModal, setShowPrivacySettingsModal] = useState(false)
 
   // Badge System States
-  const [badges, setBadges] = useState([]);
-  const [selectedBadge, setSelectedBadge] = useState(null);
-  const [isBadgeModalVisible, setIsBadgeModalVisible] = useState(false);
-  const [isAllBadgesModalVisible, setIsAllBadgesModalVisible] = useState(false);
+  const [badges, setBadges] = useState([])
+  const [selectedBadge, setSelectedBadge] = useState(null)
+  const [isBadgeModalVisible, setIsBadgeModalVisible] = useState(false)
+  const [isAllBadgesModalVisible, setIsAllBadgesModalVisible] = useState(false)
 
   // Recent Activities State
-  const [recentActivities, setRecentActivities] = useState([]);
+  const [recentActivities, setRecentActivities] = useState([])
 
   // Form states
-  const [editUsername, setEditUsername] = useState("");
+  const [editUsername, setEditUsername] = useState("")
 
   // User data
   const [userData, setUserData] = useState({
     username: "User",
     email: "user@example.com",
     avatar: "https://randomuser.me/api/portraits/men/1.jpg",
+    level: 1,
+    totalXP: 0,
+    totalDistance: 0,
+    totalDuration: 0,
+    totalReps: 0,
+    totalActivities: 0,
+    totalSteps: 0,
+    totalStrengthDuration: 0,
+    friends: [],
+    deviceType: "",
+    pushToken: "",
+    isOnline: false,
+    createdAt: null,
+    lastSeen: null,
+    lastActivityDate: null,
+    lastQuestCompleted: null,
     stats: {
       totalDistance: "0 km",
       totalActivities: "0",
@@ -132,18 +156,20 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
       showActivities: true,
       showStats: true,
     },
-  });
+  })
 
   // Loading states
-  const [loading, setLoading] = useState(true);
-  const [achievements, setAchievements] = useState([]);
-  const [error, setError] = useState(null);
-  const [uploading, setUploading] = useState(false);
-  const [savingUsername, setSavingUsername] = useState(false);
-  const [savingPrivacySettings, setSavingPrivacySettings] = useState(false);
+  const [loading, setLoading] = useState(true)
+  const [achievements, setAchievements] = useState([])
+  const [error, setError] = useState(null)
+  const [uploading, setUploading] = useState(false)
+  const [savingUsername, setSavingUsername] = useState(false)
+  const [savingPrivacySettings, setSavingPrivacySettings] = useState(false)
 
-  const CLOUDINARY_URL = "https://api.cloudinary.com/v1_1/dljywnlvh/image/upload";
-  const CLOUDINARY_UPLOAD_PRESET = "profile";
+  const [showAllActivities, setShowAllActivities] = useState(false)
+
+  const CLOUDINARY_URL = "https://api.cloudinary.com/v1_1/dljywnlvh/image/upload"
+  const CLOUDINARY_UPLOAD_PRESET = "profile"
 
   // FAQ content for Help & Support
   const faqItems = [
@@ -165,7 +191,7 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
       answer:
         'To reset your password, go to the Login screen and tap "Forgot Password". Enter your email address and follow the instructions sent to your email.',
     },
-  ];
+  ]
 
   // Enhanced drawer menu items
   const drawerMenuItems = [
@@ -178,8 +204,8 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
       color: "#4361EE",
       bgColor: "#4361EE20",
       action: () => {
-        closeDrawer();
-        setTimeout(() => setShowEditProfileModal(true), 300);
+        closeDrawer()
+        setTimeout(() => setShowEditProfileModal(true), 300)
       },
     },
     {
@@ -191,8 +217,8 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
       color: "#FF6B35",
       bgColor: "#FF6B3520",
       action: () => {
-        closeDrawer();
-        setTimeout(() => setShowHelpSupportModal(true), 300);
+        closeDrawer()
+        setTimeout(() => setShowHelpSupportModal(true), 300)
       },
     },
     {
@@ -204,8 +230,8 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
       color: "#9C27B0",
       bgColor: "#9C27B020",
       action: () => {
-        closeDrawer();
-        setTimeout(() => setShowPrivacySettingsModal(true), 300);
+        closeDrawer()
+        setTimeout(() => setShowPrivacySettingsModal(true), 300)
       },
     },
     {
@@ -221,21 +247,21 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
       color: "#EF4444",
       bgColor: "#EF444420",
       action: () => {
-        closeDrawer();
-        setTimeout(() => setShowLogoutModal(true), 300);
+        closeDrawer()
+        setTimeout(() => setShowLogoutModal(true), 300)
       },
     },
-  ];
+  ]
 
   // Badge System Functions
   const handleBadgePress = (badge) => {
-    setSelectedBadge(badge);
-    setIsBadgeModalVisible(true);
-  };
+    setSelectedBadge(badge)
+    setIsBadgeModalVisible(true)
+  }
 
   const handleViewAllBadges = () => {
-    setIsAllBadgesModalVisible(true);
-  };
+    setIsAllBadgesModalVisible(true)
+  }
 
   // Fetch recent activities
   const fetchRecentActivities = async (userId) => {
@@ -245,27 +271,51 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
         where("userId", "==", userId),
         orderBy("createdAt", "desc"),
         limit(5),
-      );
-      const activitiesSnapshot = await getDocs(activitiesQuery);
+      )
+      const activitiesSnapshot = await getDocs(activitiesQuery)
       const activities = activitiesSnapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
-      }));
-      setRecentActivities(activities);
+      }))
+      setRecentActivities(activities)
     } catch (error) {
-      console.error("Error fetching recent activities:", error);
-      setRecentActivities([]);
+      console.error("Error fetching recent activities:", error)
+      setRecentActivities([])
+    }
+  }
+
+  // Fetch badges from "user_badges"
+  const fetchBadges = async (userId) => {
+    try {
+      const userBadgesRef = doc(db, "user_badges", userId);
+      const snapshot = await getDoc(userBadgesRef);
+
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        const badgeList = data.badges || [];
+
+        console.log("Fetched badges:", badgeList);
+        setBadges(badgeList);
+      } else {
+        console.log("No badge document found for user:", userId);
+        setBadges([]);
+      }
+    } catch (error) {
+      console.error("Error fetching badges:", error);
+      setBadges([]);
     }
   };
 
+
+
   const openDrawer = () => {
-    setIsDrawerOpen(true);
+    setIsDrawerOpen(true)
     Animated.timing(drawerAnimation, {
       toValue: 0,
       duration: 300,
       useNativeDriver: true,
-    }).start();
-  };
+    }).start()
+  }
 
   const closeDrawer = () => {
     Animated.timing(drawerAnimation, {
@@ -273,16 +323,16 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
       duration: 300,
       useNativeDriver: true,
     }).start(() => {
-      setIsDrawerOpen(false);
-    });
-  };
+      setIsDrawerOpen(false)
+    })
+  }
 
   const selectImage = async () => {
     try {
-      const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync()
       if (!permissionResult.granted) {
-        Alert.alert("Permission Denied", "Please grant access to your photo library to select an image.");
-        return;
+        Alert.alert("Permission Denied", "Please grant access to your photo library to select an image.")
+        return
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -290,175 +340,175 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.8,
-      });
+      })
 
       if (result.canceled) {
-        console.log("User cancelled image picker");
-        return;
+        console.log("User cancelled image picker")
+        return
       }
 
-      const uri = result.assets[0].uri;
-      const mimeType = result.assets[0].mimeType || "image/jpeg";
-      await uploadImage(uri, mimeType);
+      const uri = result.assets[0].uri
+      const mimeType = result.assets[0].mimeType || "image/jpeg"
+      await uploadImage(uri, mimeType)
     } catch (err) {
-      console.error("Image picker error:", err.message, err.stack);
-      Alert.alert("Error", "Failed to pick image. Please try again.");
+      console.error("Image picker error:", err.message, err.stack)
+      Alert.alert("Error", "Failed to pick image. Please try again.")
     }
-  };
+  }
 
   const uploadImage = async (uri, mimeType) => {
-    setUploading(true);
+    setUploading(true)
     try {
-      const formData = new FormData();
+      const formData = new FormData()
       formData.append("file", {
         uri: Platform.OS === "ios" ? uri.replace("file://", "") : uri,
         type: mimeType,
         name: `profile.${mimeType.split("/")[1] || "jpg"}`,
-      });
-      formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
+      })
+      formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET)
 
       const response = await axios.post(CLOUDINARY_URL, formData, {
         headers: {
           "Content-Type": "multipart/form-data",
         },
-      });
+      })
 
       if (!response.data.secure_url) {
-        console.error("Cloudinary response:", JSON.stringify(response.data, null, 2));
-        throw new Error("No secure_url in Cloudinary response");
+        console.error("Cloudinary response:", JSON.stringify(response.data, null, 2))
+        throw new Error("No secure_url in Cloudinary response")
       }
 
-      const imageUrl = response.data.secure_url;
-      await saveImageUrlToFirestore(imageUrl);
-      setUserData((prev) => ({ ...prev, avatar: imageUrl }));
-      Alert.alert("Success", "Profile picture updated successfully");
+      const imageUrl = response.data.secure_url
+      await saveImageUrlToFirestore(imageUrl)
+      setUserData((prev) => ({ ...prev, avatar: imageUrl }))
+      Alert.alert("Success", "Profile picture updated successfully")
 
       // Update AsyncStorage with new avatar
       try {
-        const cachedUserData = await AsyncStorage.getItem("userData");
+        const cachedUserData = await AsyncStorage.getItem("userData")
         if (cachedUserData) {
-          const parsedData = safeParseJSON(cachedUserData, {});
-          parsedData.avatar = imageUrl;
-          await AsyncStorage.setItem("userData", JSON.stringify(parsedData));
+          const parsedData = safeParseJSON(cachedUserData, {})
+          parsedData.avatar = imageUrl
+          await AsyncStorage.setItem("userData", JSON.stringify(parsedData))
         }
       } catch (storageErr) {
-        console.warn("Could not update avatar in AsyncStorage:", storageErr);
+        console.warn("Could not update avatar in AsyncStorage:", storageErr)
       }
     } catch (err) {
-      console.error("Cloudinary upload error:", err.message, err.response?.data);
+      console.error("Cloudinary upload error:", err.message, err.response?.data)
       Alert.alert(
         "Error",
         `Failed to upload image: ${err.response?.data?.error?.message || "Please check your network and try again."}`,
-      );
+      )
     } finally {
-      setUploading(false);
+      setUploading(false)
     }
-  };
+  }
 
   const saveImageUrlToFirestore = async (imageUrl) => {
     try {
-      const user = auth.currentUser;
+      const user = auth.currentUser
       if (!user) {
-        throw new Error("Not authenticated");
+        throw new Error("Not authenticated")
       }
 
-      const userRef = doc(db, "users", user.uid);
-      const userDoc = await getDoc(userRef);
+      const userRef = doc(db, "users", user.uid)
+      const userDoc = await getDoc(userRef)
 
       if (userDoc.exists()) {
-        await updateDoc(userRef, { avatar: imageUrl });
+        await updateDoc(userRef, { avatar: imageUrl })
       } else {
-        await setDoc(userRef, { avatar: imageUrl, username: userData.username || "User", email: user.email });
+        await setDoc(userRef, { avatar: imageUrl, username: userData.username || "User", email: user.email })
       }
 
-      console.log("Image URL saved to Firestore");
+      console.log("Image URL saved to Firestore")
     } catch (err) {
-      console.error("Firestore update error:", err);
-      throw err;
+      console.error("Firestore update error:", err)
+      throw err
     }
-  };
+  }
 
   const saveUsername = async () => {
     if (!editUsername.trim()) {
-      Alert.alert("Error", "Username cannot be empty");
-      return;
+      Alert.alert("Error", "Username cannot be empty")
+      return
     }
 
     if (editUsername.length < 3) {
-      Alert.alert("Error", "Username must be at least 3 characters long");
-      return;
+      Alert.alert("Error", "Username must be at least 3 characters long")
+      return
     }
 
     if (!/^[a-zA-Z0-9_]+$/.test(editUsername)) {
-      Alert.alert("Error", "Username can only contain letters, numbers, and underscores");
-      return;
+      Alert.alert("Error", "Username can only contain letters, numbers, and underscores")
+      return
     }
 
-    setSavingUsername(true);
+    setSavingUsername(true)
     try {
-      const user = auth.currentUser;
+      const user = auth.currentUser
       if (!user) {
-        throw new Error("Not authenticated");
+        throw new Error("Not authenticated")
       }
 
-      const userRef = doc(db, "users", user.uid);
-      await updateDoc(userRef, { username: editUsername });
-      setUserData((prev) => ({ ...prev, username: editUsername }));
-      setShowEditProfileModal(false);
-      Alert.alert("Success", "Username updated successfully");
+      const userRef = doc(db, "users", user.uid)
+      await updateDoc(userRef, { username: editUsername })
+      setUserData((prev) => ({ ...prev, username: editUsername }))
+      setShowEditProfileModal(false)
+      Alert.alert("Success", "Username updated successfully")
 
       // Update AsyncStorage with new username
       try {
-        const cachedUserData = await AsyncStorage.getItem("userData");
+        const cachedUserData = await AsyncStorage.getItem("userData")
         if (cachedUserData) {
-          const parsedData = safeParseJSON(cachedUserData, {});
-          parsedData.username = editUsername;
-          await AsyncStorage.setItem("userData", JSON.stringify(parsedData));
+          const parsedData = safeParseJSON(cachedUserData, {})
+          parsedData.username = editUsername
+          await AsyncStorage.setItem("userData", JSON.stringify(parsedData))
         }
       } catch (storageErr) {
-        console.warn("Could not update username in AsyncStorage:", storageErr);
+        console.warn("Could not update username in AsyncStorage:", storageErr)
       }
     } catch (err) {
-      console.error("Error updating username:", err);
-      Alert.alert("Error", "Failed to update username. Please try again.");
+      console.error("Error updating username:", err)
+      Alert.alert("Error", "Failed to update username. Please try again.")
     } finally {
-      setSavingUsername(false);
+      setSavingUsername(false)
     }
-  };
+  }
 
   const savePrivacySettings = async () => {
-    setSavingPrivacySettings(true);
+    setSavingPrivacySettings(true)
     try {
-      const user = auth.currentUser;
+      const user = auth.currentUser
       if (!user) {
-        throw new Error("Not authenticated");
+        throw new Error("Not authenticated")
       }
 
-      console.log("Saving privacy settings:", userData.privacySettings);
-      const userRef = doc(db, "users", user.uid);
-      await updateDoc(userRef, { privacySettings: userData.privacySettings });
+      console.log("Saving privacy settings:", userData.privacySettings)
+      const userRef = doc(db, "users", user.uid)
+      await updateDoc(userRef, { privacySettings: userData.privacySettings })
 
       // Update AsyncStorage with privacy settings
       try {
-        const cachedUserData = await AsyncStorage.getItem("userData");
+        const cachedUserData = await AsyncStorage.getItem("userData")
         if (cachedUserData) {
-          const parsedData = safeParseJSON(cachedUserData, {});
-          parsedData.privacySettings = userData.privacySettings;
-          await AsyncStorage.setItem("userData", JSON.stringify(parsedData));
+          const parsedData = safeParseJSON(cachedUserData, {})
+          parsedData.privacySettings = userData.privacySettings
+          await AsyncStorage.setItem("userData", JSON.stringify(parsedData))
         }
       } catch (storageErr) {
-        console.warn("Could not update privacy settings in AsyncStorage:", storageErr);
+        console.warn("Could not update privacy settings in AsyncStorage:", storageErr)
       }
 
-      setShowPrivacySettingsModal(false);
-      Alert.alert("Success", "Privacy settings updated successfully");
+      setShowPrivacySettingsModal(false)
+      Alert.alert("Success", "Privacy settings updated successfully")
     } catch (err) {
-      console.error("Error updating privacy settings:", err);
-      Alert.alert("Error", "Failed to update privacy settings. Please try again.");
+      console.error("Error updating privacy settings:", err)
+      Alert.alert("Error", "Failed to update privacy settings. Please try again.")
     } finally {
-      setSavingPrivacySettings(false);
+      setSavingPrivacySettings(false)
     }
-  };
+  }
 
   const togglePrivacySetting = (setting) => {
     setUserData((prev) => ({
@@ -467,8 +517,8 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
         ...prev.privacySettings,
         [setting]: !prev.privacySettings[setting],
       },
-    }));
-  };
+    }))
+  }
 
   const contactSupport = () => {
     Alert.alert("Contact Support", "How would you like to contact our support team?", [
@@ -479,18 +529,18 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
       {
         text: "Email",
         onPress: () => {
-          const email = "support@hakbangquest.com";
-          const subject = "HakbangQuest Support Request";
-          const body = `User ID: ${auth.currentUser?.uid || "Not available"}\nEmail: ${userData.email}\n\nPlease describe your issue:`;
+          const email = "support@hakbangquest.com"
+          const subject = "HakbangQuest Support Request"
+          const body = `User ID: ${auth.currentUser?.uid || "Not available"}\nEmail: ${userData.email}\n\nPlease describe your issue:`
           Linking.openURL(
             `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`,
           ).catch((err) => {
-            console.error("Could not open email client:", err);
+            console.error("Could not open email client:", err)
             Alert.alert(
               "Email Error",
               "Could not open email client. Please send an email manually to support@hakbangquest.com",
-            );
-          });
+            )
+          })
         },
       },
       {
@@ -504,21 +554,21 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
               {
                 text: "Yes",
                 onPress: () => {
-                  Alert.alert("Ticket System", "The ticket system will be available in the next update.");
+                  Alert.alert("Ticket System", "The ticket system will be available in the next update.")
                 },
               },
             ],
-          );
+          )
         },
       },
       {
         text: "FAQ",
         onPress: () => {
-          setShowHelpSupportModal(true);
+          setShowHelpSupportModal(true)
         },
       },
-    ]);
-  };
+    ])
+  }
 
   const openFAQ = (faqItem) => {
     Alert.alert(faqItem.question, faqItem.answer, [
@@ -529,215 +579,187 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
         text: "More Help",
         onPress: () => contactSupport(),
       },
-    ]);
-  };
+    ])
+  }
 
   const restorePrivacySettingsFromStorage = async () => {
     try {
-      const cachedUserData = await AsyncStorage.getItem("userData");
+      const cachedUserData = await AsyncStorage.getItem("userData")
       if (cachedUserData) {
-        const parsedData = safeParseJSON(cachedUserData, {});
+        const parsedData = safeParseJSON(cachedUserData, {})
         if (parsedData.privacySettings) {
           setUserData((prev) => ({
             ...prev,
             privacySettings: parsedData.privacySettings,
-          }));
-          return true;
+          }))
+          return true
         }
       }
-      return false;
+      return false
     } catch (err) {
-      console.error("Error restoring privacy settings from AsyncStorage:", err);
-      return false;
+      console.error("Error restoring privacy settings from AsyncStorage:", err)
+      return false
     }
-  };
+  }
 
   const fetchUserData = async () => {
-    setLoading(true);
-    try {
-      const user = auth.currentUser;
-      if (!user) {
-        setError("Not authenticated. Please sign in.");
-        setLoading(false);
-        return;
-      }
+    setLoading(true)
+    setError(null)
+    let fetchedUserData = null
+    let offlineMode = false
 
-      // Check stored session
-      const storedSession = await AsyncStorage.getItem("userSession");
-      const sessionData = safeParseJSON(storedSession, null);
-      if (!sessionData || sessionData.uid !== user.uid) {
-        setError("Invalid session. Please sign in again.");
-        setLoading(false);
-        return;
-      }
-
-      let offlineMode = false;
-      let fetchedUserData = null;
-
-      // Try to fetch from AsyncStorage first
-      try {
-        const cachedUserData = await AsyncStorage.getItem("userData");
-        if (cachedUserData) {
-          fetchedUserData = safeParseJSON(cachedUserData, null);
-          if (fetchedUserData && fetchedUserData.username && fetchedUserData.email) {
-            setUserData({
-              ...userData,
-              username: fetchedUserData.username,
-              email: fetchedUserData.email,
-              avatar: fetchedUserData.avatar || userData.avatar,
-              privacySettings: fetchedUserData.privacySettings || userData.privacySettings,
-            });
-            setEditUsername(fetchedUserData.username);
-          }
-        }
-      } catch (cacheErr) {
-        console.warn("Error accessing AsyncStorage:", cacheErr);
-      }
-
-      // Fetch from Firestore
-      try {
-        const userDoc = await getDoc(doc(db, "users", user.uid));
-        if (userDoc.exists()) {
-          fetchedUserData = userDoc.data();
-        } else {
-          fetchedUserData = { username: "User", email: user.email, avatar: userData.avatar };
-          await setDoc(doc(db, "users", user.uid), fetchedUserData);
-        }
-      } catch (firestoreErr) {
-        console.warn("Firestore error, using cached data:", firestoreErr);
-        offlineMode = true;
-        if (!fetchedUserData) {
-          setError("Could not retrieve user data. Please check your connection.");
-          setLoading(false);
-          return;
-        }
-        Alert.alert("Offline Mode", "Using cached data. Some features may be limited.");
-      }
-
-      const username = fetchedUserData.username || "User";
-      const email = fetchedUserData.email || user.email || "user@example.com";
-      const avatar = fetchedUserData.avatar || "https://randomuser.me/api/portraits/men/1.jpg";
-      const privacySettings = fetchedUserData.privacySettings || {
-        showProfile: true,
-        showActivities: true,
-        showStats: true,
-      };
-
-      setEditUsername(username);
-
-      if (offlineMode) {
-        setUserData({
-          username,
-          email,
-          avatar,
-          stats: {
-            totalDistance: "0 km",
-            totalActivities: "0",
-            longestRun: "0 km",
-          },
-          privacySettings,
-        });
-        await restorePrivacySettingsFromStorage();
-        setLoading(false);
-        return;
-      }
-
-      try {
-        // Fetch activities
-        const activitiesQuery = query(collection(db, "activities"), where("userId", "==", user.uid));
-        const activitiesSnapshot = await getDocs(activitiesQuery);
-
-        let totalDistance = 0;
-        let totalActivities = 0;
-        let longestRun = 0;
-
-        activitiesSnapshot.forEach((doc) => {
-          const activity = doc.data();
-          const distance = Number(activity.distance) || 0;
-          totalDistance += distance;
-          totalActivities += 1;
-          longestRun = Math.max(longestRun, distance);
-        });
-
-        // Load badges from badge system
-        try {
-          const userBadges = await loadBadgesFromFirestore();
-          setBadges(userBadges);
-        } catch (badgeError) {
-          console.error("Error loading badges:", badgeError);
-          setBadges([]);
-        }
-
-        // Fetch recent activities
-        await fetchRecentActivities(user.uid);
-
-        // Cache user data
-        const userDataToCache = {
-          username,
-          email,
-          avatar,
-          privacySettings,
-        };
-        await AsyncStorage.setItem("userData", JSON.stringify(userDataToCache));
-
-        setUserData({
-          username,
-          email,
-          avatar,
-          stats: {
-            totalDistance: `${(totalDistance / 1000).toFixed(1)} km`,
-            totalActivities: `${totalActivities}`,
-            longestRun: `${(longestRun / 1000).toFixed(1)} km`,
-          },
-          privacySettings,
-        });
-      } catch (dataFetchErr) {
-        console.error("Error fetching additional user data:", dataFetchErr);
-        setUserData({
-          username,
-          email,
-          avatar,
-          stats: {
-            totalDistance: "0 km",
-            totalActivities: "0",
-            longestRun: "0 km",
-          },
-          privacySettings,
-        });
-        await restorePrivacySettingsFromStorage();
-        Alert.alert("Limited Data", "Some profile data couldn't be loaded. Please check your connection.");
-      }
-    } catch (err) {
-      console.error("Error fetching user data:", err);
-      if (err.code === "permission-denied") {
-        setError("Permission denied. Please sign in again.");
-      } else {
-        setError("Failed to load profile data. Please try again.");
-      }
-    } finally {
-      setLoading(false);
+    const user = auth.currentUser
+    if (!user) {
+      setError("Not authenticated")
+      setLoading(false)
+      return
     }
-  };
+
+    // Try to fetch from AsyncStorage first
+    try {
+      const cachedUserData = await AsyncStorage.getItem("userData")
+      if (cachedUserData) {
+        fetchedUserData = safeParseJSON(cachedUserData, null)
+        if (fetchedUserData && fetchedUserData.username && fetchedUserData.email) {
+          setUserData((prevData) => ({
+            ...prevData,
+            ...fetchedUserData,
+            avatar: fetchedUserData.avatar || prevData.avatar,
+            privacySettings: fetchedUserData.privacySettings || prevData.privacySettings,
+          }))
+          setEditUsername(fetchedUserData.username)
+        }
+      }
+    } catch (cacheErr) {
+      console.warn("Error accessing AsyncStorage:", cacheErr)
+    }
+
+    // Fetch from Firestore
+    try {
+      const userDoc = await getDoc(doc(db, "users", user.uid))
+      if (userDoc.exists()) {
+        fetchedUserData = userDoc.data()
+      } else {
+        fetchedUserData = {
+          username: "User",
+          email: user.email,
+          avatar: userData.avatar,
+          level: 1,
+          totalXP: 0,
+          totalDistance: 0,
+          totalDuration: 0,
+          totalReps: 0,
+          totalActivities: 0,
+          totalSteps: 0,
+          totalStrengthDuration: 0,
+          friends: [],
+          deviceType: "",
+          pushToken: "",
+          isOnline: false,
+          createdAt: new Date(),
+          lastSeen: new Date(),
+          lastActivityDate: null,
+          lastQuestCompleted: null,
+        }
+        await setDoc(doc(db, "users", user.uid), fetchedUserData)
+      }
+    } catch (firestoreErr) {
+      console.warn("Firestore error, using cached data:", firestoreErr)
+      offlineMode = true
+      if (!fetchedUserData) {
+        setError("Could not retrieve user data. Please check your connection.")
+        setLoading(false)
+        return
+      }
+    }
+
+    if (fetchedUserData) {
+      // Format timestamps
+      const formatTimestamp = (timestamp) => {
+        if (!timestamp) return null
+        const date = timestamp?.toDate ? timestamp.toDate() : timestamp instanceof Date ? timestamp : null
+        return date
+      }
+
+      setUserData((prevData) => ({
+        ...prevData,
+        ...fetchedUserData,
+        avatar: fetchedUserData.avatar || prevData.avatar,
+        privacySettings: fetchedUserData.privacySettings || prevData.privacySettings,
+        createdAt: formatTimestamp(fetchedUserData.createdAt),
+        lastSeen: formatTimestamp(fetchedUserData.lastSeen),
+        lastActivityDate: formatTimestamp(fetchedUserData.lastActivityDate),
+        lastQuestCompleted: formatTimestamp(fetchedUserData.lastQuestCompleted),
+      }))
+      setEditUsername(fetchedUserData.username || "User")
+
+      // Cache the data
+      try {
+        await AsyncStorage.setItem("userData", JSON.stringify(fetchedUserData))
+      } catch (cacheErr) {
+        console.warn("Error caching user data:", cacheErr)
+      }
+    }
+
+    setLoading(false) // Always set loading to false at the end
+  }
 
   useEffect(() => {
-    fetchUserData();
+    const init = async () => {
+      await fetchUserData();
+
+      const user = auth.currentUser;
+      if (user) {
+        await fetchRecentActivities(user.uid);
+        await fetchBadges(user.uid);
+      }
+    };
+
+    init();
   }, []);
+
 
   const confirmLogout = async () => {
     try {
+      // Set logout flag BEFORE signing out
+      await AsyncStorage.setItem("isLoggingOut", "true");
+
+      // Clear user state immediately
+      setUserData({
+        username: "User",
+        email: "user@example.com",
+        avatar: "https://randomuser.me/api/portraits/men/1.jpg",
+        uid: null,
+        privacySettings: { showProfile: true, showActivities: true, showStats: true },
+        avgDailySteps: 5000,
+        avgDailyDistance: 2.5,
+        avgActiveDuration: 45,
+        avgDailyReps: 20,
+        level: 1,
+        totalXP: 0,
+      });
+
+      // Sign out from Firebase
       await signOut(auth);
+
       // Clear AsyncStorage
-      await AsyncStorage.removeItem("userSession");
-      await AsyncStorage.removeItem("userData");
-      await AsyncStorage.removeItem("privacySettings");
-      await AsyncStorage.removeItem("lastActiveScreen");
-      await AsyncStorage.removeItem("activityParams");
-      navigateToSignIn();
+      await AsyncStorage.multiRemove([
+        "userSession",
+        "userData",
+        "privacySettings",
+        "lastActiveScreen",
+        "activityParams"
+      ]);
+
+      // Let App.js handle navigation based on the logout flag
+      console.log("Logout completed, App.js will handle navigation to signin");
+
     } catch (err) {
       console.error("Logout error:", err);
       Alert.alert("Error", "Failed to log out. Please try again.");
     }
   };
+
 
   const renderStatItem = (value, label, icon, color) => (
     <View style={twrnc`items-center flex-1 px-2`} key={label}>
@@ -749,14 +771,14 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
       </CustomText>
       <CustomText style={twrnc`text-gray-400 text-xs text-center`}>{label}</CustomText>
     </View>
-  );
+  )
 
   const renderDrawerMenuItem = (item) => {
     if (item.isDivider) {
-      return <View key={item.id} style={twrnc`h-px bg-[#3A3F4B] my-6 mx-6`} />;
+      return <View key={item.id} style={twrnc`h-px bg-[#3A3F4B] my-6 mx-6`} />
     }
 
-    const IconComponent = item.iconType === "Ionicons" ? Ionicons : FontAwesome;
+    const IconComponent = item.iconType === "Ionicons" ? Ionicons : FontAwesome
 
     return (
       <TouchableOpacity
@@ -782,8 +804,8 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
           <Ionicons name="chevron-forward" size={16} color="#6B7280" />
         </View>
       </TouchableOpacity>
-    );
-  };
+    )
+  }
 
   if (loading) {
     return (
@@ -791,7 +813,7 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
         <ActivityIndicator size="large" color="#FFFFFF" />
         <CustomText style={twrnc`text-white mt-4`}>Loading Profile...</CustomText>
       </View>
-    );
+    )
   }
 
   if (error) {
@@ -802,20 +824,19 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
         <TouchableOpacity
           style={twrnc`bg-[#4361EE] px-4 py-2 rounded-lg`}
           onPress={() => {
-            setError(null);
-            setLoading(true);
-            fetchUserData();
+            setError(null)
+            setLoading(true)
+            fetchUserData()
           }}
         >
           <CustomText style={twrnc`text-white`}>Retry</CustomText>
         </TouchableOpacity>
       </View>
-    );
+    )
   }
 
   return (
     <View style={twrnc`flex-1 bg-[#121826]`}>
-
       {/* Enhanced Top Navigation Bar */}
       <View style={twrnc`bg-[#1A1F2E] px-4 py-4 flex-row items-center justify-between z-10 shadow-lg`}>
         <TouchableOpacity
@@ -841,41 +862,80 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
 
       {/* Main Content */}
       <ScrollView style={twrnc`flex-1`} showsVerticalScrollIndicator={false}>
+
         {/* Enhanced Profile Section */}
-        <View
-          style={twrnc`items-center pt-8 pb-8 px-5 bg-gradient-to-b from-[#1A1F2E] to-[#121826] rounded-b-3xl shadow-lg`}
-        >
-          <View style={twrnc`relative mb-6`}>
+        <View style={twrnc`px-5 pt-8 pb-6 items-center`}>
+          <TouchableOpacity onPress={selectImage} style={twrnc`mb-6 relative`}>
             <Image
               source={{ uri: userData.avatar }}
-              style={twrnc`w-32 h-32 rounded-3xl border-4 border-[#4361EE]`}
-              defaultSource={{ uri: "https://randomuser.me/api/portraits/men/1.jpg" }}
+              style={twrnc`w-24 h-24 rounded-full border-4 border-[#4361EE]`}
             />
-            <TouchableOpacity
-              style={twrnc`absolute bottom-0 right-0 bg-[#4361EE] rounded-2xl p-3 border-3 border-[#1A1F2E] shadow-lg`}
-              onPress={selectImage}
-              disabled={uploading}
-            >
-              {uploading ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <Ionicons name="camera" size={18} color="#FFFFFF" />
-              )}
-            </TouchableOpacity>
-          </View>
+            <View style={twrnc`absolute -bottom-1 -right-1 bg-[#4361EE] rounded-full p-2`}>
+              <Ionicons name="camera" size={16} color="white" />
+            </View>
+          </TouchableOpacity>
 
           <CustomText weight="bold" style={twrnc`text-white text-3xl mb-2`}>
             {userData.username}
           </CustomText>
-          <CustomText style={twrnc`text-gray-400 text-base mb-8`}>{userData.email}</CustomText>
+          <CustomText style={twrnc`text-gray-400 text-base mb-2`}>
+            {userData.email}
+          </CustomText>
 
-          {/* Enhanced Stats Row */}
-          <View style={twrnc`flex-row justify-between w-full px-4`}>
-            {renderStatItem(userData.stats.totalDistance, "Total Distance", "map-outline", "#4361EE")}
-            {renderStatItem(userData.stats.totalActivities, "Activities", "fitness-outline", "#06D6A0")}
-            {renderStatItem(userData.stats.longestRun, "Longest Run", "trophy-outline", "#FFC107")}
+          <View style={twrnc`flex-row items-center mb-4`}>
+            <CustomText style={twrnc`text-[#4361EE] text-lg font-bold mr-4`}>
+              Level {userData.level}
+            </CustomText>
+            <CustomText style={twrnc`text-[#FFC107] text-lg font-bold`}>
+              {userData.totalXP.toLocaleString()} XP
+            </CustomText>
+          </View>
+
+          {/* Enhanced Stats Grid */}
+          <View style={twrnc`w-full px-4 mb-4`}>
+            <View style={twrnc`flex-row justify-between mb-3`}>
+              {renderStatItem(
+                `${(userData.totalDistance || 0).toFixed(2)} km`,
+                "Total Distance",
+                "map-outline",
+                "#4361EE",
+              )}
+              {renderStatItem(
+                `${userData.totalActivities || 0}`,
+                "Activities",
+                "fitness-outline",
+                "#06D6A0"
+              )}
+              {renderStatItem(
+                `${Math.round((userData.totalDuration || 0) / 60)} min`,
+                "Total Time",
+                "time-outline",
+                "#FFC107"
+              )}
+            </View>
+            <View style={twrnc`flex-row justify-between`}>
+              {renderStatItem(
+                `${userData.totalReps || 0}`,
+                "Total Reps",
+                "barbell-outline",
+                "#FF6B6B"
+              )}
+              {renderStatItem(
+                `${userData.totalSteps || 0}`,
+                "Steps",
+                "walk-outline",
+                "#9B59B6"
+              )}
+              {renderStatItem(
+                `${userData.friends?.length || 0}`,
+                "Friends",
+                "people-outline",
+                "#06D6A0"
+              )}
+            </View>
           </View>
         </View>
+        {/* 🔹 End Profile Header */}
 
         {/* Enhanced Badges Section */}
         <View style={twrnc`px-5 mt-8 mb-6`}>
@@ -883,9 +943,7 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
             <View style={twrnc`flex-row items-center`}>
               <Ionicons name="trophy" size={20} color="#FFC107" style={twrnc`mr-2`} />
               <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                <CustomText weight="bold" style={twrnc`text-white text-xl`}>Badges (</CustomText>
-                <CustomText weight="bold" style={twrnc`text-white text-xl`}>{badges.length}</CustomText>
-                <CustomText weight="bold" style={twrnc`text-white text-xl`}>)</CustomText>
+                Badges ({badges.length})
               </CustomText>
             </View>
             {badges.length > 0 && (
@@ -897,16 +955,48 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
 
           {badges.length > 0 ? (
             <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-4`}>
-              <BadgeGrid badges={badges.slice(0, 6)} onBadgePress={handleBadgePress} maxVisible={6} />
+              <BadgeGrid
+                badges={badges.slice(0, 6)}
+                onBadgePress={handleBadgePress}
+                maxVisible={6}
+              />
             </View>
           ) : (
             <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-6 items-center`}>
-              <Ionicons name="ribbon-outline" size={40} color="#4361EE" style={twrnc`mb-3 opacity-50`} />
+              <Ionicons
+                name="ribbon-outline"
+                size={40}
+                color="#4361EE"
+                style={twrnc`mb-3 opacity-50`}
+              />
               <CustomText style={twrnc`text-gray-400 text-center`}>
                 Complete activities and challenges to earn badges
               </CustomText>
             </View>
           )}
+        </View>
+
+        {/* Simplified Account Info Section */}
+        <View style={twrnc`px-5 mb-8`}>
+          <View style={twrnc`w-full bg-[#2A2E3A] rounded-2xl p-4`}>
+            <CustomText weight="bold" style={twrnc`text-white text-lg mb-3`}>
+              Account Info
+            </CustomText>
+            <View style={twrnc`space-y-2`}>
+              <View style={twrnc`flex-row justify-between items-center mb-2`}>
+                <CustomText style={twrnc`text-gray-400`}>Joined</CustomText>
+                <CustomText style={twrnc`text-white`}>
+                  {formatTimestamp(userData.createdAt)}
+                </CustomText>
+              </View>
+              <View style={twrnc`flex-row justify-between items-center`}>
+                <CustomText style={twrnc`text-gray-400`}>Last Activity</CustomText>
+                <CustomText style={twrnc`text-white`}>
+                  {formatTimestamp(userData.lastActivityDate)}
+                </CustomText>
+              </View>
+            </View>
+          </View>
         </View>
 
         {/* Enhanced Recent Activities Section */}
@@ -919,78 +1009,101 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
               </CustomText>
             </View>
             {recentActivities.length > 0 && (
-              <TouchableOpacity>
+              <TouchableOpacity
+                style={twrnc`flex-row items-center`}
+                onPress={() => setShowAllActivities(true)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
                 <CustomText style={twrnc`text-[#4361EE] font-medium`}>See All</CustomText>
+                <Ionicons
+                  name="chevron-forward"
+                  size={16}
+                  color="#4361EE"
+                  style={twrnc`ml-1`}
+                />
               </TouchableOpacity>
             )}
           </View>
 
           {recentActivities.length > 0 ? (
             <View>
-              {recentActivities.map((activity, index) => (
-                <View key={activity.id} style={twrnc`bg-[#2A2E3A] rounded-2xl p-4 mb-3 flex-row items-center`}>
-                  <View
-                    style={[
-                      twrnc`w-12 h-12 rounded-2xl items-center justify-center mr-4`,
-                      { backgroundColor: getActivityColor(activity.activityType) },
-                    ]}
-                  >
-                    <Ionicons name={getActivityIcon(activity.activityType)} size={20} color="#FFFFFF" />
-                  </View>
-                  <View style={twrnc`flex-1`}>
-                    <CustomText weight="semibold" style={twrnc`text-white text-base mb-1`}>
-                      {activity.activityType?.charAt(0).toUpperCase() + activity.activityType?.slice(1) || "Activity"}
-                    </CustomText>
-                    <View style={twrnc`flex-row items-center flex-wrap`}>
-                      {activity.distance && (
-                        <CustomText style={twrnc`text-gray-400 text-sm mr-4`}>
-                          {(activity.distance / 1000).toFixed(2)} km
-                        </CustomText>
-                      )}
-                      {activity.duration && (
-                        <CustomText style={twrnc`text-gray-400 text-sm mr-4`}>
-                          {formatDuration(activity.duration)}
-                        </CustomText>
-                      )}
-                      {activity.reps && (
-                        <CustomText style={twrnc`text-gray-400 text-sm mr-4`}>
-                          <CustomText>{activity.reps}</CustomText>
-                          <CustomText> reps</CustomText>
-                        </CustomText>
-                      )}
-                      {activity.questTitle && (
-                        <View style={twrnc`bg-[#4361EE] px-2 py-1 rounded-full`}>
-                          <CustomText style={twrnc`text-white text-xs font-medium`}>Quest</CustomText>
-                        </View>
-                      )}
+              {recentActivities.slice(0, 3).map((activity, index) => (
+                <View
+                  key={index}
+                  style={twrnc`flex-row items-center justify-between py-3 border-b border-gray-100`}
+                >
+                  <View style={twrnc`flex-row items-center flex-1`}>
+                    <View style={twrnc`w-10 h-10 rounded-full bg-[#4361EE] items-center justify-center mr-3`}>
+                      <Ionicons
+                        name={getActivityIcon(activity.activityType)}
+                        size={20}
+                        color="white"
+                      />
                     </View>
-                  </View>
-                  <View style={twrnc`items-end`}>
-                    <CustomText style={twrnc`text-gray-500 text-xs`}>
-                      {activity.createdAt?.toDate
-                        ? activity.createdAt.toDate().toLocaleDateString()
-                        : new Date().toLocaleDateString()}
-                    </CustomText>
-                    {activity.calories && (
-                      <CustomText style={twrnc`text-[#FFC107] text-xs font-medium mt-1`}>
-                        <CustomText>{activity.calories}</CustomText>
-                        <CustomText> cal</CustomText>
+                    <View style={twrnc`flex-1`}>
+                      <CustomText style={twrnc`font-medium text-gray-900`}>
+                        {activity.activityType || (
+                          <CustomText>Unknown Activity</CustomText>
+                        )}
                       </CustomText>
-                    )}
+                      <View style={twrnc`flex-row items-center mt-1`}>
+                        {activity.distance ? (
+                          <CustomText style={twrnc`text-gray-400 text-sm mr-4`}>
+                            {(activity.distance / 1000).toFixed(2)} km
+                          </CustomText>
+                        ) : null}
+                        {activity.duration ? (
+                          <CustomText style={twrnc`text-gray-400 text-sm mr-4`}>
+                            {Math.round(activity.duration / 60)} min
+                          </CustomText>
+                        ) : null}
+                        {activity.reps ? (
+                          <CustomText style={twrnc`text-gray-400 text-sm mr-4`}>
+                            {activity.reps} reps
+                          </CustomText>
+                        ) : null}
+                        {activity.questTitle ? (
+                          <View style={twrnc`bg-[#4361EE] px-2 py-1 rounded-full`}>
+                            <CustomText style={twrnc`text-white text-xs font-medium`}>
+                              Quest
+                            </CustomText>
+                          </View>
+                        ) : null}
+                      </View>
+                    </View>
+                    <View style={twrnc`items-end`}>
+                      <CustomText style={twrnc`text-gray-500 text-xs`}>
+                        {activity.createdAt?.toDate
+                          ? activity.createdAt.toDate().toLocaleDateString()
+                          : new Date().toLocaleDateString()}
+                      </CustomText>
+                      {activity.calories ? (
+                        <CustomText style={twrnc`text-[#FFC107] text-xs font-medium mt-1`}>
+                          {activity.calories} cal
+                        </CustomText>
+                      ) : null}
+                    </View>
                   </View>
                 </View>
               ))}
             </View>
           ) : (
             <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-6 items-center`}>
-              <Ionicons name="fitness-outline" size={40} color="#06D6A0" style={twrnc`mb-3 opacity-50`} />
+              <Ionicons
+                name="fitness-outline"
+                size={40}
+                color="#06D6A0"
+                style={twrnc`mb-3 opacity-50`}
+              />
               <CustomText style={twrnc`text-gray-400 text-center`}>
                 Start tracking activities to see your recent workouts here
               </CustomText>
             </View>
           )}
         </View>
+
       </ScrollView>
+
 
       {/* Enhanced Drawer Menu */}
       {isDrawerOpen && (
@@ -1252,14 +1365,12 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
                       <CustomText style={twrnc`text-gray-400 text-xs`}>{setting.description}</CustomText>
                     </View>
                     <View
-                      style={twrnc`w-14 h-8 rounded-full ${
-                        userData.privacySettings[setting.key] ? "bg-green-500" : "bg-gray-600"
-                      } items-center justify-center`}
+                      style={twrnc`w-14 h-8 rounded-full ${userData.privacySettings[setting.key] ? "bg-green-500" : "bg-gray-600"
+                        } items-center justify-center`}
                     >
                       <View
-                        style={twrnc`absolute ${
-                          userData.privacySettings[setting.key] ? "right-1" : "left-1"
-                        } w-6 h-6 bg-white rounded-full shadow-lg`}
+                        style={twrnc`absolute ${userData.privacySettings[setting.key] ? "right-1" : "left-1"
+                          } w-6 h-6 bg-white rounded-full shadow-lg`}
                       />
                     </View>
                   </TouchableOpacity>
@@ -1318,8 +1429,97 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
         onClose={() => setIsAllBadgesModalVisible(false)}
         onBadgePress={handleBadgePress}
       />
-    </View>
-  );
-};
 
-export default ProfileScreen;
+      {showAllActivities && (
+        <Modal
+          animationType="slide"
+          transparent={true}
+          visible={showAllActivities}
+          onRequestClose={() => setShowAllActivities(false)}
+        >
+          <View style={twrnc`flex-1 bg-black bg-opacity-50 justify-end`}>
+            <View style={twrnc`bg-[#121826] rounded-t-3xl p-6 h-3/4`}>
+              {/* Header */}
+              <View style={twrnc`flex-row justify-between items-center mb-6`}>
+                <CustomText weight="bold" style={twrnc`text-white text-xl`}>
+                  All Activities
+                </CustomText>
+                <TouchableOpacity
+                  style={twrnc`bg-[#2A2E3A] p-3 rounded-2xl`}
+                  onPress={() => setShowAllActivities(false)}
+                >
+                  <Ionicons name="close" size={20} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+
+              {/* Activities List */}
+              <FlatList
+                data={recentActivities}
+                keyExtractor={(item, index) => index.toString()}
+                showsVerticalScrollIndicator={false}
+                renderItem={({ item: activity }) => (
+                  <View
+                    style={twrnc`flex-row items-center justify-between py-4 px-4 mb-3 rounded-2xl bg-[#2A2E3A]`}
+                  >
+                    <View style={twrnc`flex-row items-center flex-1`}>
+                      <View
+                        style={twrnc`w-10 h-10 rounded-full bg-[#4361EE] items-center justify-center mr-3`}
+                      >
+                        <Ionicons
+                          name={getActivityIcon(activity.activityType)}
+                          size={20}
+                          color="white"
+                        />
+                      </View>
+                      <View style={twrnc`flex-1`}>
+                        <CustomText style={twrnc`font-medium text-white`}>
+                          {activity.activityType || (
+                            <CustomText>Unknown Activity</CustomText>
+                          )}
+                        </CustomText>
+                        <View style={twrnc`flex-row items-center mt-1`}>
+                          {activity.distance ? (
+                            <CustomText style={twrnc`text-gray-400 text-sm mr-4`}>
+                              {(activity.distance / 1000).toFixed(2)} km
+                            </CustomText>
+                          ) : null}
+                          {activity.duration ? (
+                            <CustomText style={twrnc`text-gray-400 text-sm mr-4`}>
+                              {Math.round(activity.duration / 60)} min
+                            </CustomText>
+                          ) : null}
+                          {activity.reps ? (
+                            <CustomText style={twrnc`text-gray-400 text-sm mr-4`}>
+                              {activity.reps} reps
+                            </CustomText>
+                          ) : null}
+                        </View>
+                      </View>
+                    </View>
+                    <View style={twrnc`items-end`}>
+                      <CustomText style={twrnc`text-gray-400 text-xs`}>
+                        {activity.createdAt?.toDate
+                          ? activity.createdAt.toDate().toLocaleDateString()
+                          : new Date().toLocaleDateString()}
+                      </CustomText>
+                      {activity.calories ? (
+                        <CustomText
+                          style={twrnc`text-[#FFC107] text-xs font-medium mt-1`}
+                        >
+                          {activity.calories} cal
+                        </CustomText>
+                      ) : null}
+                    </View>
+                  </View>
+                )}
+              />
+            </View>
+          </View>
+        </Modal>
+      )}
+
+    </View>
+  )
+}
+
+export default ProfileScreen

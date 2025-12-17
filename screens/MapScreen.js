@@ -20,48 +20,41 @@ import CustomText from "../components/CustomText"
 import CustomModal from "../components/CustomModal"
 import { FontAwesome } from "@expo/vector-icons"
 import { Ionicons } from "@expo/vector-icons"
-import { calculateDistance, formatTime, calculatePace, formatPace } from "../utils/activityUtils"
+import {
+  calculateDistance,
+  formatDuration,
+  formatDistance,
+  formatPacePerKm,
+  formatSpeedKmh,
+  calculatePace,
+  ensureNumeric,
+} from "../utils/activityUtils"
 import { db, auth } from "../firebaseConfig"
-import { collection, addDoc, serverTimestamp, doc, getDoc, updateDoc } from "firebase/firestore"
+import { setDoc, serverTimestamp, doc, getDoc } from "firebase/firestore"
+import { XPManager } from "../utils/xpManager" // adjust path if different
+
 import { generateRoute } from "../utils/routeGenerator"
 
 // NEW: Import PanGestureHandler and State from react-native-gesture-handler
 import { PanGestureHandler, State } from "react-native-gesture-handler"
 import { LinearGradient } from "expo-linear-gradient"
 
+import { QuestProgressManager } from "../utils/QuestProgressManager"
+
 const { width, height } = Dimensions.get("window")
 const isAndroid = Platform.OS === "android"
 const isSmallDevice = width < 375
 
-const MINIMUM_DISTANCE_THRESHOLDS = {
-  walking: 2, // meters
-  jogging: 3, // meters
-  running: 5, // meters
-  cycling: 8, // meters
-}
+const MINIMUM_DISTANCE_THRESHOLDS = { walking: 2, jogging: 3, running: 5, cycling: 8 }
 
-const PACE_WINDOW_SIZES = {
-  walking: 5,
-  jogging: 5,
-  running: 5,
-  cycling: 7,
-}
+const PACE_WINDOW_SIZES = { walking: 5, jogging: 5, running: 5, cycling: 7 }
 
-// Define map styles
 const MAP_STYLES = [
-  {
-    name: "Hybrid",
-    style: [], // Default hybrid style (no custom JSON needed for hybrid)
-    mapType: "hybrid",
-  },
-  {
-    name: "Standard",
-    style: [], // Default standard style (no custom JSON needed for standard)
-    mapType: "standard",
-  },
+  { name: "Hybrid", style: [], mapType: "hybrid" },
+  { name: "Standard", style: [], mapType: "standard" },
 ]
 
-const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => {
+const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {} }) => {
   console.log("MapScreen: Initialized with params:", params)
   const {
     activityType = "walking",
@@ -72,8 +65,17 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
     initialCoordinates = [],
     initialStats = { distance: 0, duration: 0, pace: 0, avgSpeed: 0, steps: 0, reps: 0 },
     activeQuest = null,
+    questProgress = 0,
     userHeight = 170,
   } = params
+
+  const [activeChallenge, setActiveChallenge] = useState(null);
+
+  useEffect(() => {
+    if (route?.params?.challenge) {
+      setActiveChallenge(route.params.challenge);
+    }
+  }, [route?.params]);
 
   // Core state variables
   const [coordinates, setCoordinates] = useState(initialCoordinates)
@@ -146,6 +148,9 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
   // NEW: State for map style dropdown visibility
   const [showMapStylePicker, setShowMapStylePicker] = useState(false)
 
+  const { sessionStart: sessionStartParam } = params || {}
+  const sessionStartRef = useRef(sessionStartParam || null)
+
   // Refs
   const mapRef = useRef(null)
   const intervalRef = useRef(null)
@@ -156,6 +161,7 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
   const locationWatchRef = useRef(null)
   const lastCoordinateRef = useRef(null)
   const holdTimerRef = useRef(null)
+  const coordinatesRef = useRef([])
 
   const locationAccuracy =
     activityType === "running" || activityType === "jogging"
@@ -220,7 +226,6 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
     }
   }
 
-  // Enhanced quest initialization from params (same as ActivityScreen)
   useEffect(() => {
     console.log("MapScreen: Processing params for quest initialization:", params)
     if (params.questId || (params.title && params.description && params.goal && params.unit)) {
@@ -230,13 +235,14 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
         description: params.description,
         goal: params.goal,
         unit: params.unit,
-        progress: params.progress || 0, // Use progress from Dashboard
+        progress: questProgress || params.progress || 0, 
         status: params.status || "not_started",
         activityType: params.activityType,
         xpReward: params.xpReward || 50,
         difficulty: params.difficulty || "medium",
         category: params.category || "fitness",
       }
+
       console.log("MapScreen: Setting selected quest from params:", questData)
       setSelectedQuest(questData)
     } else if (activeQuest) {
@@ -274,11 +280,12 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
     }
   }, [selectedQuest, questPulseAnim])
 
-
   // Add this useEffect to validate quest compatibility
   useEffect(() => {
     if (selectedQuest && selectedQuest.activityType !== activityType) {
-      console.warn(`MapScreen: Quest activity type (${selectedQuest.activityType}) doesn't match current activity (${activityType})`);
+      console.warn(
+        `MapScreen: Quest activity type (${selectedQuest.activityType}) doesn't match current activity (${activityType})`,
+      )
 
       // Show warning but don't block the activity
       showModal(
@@ -286,80 +293,31 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
         `This quest is for ${selectedQuest.activityType}, but you're doing ${activityType}. Progress may not be tracked correctly.`,
         null,
         "warning",
-        "exclamation-triangle"
-      );
+        "exclamation-triangle",
+      )
     }
-  }, [selectedQuest, activityType]);
+  }, [selectedQuest, activityType])
 
-  // Updated quest progress calculation to use Dashboard data when available (same as ActivityScreen)
   const getDisplayQuestProgress = (quest) => {
-    if (!quest) {
-      console.log("MapScreen: No quest provided for progress calculation");
-      return 0;
+    if (!quest) return 0
+    // Convert stats.distance from meters to km for QuestProgressManager
+    const questStats = {
+      ...stats,
+      distance: stats.distance / 1000, 
     }
-
-    // Calculate current value based on quest unit
-    let currentValue = 0;
-
-    if (quest.unit === "reps") {
-      currentValue = stats.reps || 0;
-    } else if (quest.unit === "distance" || quest.unit === "km") {
-      currentValue = stats.distance / 1000; // meters to km
-    } else if (quest.unit === "duration" || quest.unit === "minutes") {
-      currentValue = stats.duration / 60; // seconds to minutes
-    } else if (quest.unit === "pace") {
-      currentValue = stats.pace;
-    } else if (quest.unit === "calories") {
-      currentValue = stats.calories || 0;
-    } else if (quest.unit === "steps") {
-      currentValue = stats.steps || 0;
-    }
-
-    // For pace quests (lower is better)
-    if (quest.unit === "pace") {
-      const goalValue = Number.parseFloat(quest.goal || 0);
-      if (currentValue <= goalValue && currentValue > 0) {
-        return 1; // 100% if pace is better than or equal to goal
-      }
-      return Math.max(0, 1 - (currentValue - goalValue) / goalValue);
-    }
-
-    // For all other quest types (higher is better)
-    const goalValue = Number.parseFloat(quest.goal || 1);
-    return Math.min(currentValue / goalValue, 1);
-  };
-
-  // Replace getCurrentQuestValue function
-  const getCurrentQuestValue = (quest) => {
-    if (!quest) return 0;
-
-    let currentValue = 0;
-
-    if (quest.unit === "reps") {
-      currentValue = stats.reps || 0;
-    } else if (quest.unit === "distance" || quest.unit === "km") {
-      currentValue = stats.distance / 1000;
-    } else if (quest.unit === "duration" || quest.unit === "minutes") {
-      currentValue = stats.duration / 60;
-    } else if (quest.unit === "pace") {
-      currentValue = stats.pace;
-    } else if (quest.unit === "calories") {
-      currentValue = stats.calories || 0;
-    } else if (quest.unit === "steps") {
-      currentValue = stats.steps || 0;
-    }
-
-    return currentValue;
-  };
-
-  const getQuestStatus = (quest) => {
-    const progress = getDisplayQuestProgress(quest)
-    if (progress >= 1) return "completed"
-    if (progress > 0) return "in_progress"
-    return "not_started"
+    return QuestProgressManager.getProgressPercentage(quest, questStats, 0)
   }
 
-  // Function to calculate the moving average for pace
+  const getQuestStatus = (quest) => {
+    if (!quest) return "not_started"
+    // Convert stats.distance from meters to km for QuestProgressManager
+    const questStats = {
+      ...stats,
+      distance: stats.distance / 1000, // convert meters to km
+    }
+    return QuestProgressManager.getQuestStatus(quest, questStats, 0)
+  }
+
   const calculateMovingAveragePace = (newPace) => {
     if (isNaN(newPace) || newPace === 0 || !isFinite(newPace)) {
       if (recentPacesRef.current.length === 0) {
@@ -388,48 +346,6 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
     recentPacesRef.current = []
     setSmoothedPace(0)
   }, [activityType])
-
-  // Function to generate a suggested route
-  const handleGenerateRoute = async () => {
-    if (!currentLocation) {
-      showModal("Error", "Cannot generate route. Current location not available.", null, "error", "map-marker-alt")
-      return
-    }
-    setIsGeneratingRoute(true)
-    try {
-      const route = await generateRoute(
-        { latitude: currentLocation.latitude, longitude: currentLocation.longitude },
-        Number.parseFloat(targetDistance),
-        activityType,
-      )
-      if (route) {
-        setSuggestedRoute(route)
-        setShowSuggestedRoute(true)
-        if (mapRef.current && route.coordinates.length > 0) {
-          mapRef.current.fitToCoordinates(route.coordinates, {
-            edgePadding: { top: 50, right: 50, bottom: 50, left: 50 },
-            animated: true,
-          })
-        }
-        showModal(
-          "Route Generated",
-          `A ${route.difficulty} ${route.distance} km ${route.routeType || ""} route has been created for ${activityType}. Would you like to follow this route?`,
-          () => {
-            setFollowingSuggestedRoute(true)
-          },
-          "info",
-          "map-signs",
-        )
-      } else {
-        showModal("Error", "Failed to generate route. Please try again.", null, "error", "exclamation-circle")
-      }
-    } catch (error) {
-      console.error("Route generation error:", error)
-      showModal("Error", "Failed to generate route. Please try again.", null, "error", "exclamation-circle")
-    } finally {
-      setIsGeneratingRoute(false)
-    }
-  }
 
   // Function to clear the suggested route
   const clearSuggestedRoute = () => {
@@ -632,13 +548,13 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
   })
 
   const returnToActivity = (finalStats = null, options = {}) => {
-    const safeFinalStats = finalStats || stats; 
+    const safeFinalStats = finalStats || stats
     navigateToActivity({
       activityType,
-      coordinates: [], 
-      stats: safeFinalStats, 
-      isViewingPastActivity: true, 
-      alreadySaved: options.alreadySaved === true, 
+      coordinates: [],
+      stats: safeFinalStats,
+      isViewingPastActivity: true,
+      alreadySaved: options.alreadySaved === true,
       ...(selectedQuest && {
         questId: selectedQuest.id,
         title: selectedQuest.title,
@@ -651,9 +567,8 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
         difficulty: selectedQuest.difficulty,
         category: selectedQuest.category,
       }),
-    });
-  };
-
+    })
+  }
 
   const centerMap = () => {
     if (mapRef.current && currentLocation) {
@@ -669,15 +584,33 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
   }
 
   // Updated showModal to accept type, icon, and a 'buttons' array for custom actions
-  const showModal = (title, message, onConfirm = null, type = "info", icon = null, buttons = []) => {
-    setModalContent({ title, message, onConfirm, type, icon, buttons })
+  const showModal = (title, message, options = {}, type = "info", icon = null, buttons = []) => {
+    // Handle null/undefined options
+    if (options === null || options === undefined) {
+      options = {}
+    }
+
+    // Handle both function and object syntax
+    const onConfirm = typeof options === "function" ? options : options.onConfirm
+    const modalType = options.type || type
+    const modalIcon = options.icon || icon
+    const modalButtons = options.buttons || buttons
+
+    setModalContent({
+      title,
+      message,
+      onConfirm,
+      type: modalType,
+      icon: modalIcon,
+      buttons: modalButtons,
+    })
     setModalVisible(true)
   }
 
   const calculateMetrics = (distance, duration) => {
-    const numDistance = Number(distance)
-    const numDuration = Number(duration)
-    if (numDistance < 5 || numDuration < 5 || isNaN(numDistance) || isNaN(numDuration)) {
+    const numDistance = ensureNumeric(distance)
+    const numDuration = ensureNumeric(duration)
+    if (numDistance < 5 || numDuration < 5) {
       return { pace: 0, avgSpeed: 0 }
     }
     const rawPace = calculatePace(numDistance, numDuration)
@@ -769,7 +702,6 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
       }
     }
 
-
     const subscription = AppState.addEventListener("change", handleAppStateChange)
 
     return () => {
@@ -781,14 +713,18 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
 
   const startLocationUpdates = async () => {
     try {
+      // Stop any existing watcher
       if (locationWatchRef.current) {
-        locationWatchRef.current.remove()
+        try {
+          await locationWatchRef.current.remove?.()
+        } catch { }
         locationWatchRef.current = null
-        console.log("MapScreen: Location watch stopped after finishing activity")
+        console.log("MapScreen: Existing location watch removed before starting new one")
       }
 
+      // Get an initial fix to center map
       const location = await Location.getCurrentPositionAsync({
-        accuracy: locationAccuracy,
+        accuracy: locationAccuracy, // e.g., Location.Accuracy.BestForNavigation
         timeout: 10000,
       })
 
@@ -803,37 +739,37 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
         mapRef.current.animateToRegion(newRegion, 1000)
       }
 
-      const watchId = await Location.watchPositionAsync(
+      // Start watching position with 1 Hz and 5 m step
+      const subscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.BestForNavigation,
           distanceInterval: 5,
           timeInterval: 1000,
         },
-        (location) => {
-          const { latitude, longitude, accuracy, speed } = location.coords
-          if (accuracy > 50) {
-            setGpsSignal("Poor")
-          } else if (accuracy > 30) {
-            setGpsSignal("Fair")
-          } else if (accuracy > 15) {
-            setGpsSignal("Good")
-          } else {
-            setGpsSignal("Excellent")
-          }
-          const newRegion = {
+        (loc) => {
+          const { latitude, longitude, accuracy, speed } = loc.coords
+
+          // GPS signal indicator
+          if (accuracy > 50) setGpsSignal("Poor")
+          else if (accuracy > 30) setGpsSignal("Fair")
+          else if (accuracy > 15) setGpsSignal("Good")
+          else setGpsSignal("Excellent")
+
+          const region = {
             latitude,
             longitude,
             latitudeDelta: 0.005,
             longitudeDelta: 0.005,
           }
-          setCurrentLocation(newRegion)
+          setCurrentLocation(region)
         },
       )
-      locationWatchRef.current = watchId
+
+      locationWatchRef.current = subscription
       setLoading(false)
     } catch (err) {
       console.error("Location updates error:", err)
-      setError("Failed to get location updates. Please check your GPS settings.")
+      setError("Failed to get location updates. Please check GPS settings.")
       setLoading(false)
     }
   }
@@ -868,7 +804,6 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
       if (isAndroid) {
         await Location.requestBackgroundPermissionsAsync()
       }
-
 
       return true
     } catch (err) {
@@ -910,7 +845,13 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
     console.log("MapScreen: Starting tracking")
     setIsTrackingLoading(true)
 
+    // Capture session start timestamp once for deterministic IDs/XP
+    if (!sessionStartRef.current) {
+      sessionStartRef.current = Date.now()
+    }
+
     try {
+      // Permissions
       const hasPermission = await requestPermissions()
       if (!hasPermission) {
         setError("Location permissions not granted.")
@@ -918,12 +859,16 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
         return
       }
 
+      // Ensure single watcher by stopping any existing one
       if (locationWatchRef.current) {
-        locationWatchRef.current.remove()
+        try {
+          await locationWatchRef.current.remove?.()
+        } catch { }
         locationWatchRef.current = null
-        console.log("MapScreen: Location watch stopped after finishing activity")
+        console.log("MapScreen: Existing location watch removed before tracking")
       }
 
+      // Determine initial location
       let initialLocation
       if (currentLocation) {
         initialLocation = {
@@ -948,12 +893,11 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
         longitude: initialLocation.coords.longitude,
         timestamp: initialLocation.timestamp,
         accuracy: initialLocation.coords.accuracy,
+        speed: 0,
       }
 
-      // Only reset coordinates and stats if starting a brand new activity
+      // Fresh start vs resume
       if (coordinates.length === 0 || !isPaused) {
-        // Check !isPaused here
-        // If not resuming, or if it's a fresh start
         lastCoordinateRef.current = initialCoord
         setCoordinates([initialCoord])
         startTimeRef.current = new Date()
@@ -968,150 +912,123 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
           pace: 0,
           rawPace: 0,
           avgSpeed: 0,
-          steps: 0, // NEW: Reset steps
-          reps: 0, // NEW: Reset reps
+          steps: 0,
+          reps: 0,
         })
         console.log("MapScreen: Starting new tracking session with reset stats")
       } else {
-        // If resuming, ensure lastCoordinateRef is set to the last recorded coordinate
+        // Resume
         lastCoordinateRef.current = coordinates[coordinates.length - 1] || initialCoord
-        startTimeRef.current = new Date(Date.now() - stats.duration * 1000) // Adjust start time for duration
+        startTimeRef.current = new Date(Date.now() - stats.duration * 1000)
         console.log("MapScreen: Resuming tracking session")
       }
 
       setTracking(true)
-      setIsPaused(false) // Ensure not paused when starting/resuming
+      setIsPaused(false)
       setFollowingSuggestedRoute(followingSuggestedRoute)
 
       console.log("MapScreen: Initial coordinate set:", initialCoord)
       console.log(`MapScreen: Pace window size: ${paceWindowSizeRef.current} for ${activityType}`)
 
+      // Duration ticker (1 Hz)
+      if (intervalRef.current) clearInterval(intervalRef.current)
       intervalRef.current = setInterval(() => {
         setStats((prev) => {
-          const duration = Math.floor((new Date() - startTimeRef.current) / 1000)
-          const metrics = calculateMetrics(prev.distance, duration)
-          return { ...prev, duration, ...metrics }
+          const duration = Math.max(0, Math.floor((Date.now() - startTimeRef.current.getTime()) / 1000))
+          const distanceKm = (prev.distance || 0) / 1000
+          const avgSpeed = distanceKm > 0 && duration > 0 ? distanceKm / (duration / 3600) : 0 // km/h
+          const rawPace = distanceKm > 0 ? duration / 60 / distanceKm : 0 // min/km
+          const smoothed = calculateMovingAveragePace(rawPace || 0)
+          setSmoothedPace(smoothed)
+          return { ...prev, duration, avgSpeed, rawPace, pace: smoothed }
         })
       }, 1000)
 
-      const id = await Location.watchPositionAsync(
+      // Start GPS watcher for distance and live stats
+      const subscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.BestForNavigation,
           distanceInterval: 5,
           timeInterval: 1000,
         },
-        (location) => {
-          // NEW: Pause logic - do not process location updates if paused
-          if (isPaused) {
-            console.log("MapScreen: Location update skipped because activity is paused.")
-            return
-          }
+        (loc) => {
+          if (isPaused) return
 
-          console.log("Location callback fired:", location.coords)
-          const { latitude, longitude, accuracy, speed, altitude } = location.coords
-          console.log(
-            `MapScreen: Location update: lat=${latitude.toFixed(6)}, lng=${longitude.toFixed(6)}, acc=${accuracy.toFixed(1)}m`,
-          )
+          const { latitude, longitude, accuracy, speed = 0, altitude = 0 } = loc.coords
 
+          // Gate bad fixes
           if (accuracy > 50 || speed > maxSpeed) {
             lowAccuracyCountRef.current += 1
-            if (lowAccuracyCountRef.current >= 5) {
-              setGpsSignal("Poor")
-            }
+            if (lowAccuracyCountRef.current >= 5) setGpsSignal("Poor")
+            console.log(
+              `MapScreen: Skipping location due to poor accuracy (${accuracy?.toFixed?.(1)}m) or high speed (${speed?.toFixed?.(1)} m/s)`,
+            )
             return
           }
 
+          // Reset counter on good fix and set signal
           lowAccuracyCountRef.current = 0
-          if (accuracy > 30) {
-            setGpsSignal("Fair")
-          } else if (accuracy > 15) {
-            setGpsSignal("Good")
-          } else {
-            setGpsSignal("Excellent")
-          }
+          if (accuracy <= 15) setGpsSignal("Excellent")
+          else if (accuracy <= 30) setGpsSignal("Good")
+          else if (accuracy <= 50) setGpsSignal("Fair")
+          else setGpsSignal("Poor")
 
-          const newCoordinate = {
-            latitude,
-            longitude,
-            accuracy,
-            timestamp: location.timestamp,
-            altitude,
-          }
-
-          rawCoordinatesRef.current.push(newCoordinate)
-          if (rawCoordinatesRef.current.length > 5) rawCoordinatesRef.current.shift()
-
-          const smoothedCoordinate = smoothCoordinate(rawCoordinatesRef.current, newCoordinate)
-
-          // Update currentLocation for other uses (e.g., centerMap button)
-          setCurrentLocation({
-            latitude: smoothedCoordinate.latitude,
-            longitude: smoothedCoordinate.longitude,
-            latitudeDelta: 0.005,
-            longitudeDelta: 0.005,
-          })
-
-          // Manually animate the map camera to the smoothed coordinate for fluid following
-          if (mapRef.current) {
-            mapRef.current.animateCamera(
-              {
-                center: {
-                  latitude: smoothedCoordinate.latitude,
-                  longitude: smoothedCoordinate.longitude,
-                },
-                // You can adjust zoom, pitch, heading here for more control
-                // zoom: 16,
-                // pitch: 0,
-                // heading: 0,
-              },
-              { duration: 500 }, // Smooth transition duration in milliseconds
-            )
+          const smoothedCoordinate = {
+            latitude: Number.parseFloat(latitude.toFixed(6)),
+            longitude: Number.parseFloat(longitude.toFixed(6)),
+            timestamp: Date.now(),
+            accuracy: Number.parseFloat(accuracy.toFixed(1)),
+            speed: Number.parseFloat(speed.toFixed(2)),
+            altitude: Number.parseFloat(altitude.toFixed(1)),
           }
 
           const lastCoord = lastCoordinateRef.current
           if (lastCoord) {
-            const distanceIncrement = calculateDistance(
+            const nowMs = smoothedCoordinate.timestamp
+            const lastMs = lastUpdateTimeRef.current || nowMs
+            const dt = Math.max(0, (nowMs - lastMs) / 1000)
+            lastUpdateTimeRef.current = nowMs
+
+            const dHav = calculateDistance(
               lastCoord.latitude,
               lastCoord.longitude,
               smoothedCoordinate.latitude,
               smoothedCoordinate.longitude,
-            )
-            console.log(`MapScreen: Raw distance increment: ${distanceIncrement.toFixed(2)}m from previous point`)
+            ) // meters
 
-            const filteredIncrement = distanceIncrement >= distanceThreshold ? distanceIncrement : 0
-            if (filteredIncrement === 0 && distanceIncrement > 0) {
-              console.log(
-                `MapScreen: Filtered out small movement (${distanceIncrement.toFixed(2)}m < ${distanceThreshold}m threshold)`,
-              )
+            const distanceIncrement = dHav >= distanceThreshold ? dHav : 0
+            if (distanceIncrement === 0 && dHav > 0) {
+              console.log(`MapScreen: Filtered small move (${dHav.toFixed(2)}m < ${distanceThreshold}m)`)
             }
 
             setStats((prevStats) => {
-              const newDistance = Number(prevStats.distance) + Number(filteredIncrement)
-              const duration = Math.floor((new Date() - startTimeRef.current) / 1000)
-              const metrics = calculateMetrics(newDistance, duration)
+              const newDistance = (prevStats.distance || 0) + distanceIncrement // meters
+              const duration = prevStats.duration || 0 // seconds
 
-              if (filteredIncrement > 0) {
-                console.log(
-                  `MapScreen: Updated stats: distance=${newDistance.toFixed(2)}m, duration=${duration}s, raw pace=${metrics.rawPace?.toFixed(2)}, smoothed pace=${metrics.pace?.toFixed(2)}`,
-                )
-              }
+              const distanceKm = newDistance / 1000
+              const avgSpeed = duration > 0 && distanceKm > 0 ? distanceKm / (duration / 3600) : prevStats.avgSpeed || 0
+              const rawPace = distanceKm > 0 ? duration / 60 / distanceKm : 0
+              const smoothed = calculateMovingAveragePace(rawPace || 0)
+              setSmoothedPace(smoothed)
 
               return {
                 ...prevStats,
                 distance: newDistance,
-                duration,
-                ...metrics,
+                avgSpeed,
+                rawPace,
+                pace: smoothed,
               }
             })
           } else {
-            console.log("MapScreen: No previous coordinate available for distance calculation")
+            console.log("MapScreen: No previous coordinate for distance calc; initializing lastCoord")
           }
 
           setCoordinates((prev) => [...prev, smoothedCoordinate])
           lastCoordinateRef.current = smoothedCoordinate
         },
       )
-      setWatchId(id)
+
+      locationWatchRef.current = subscription
     } catch (err) {
       console.error("MapScreen: Start tracking error:", err)
       setError("Failed to start tracking.")
@@ -1205,23 +1122,20 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
         {
           label: "Yes, Discard",
           action: () => {
-            console.log("MapScreen: Discarding activity and resetting quest progress");
-            setCoordinates([]);
-            setStats({ distance: 0, duration: 0, pace: 0, avgSpeed: 0, steps: 0, reps: 0 });
-            setIsPaused(false);
-            setTracking(false);
+            console.log("MapScreen: Discarding activity and resetting session progress")
+            setCoordinates([])
+            setStats({ distance: 0, duration: 0, pace: 0, avgSpeed: 0, steps: 0, reps: 0 })
+            setIsPaused(false)
+            setTracking(false)
 
-            // Reset quest progress but keep the quest active
+            // Reset session but preserve baseline progress
             if (selectedQuest) {
-              setSelectedQuest(prev => ({
-                ...prev,
-                progress: 0,
-                status: "not_started"
-              }));
+              const resetQuest = QuestProgressManager.resetSession(selectedQuest)
+              setSelectedQuest(resetQuest)
             }
 
-            navigateToActivity({ activityType });
-            return true;
+            navigateToActivity({ activityType })
+            return true
           },
           style: "danger",
         },
@@ -1231,355 +1145,172 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
           style: "secondary",
         },
       ],
-    );
-  };
+    )
+  }
 
-  // Enhanced saveActivity with quest completion logic (same as ActivityScreen)
-  const saveActivity = async () => {
-    console.log("MapScreen: Starting save activity process");
-    setIsTrackingLoading(true);
-
-    // ADD THIS FLAG CHECK - Prevent duplicate saves
-    if (stats._alreadySaved) {
-      console.log("MapScreen: Activity already saved, navigating to dashboard");
-      setIsTrackingLoading(false);
-      navigateToDashboard(); // Navigate directly to dashboard
-      return;
-    }
-
+  const stopTrackingCleanly = async () => {
     try {
+      if (locationWatchRef.current) {
+        try {
+          await locationWatchRef.current.remove?.()
+        } catch { }
+        locationWatchRef.current = null
+      }
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+        intervalRef.current = null
+      }
+    } catch { }
+    lastCoordinateRef.current = null
+    lastUpdateTimeRef.current = null
+  }
+
+  const resetTrackingState = () => {
+    setTracking(false)
+    setIsPaused(false)
+    setSmoothedPace(0)
+    setGpsSignal("Searching")
+    setCoordinates([])
+    if (coordinatesRef) coordinatesRef.current = []
+    setStats({
+      distance: 0,
+      duration: 0,
+      pace: 0,
+      rawPace: 0,
+      avgSpeed: 0,
+      steps: 0,
+      reps: 0,
+      calories: 0,
+      elevationGain: 0,
+      elevationLoss: 0,
+      maxSpeed: 0,
+    })
+  }
+
+  const saveActivity = async () => {
+    try {
+      setIsTrackingLoading(true);
+
       const user = auth.currentUser;
       if (!user) {
-        showModal("Error", "You must be logged in to save activities.", null, "error", "user-times");
+        showModal("Error", "You must be logged in to save activities.");
         setIsTrackingLoading(false);
         return;
       }
 
-      console.log("MapScreen: Validating activity data");
-      if (stats.distance < 10) {
-        showModal(
-          "Activity Too Short",
-          "Your activity was too short to save. Please track a longer distance.",
-          () => returnToActivity(stats),
-          "info",
-          "exclamation-triangle"
-        );
-        setIsTrackingLoading(false);
-        return;
-      }
-
-      console.log("MapScreen: Calculating activity metrics");
-      const distanceInKm = stats.distance / 1000;
-      const durationInHours = stats.duration / 3600;
-      const durationInMinutes = stats.duration / 60;
-      const calculatedMetrics = {
-        distanceInKm,
-        avgSpeed: durationInHours > 0 ? distanceInKm / durationInHours : 0,
-        pace: distanceInKm > 0 ? durationInMinutes / distanceInKm : 0,
-      };
-      console.log("MapScreen: Calculated GPS metrics:", calculatedMetrics);
-
+      const coords = Array.isArray(coordinates) ? coordinates : [];
       const activityData = {
         userId: user.uid,
         activityType,
-        distance: stats.distance,
-        duration: stats.duration,
-        pace: stats.pace,
-        avgSpeed: calculatedMetrics.avgSpeed,
-        steps: stats.steps || 0,
-        reps: stats.reps || 0,
-        calories: stats.calories || 0,
-        coordinates: coordinates.map((coord) => ({
-          latitude: coord.latitude,
-          longitude: coord.longitude,
-          timestamp: coord.timestamp,
-        })),
-        targetDistance: Number.parseFloat(targetDistance),
-        targetTime: Number.parseInt(targetTime),
+        distance: ensureNumeric(stats.distance),
+        duration: ensureNumeric(stats.duration),
+        avgSpeed: ensureNumeric(stats.avgSpeed),
+        pace: ensureNumeric(stats.pace),
+        maxSpeed: ensureNumeric(stats.maxSpeed),
+        elevationGain: ensureNumeric(stats.elevationGain),
+        elevationLoss: ensureNumeric(stats.elevationLoss),
+        steps: ensureNumeric(stats.steps),
+        calories: ensureNumeric(stats.calories),
+        coordinates: coords,
         createdAt: serverTimestamp(),
-        followedSuggestedRoute: followingSuggestedRoute,
-        _alreadySaved: true, // ADD THIS FLAG to prevent duplicate saves
+        startLocation: coords.length
+          ? {
+            latitude: coords[0].latitude,
+            longitude: coords[0].longitude,
+            timestamp: coords[0].timestamp,
+          }
+          : null,
+        endLocation: coords.length
+          ? {
+            latitude: coords[coords.length - 1].latitude,
+            longitude: coords[coords.length - 1].longitude,
+            timestamp: coords[coords.length - 1].timestamp,
+          }
+          : null,
       };
 
-      let questCompleted = false;
-      let xpEarned = 50;
-      let questCompletionData = null;
+      // Determine quest source and challenge ID if applicable
+      const questSource = activeChallenge ? "challenge" : "dashboard";
+      const challengeId = activeChallenge ? activeChallenge.id : null;
 
-      // FIXED: Quest completion logic - Use consistent calculation
-      if (selectedQuest) {
-        console.log("MapScreen: Processing quest completion for:", selectedQuest);
-        activityData.questId = selectedQuest.id;
-        activityData.questTitle = selectedQuest.title;
-        activityData.questDescription = selectedQuest.description;
-        activityData.questCategory = selectedQuest.category;
-
-        // FIXED: Use the same calculation method as getDisplayQuestProgress
-        let currentValue = 0;
-        let questProgress = 0;
-
-        if (selectedQuest.unit === "reps") {
-          currentValue = stats.reps || 0;
-          questProgress = currentValue / selectedQuest.goal;
-        } else if (selectedQuest.unit === "distance" || selectedQuest.unit === "km") {
-          currentValue = distanceInKm;
-          questProgress = currentValue / selectedQuest.goal;
-        } else if (selectedQuest.unit === "duration" || selectedQuest.unit === "minutes") {
-          currentValue = durationInMinutes;
-          questProgress = currentValue / selectedQuest.goal;
-        } else if (selectedQuest.unit === "pace") {
-          currentValue = stats.pace;
-          // For pace quests (lower is better)
-          questProgress = currentValue > 0 && currentValue <= selectedQuest.goal ? 1 : 0;
-        } else if (selectedQuest.unit === "calories") {
-          currentValue = stats.calories || 0;
-          questProgress = currentValue / selectedQuest.goal;
-        } else if (selectedQuest.unit === "steps") {
-          currentValue = stats.steps || 0;
-          questProgress = currentValue / selectedQuest.goal;
-        }
-
-        // FIXED: Use 99% threshold to avoid floating point precision issues
-        questCompleted = questProgress >= 0.99;
-        activityData.questProgress = Math.min(questProgress, 1);
-        activityData.questStatus = questCompleted ? "completed" : "in_progress";
-
-        console.log("MapScreen: Quest progress calculated:", {
-          unit: selectedQuest.unit,
-          currentValue,
-          goal: selectedQuest.goal,
-          progress: questProgress,
-          completed: questCompleted,
-          threshold: 0.99
-        });
-
-        if (questCompleted) {
-          xpEarned += selectedQuest.xpReward || 0;
-
-          // FIXED: Ensure all required fields for quest completion
-          questCompletionData = {
-            questId: selectedQuest.id,
-            userId: user.uid,
-            questTitle: selectedQuest.title,
-            questDescription: selectedQuest.description,
-            questGoal: selectedQuest.goal,
-            questUnit: selectedQuest.unit,
-            achievedValue: currentValue,
-            activityType: activityType,
-            xpEarned: selectedQuest.xpReward || 0,
-            completedAt: serverTimestamp(),
-            activityData: {
-              distance: distanceInKm,
-              duration: durationInMinutes,
-              avgSpeed: calculatedMetrics.avgSpeed,
-              steps: stats.steps || 0,
-              pace: stats.pace,
-            },
-          };
-          console.log("MapScreen: Quest completed! Completion data:", questCompletionData);
-
-          try {
-            await addDoc(collection(db, "quest_completions"), questCompletionData);
-            console.log("MapScreen: Quest completion saved to Firestore");
-          } catch (error) {
-            console.error("MapScreen: Error saving quest completion:", error);
-          }
-        }
-
-        // FIXED: Update challenge progress if this is a challenge quest
-        if (selectedQuest.category === "challenge") {
-          try {
-            const challengeRef = doc(db, "challenges", selectedQuest.id);
-            const challengeDoc = await getDoc(challengeRef);
-
-            if (challengeDoc.exists()) {
-              const challengeData = challengeDoc.data();
-              const progress = challengeData.progress || {};
-              const status = challengeData.status || {};
-              const goal = Number(challengeData.goal) || 0;
-
-              // Calculate value to add based on unit
-              let valueToAdd = 0;
-              if (selectedQuest.unit === "reps") {
-                valueToAdd = stats.reps || 0;
-              } else if (selectedQuest.unit === "distance" || selectedQuest.unit === "km") {
-                valueToAdd = distanceInKm;
-              } else if (selectedQuest.unit === "duration" || selectedQuest.unit === "minutes") {
-                valueToAdd = durationInMinutes;
-              } else if (selectedQuest.unit === "steps") {
-                valueToAdd = stats.steps || 0;
-              } else if (selectedQuest.unit === "calories") {
-                valueToAdd = stats.calories || 0;
-              }
-
-              // Update progress safely
-              const newProgressValue = (progress[user.uid] || 0) + valueToAdd;
-              const newStatusValue = goal > 0 && newProgressValue >= goal ? "completed" : "in_progress";
-
-              await updateDoc(challengeRef, {
-                [`progress.${user.uid}`]: newProgressValue,
-                [`status.${user.uid}`]: newStatusValue,
-              });
-
-              console.log("MapScreen: Challenge progress updated:", {
-                userId: user.uid,
-                newProgressValue,
-                newStatusValue
-              });
-            }
-          } catch (err) {
-            console.error("Error updating challenge progress:", err);
-          }
-        }
-      }
-
-      // Calculate bonus XP based on performance
-      let bonusXP = 0;
-      bonusXP += Math.floor(distanceInKm) * 10;
-      bonusXP += Math.floor(stats.duration / 600) * 5;
-      bonusXP += Math.floor((stats.steps || 0) / 1000) * 2;
-      xpEarned += bonusXP;
-      activityData.xpEarned = xpEarned;
-      activityData.bonusXP = bonusXP;
-
-      console.log("MapScreen: Total XP calculated:", {
-        baseXP: 50,
-        questXP: selectedQuest?.xpReward || 0,
-        bonusXP,
-        totalXP: xpEarned,
+      // Deterministic ID and XP award
+      const sessionStartTime = sessionStartRef.current || Date.now();
+      const activityId = XPManager.generateActivityId(user.uid, sessionStartTime);
+      const xpResult = await XPManager.awardXPForActivity({
+        userId: user.uid,
+        activityId,
+        activityData,
+        stats: {
+          distance: ensureNumeric(stats.distance),
+          duration: ensureNumeric(stats.duration),
+          steps: ensureNumeric(stats.steps),
+          calories: ensureNumeric(stats.calories),
+        },
+        selectedQuest: activeQuest || null,
+        activityType,
+        isStrengthActivity: false,
+        questSource,
+        challengeId,
       });
 
-      // Update user's XP and level in Firestore
-      try {
-        const userRef = doc(db, "users", user.uid);
-        const userDoc = await getDoc(userRef);
-
-        if (userDoc.exists()) {
-          const userData = userDoc.data();
-          const currentXP = userData.totalXP || 0;
-          const currentLevel = userData.level || 1;
-          const newTotalXP = currentXP + xpEarned;
-          const newLevel = Math.floor(newTotalXP / 1000) + 1;
-
-          const userUpdateData = {
-            totalXP: newTotalXP,
-            level: newLevel,
-            lastActivityDate: serverTimestamp(),
-            totalActivities: (userData.totalActivities || 0) + 1,
-            totalDistance: (userData.totalDistance || 0) + distanceInKm,
-            totalDuration: (userData.totalDuration || 0) + stats.duration,
-            totalSteps: (userData.totalSteps || 0) + (stats.steps || 0),
-          };
-
-          // FIXED: Add quest-specific stats if quest was completed
-          if (selectedQuest && questCompleted) {
-            if (selectedQuest.unit === "reps") {
-              userUpdateData.totalReps = (userData.totalReps || 0) + (stats.reps || 0);
-            }
-          }
-
-          await updateDoc(userRef, userUpdateData);
-          console.log("MapScreen: User data updated successfully");
-
-          if (newLevel > currentLevel) {
-            setTimeout(() => {
-              showModal(
-                "Level Up!",
-                `Congratulations! You've reached level ${newLevel}! Keep up the great work!`,
-                () => { },
-                "success",
-                "star"
-              );
-            }, 2000);
-          }
-        }
-      } catch (error) {
-        console.error("MapScreen: Error updating user XP:", error);
-      }
-
-      // Save activity to Firestore
-      console.log("MapScreen: Saving activity to Firestore:", activityData);
-      const activityDocRef = await addDoc(collection(db, "activities"), activityData);
-      console.log("MapScreen: Activity saved with ID:", activityDocRef.id);
-
-      // Prepare success message
-      let successTitle = "Activity Saved";
-      let successMessage = "";
-
-      if (questCompleted) {
-        successTitle = "Quest Completed!";
-        successMessage = `🎉 Congratulations! You completed the "${selectedQuest?.title}" quest and earned ${xpEarned} XP!
-
-📊 Workout Summary:
-• ${distanceInKm.toFixed(2)} km distance
-• ${formatTime(stats.duration)} duration
-• ${calculatedMetrics.avgSpeed.toFixed(1)} km/h avg speed
-• ${stats.steps.toLocaleString()} steps`;
-      } else {
-        successTitle = "Great Workout!";
-        successMessage = `🏃‍♂️ Great ${activityType} session!
-
-📊 Workout Summary:
-• ${distanceInKm.toFixed(2)} km covered
-• ${formatTime(stats.duration)} duration
-• ${calculatedMetrics.avgSpeed.toFixed(1)} km/h avg speed
-• ${stats.steps.toLocaleString()} steps
-• ${xpEarned} XP earned`;
-      }
-
-      if (bonusXP > 0) {
-        successMessage += `\n🌟 Bonus: +${bonusXP} XP for excellent performance!`;
-      }
-
-      // FIXED: Add quest progress info if not completed
-      if (selectedQuest && !questCompleted) {
-        const progress = getDisplayQuestProgress(selectedQuest);
-        successMessage += `\n\n📈 Quest Progress: ${Math.round(progress * 100)}% complete`;
-      }
-
-      console.log("MapScreen: Activity saved successfully, showing success message");
-
-      // MODIFIED: Navigate directly to dashboard instead of returning to activity screen
-      showModal(
-        successTitle,
-        successMessage,
-        () => {
-          // Reset states
-          setCoordinates([]);
-          setStats({
-            distance: 0,
-            duration: 0,
-            pace: 0,
-            avgSpeed: 0,
-            steps: 0,
-            reps: 0,
-            _alreadySaved: false // Reset flag for new activities
-          });
-          setIsPaused(false);
-          setTracking(false);
-          setFollowingSuggestedRoute(false);
-          setSuggestedRoute(null);
-          setShowSuggestedRoute(false);
-          recentPacesRef.current = [];
-          setSmoothedPace(0);
-
-          // NAVIGATE DIRECTLY TO DASHBOARD TO PREVENT DUPLICATE SAVES
-          navigateToDashboard();
+      // Persist with per-activity XP, quest source, and challenge ID
+      await setDoc(
+        doc(db, "activities", activityId),
+        {
+          ...activityData,
+          xpEarned: xpResult.xpEarned || 0,
+          bonusXP: xpResult.bonusXP || 0,
+          questCompleted: !!xpResult.questCompleted,
+          questSource,
+          challengeId,
         },
-        "success",
-        "check-circle"
+        { merge: true }
       );
 
+      const successMessage =
+        `Great ${activityType} session!\n\n` +
+        `• ${formatDistance(stats.distance)} covered\n` +
+        `• ${formatDuration(stats.duration)} duration\n` +
+        `• ${formatSpeedKmh(stats.avgSpeed)} avg speed\n` +
+        `• ${stats.steps?.toLocaleString() || 0} steps\n` +
+        `• ${stats.calories || 0} calories burned` +
+        (xpResult?.xpEarned
+          ? `\n• ${xpResult.xpEarned} XP earned${xpResult.bonusXP ? ` (+${xpResult.bonusXP} bonus)` : ""}`
+          : "");
+
+      showModal(
+        "Activity Saved",
+        successMessage,
+        async () => {
+          try {
+            if (locationWatchRef.current) {
+              try {
+                locationWatchRef.current.remove?.();
+              } catch { }
+              locationWatchRef.current = null;
+            }
+            if (intervalRef.current) {
+              clearInterval(intervalRef.current);
+              intervalRef.current = null;
+            }
+            resetTrackingState();
+
+            if (typeof navigateToDashboard === "function") {
+              navigateToDashboard();
+            } else if (navigation && typeof navigation.navigate === "function") {
+              navigation.navigate("Dashboard");
+            }
+          } catch (e) {
+            console.error("Modal confirm error:", e);
+          }
+        },
+        "success", // type
+        "check-circle", // icon
+        [] // buttons
+      );
     } catch (error) {
-      console.error("MapScreen: Error saving activity:", error);
-      let errorMessage = "Failed to save activity. Please try again.";
-      if (error.code === "permission-denied") {
-        errorMessage = "You don't have permission to save this activity. Please check your login status.";
-      } else if (error.code === "network-request-failed") {
-        errorMessage = "Network error. Please check your internet connection and try again.";
-      } else if (error.code === "quota-exceeded") {
-        errorMessage = "Storage quota exceeded. Please contact support.";
-      }
-      showModal("Error", errorMessage, null, "error", "exclamation-circle");
+      console.error("MapScreen saveActivity error:", error);
+      showModal("Error", "Failed to save activity. Please try again.");
     } finally {
       setIsTrackingLoading(false);
     }
@@ -1939,8 +1670,14 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
                         {Math.round(getDisplayQuestProgress(selectedQuest) * 100)}%
                       </CustomText>
                       <CustomText style={twrnc`text-white text-opacity-75 text-xs`}>
-                        {getCurrentQuestValue(selectedQuest).toFixed(selectedQuest.unit === "distance" ? 2 : 0)} /{" "}
-                        {selectedQuest.goal} {selectedQuest.unit}
+                        {QuestProgressManager.getProgressDisplayText(
+                          selectedQuest,
+                          {
+                            ...stats,
+                            distance: stats.distance / 1000, // convert meters to km
+                          },
+                          0,
+                        )}
                       </CustomText>
                     </View>
                   </View>
@@ -1975,7 +1712,22 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
           <View style={twrnc`pt-${selectedQuest ? "32" : "16"} pb-8 px-6 items-center`}>
             <CustomText style={twrnc`text-gray-400 text-sm mb-2`}>Time</CustomText>
             <CustomText weight="bold" style={twrnc`text-white text-6xl font-mono`}>
-              {formatTime(stats.duration)}
+              {formatDuration(stats.duration)}
+            </CustomText>
+          </View>
+
+          <View style={twrnc`px-6 py-8 items-center`}>
+            <CustomText style={twrnc`text-gray-400 text-sm mb-2`}>Distance</CustomText>
+            <CustomText weight="bold" style={twrnc`text-white text-5xl`}>
+              {formatDistance(stats.distance)}
+            </CustomText>
+          </View>
+
+          {/* Duration Section */}
+          <View style={twrnc`px-6 py-8 items-center border-l border-r border-gray-600`}>
+            <CustomText style={twrnc`text-gray-400 text-sm mb-2`}>Duration</CustomText>
+            <CustomText weight="bold" style={twrnc`text-white text-5xl`}>
+              {formatDuration(stats.duration)}
             </CustomText>
           </View>
 
@@ -1985,10 +1737,7 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
               {activityType === "cycling" ? "Speed" : "Avg Pace"}
             </CustomText>
             <CustomText weight="bold" style={twrnc`text-white text-5xl`}>
-              {activityType === "cycling" ? `${stats.avgSpeed.toFixed(1)}` : formatPace(stats.pace)}
-            </CustomText>
-            <CustomText style={twrnc`text-gray-400 text-lg mt-2`}>
-              {activityType === "cycling" ? "km/h" : "/km"}
+              {activityType === "cycling" ? formatSpeedKmh(stats.avgSpeed) : formatPacePerKm(stats.pace)}
             </CustomText>
           </View>
 
@@ -2001,22 +1750,19 @@ const MapScreen = ({ navigateToActivity, navigateToDashboard, params = {} }) => 
                 <View style={twrnc`flex-row items-end h-20`}>
                   {/* Simple bar chart representation */}
                   {[0.8, 1.0, 0.9, 1.1, 0.7].map((height, index) => (
-                    <View
-                      key={index}
-                      style={[twrnc`bg-[#FFC107] rounded-t-sm mr-1 flex-1`, { height: height * 60 }]}
-                    />
+                    <View key={index} style={[twrnc`bg-[#FFC107] rounded-t-sm mr-1 flex-1`, { height: height * 60 }]} />
                   ))}
                 </View>
               </View>
 
               {/* Right: Distance */}
-              <View style={twrnc`items-end`}>
+              {/* <View style={twrnc`items-end`}>
                 <CustomText style={twrnc`text-gray-400 text-sm mb-2`}>Distance</CustomText>
                 <CustomText weight="bold" style={twrnc`text-white text-4xl`}>
                   {(stats.distance / 1000).toFixed(2)}
                 </CustomText>
                 <CustomText style={twrnc`text-gray-400 text-lg`}>km</CustomText>
-              </View>
+              </View> */}
             </View>
           </View>
         </View>
