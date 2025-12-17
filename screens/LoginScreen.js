@@ -4,12 +4,14 @@ import {
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
-  KeyboardAvoidingView,
   Platform,
   ScrollView,
   Animated,
   Easing,
   Dimensions,
+  Keyboard,
+  TouchableWithoutFeedback,
+  Image,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import twrnc from "twrnc";
@@ -19,19 +21,9 @@ import { auth, db } from "../firebaseConfig";
 import NotificationService from "../services/NotificationService";
 import { signInWithEmailAndPassword, sendPasswordResetEmail, sendEmailVerification } from "firebase/auth";
 import { doc, getDoc, setDoc } from "firebase/firestore";
-import { FontAwesome } from "@expo/vector-icons";
+import { FontAwesome, Ionicons } from "@expo/vector-icons";
 
-const { width } = Dimensions.get("window");
-const isSmallDevice = width < 375;
-
-const safeParseJSON = (str, defaultValue = {}) => {
-  try {
-    return str ? JSON.parse(str) : defaultValue;
-  } catch (error) {
-    console.error("JSON parse error:", error.message);
-    return defaultValue;
-  }
-};
+const { width, height } = Dimensions.get("window");
 
 const LoginScreen = ({ navigateToLanding, navigateToSignUp, navigateToDashboard, prefilledEmail, setUserData }) => {
   const [email, setEmail] = useState(prefilledEmail || "");
@@ -46,22 +38,58 @@ const LoginScreen = ({ navigateToLanding, navigateToSignUp, navigateToDashboard,
   const [modalMessage, setModalMessage] = useState("");
   const [modalType, setModalType] = useState("error");
   const [userForVerification, setUserForVerification] = useState(null);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
+  const scrollViewRef = useRef(null);
+  const passwordInputRef = useRef(null);
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(50)).current;
   const headerSlideAnim = useRef(new Animated.Value(-50)).current;
   const buttonScaleAnim = useRef(new Animated.Value(1)).current;
   const inputShakeAnim = useRef(new Animated.Value(0)).current;
+  const patternAnim = useRef(new Animated.Value(0)).current;
+  const logoScaleAnim = useRef(new Animated.Value(0.8)).current;
 
   useEffect(() => {
     setEmail(prefilledEmail || "");
     animateScreenElements();
+
+    // Keyboard listeners
+    const keyboardWillShow = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e) => {
+        setKeyboardHeight(e.endCoordinates.height);
+      }
+    );
+
+    const keyboardWillHide = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setKeyboardHeight(0);
+      }
+    );
+
+    // Animate decorative pattern continuously
+    Animated.loop(
+      Animated.timing(patternAnim, {
+        toValue: 1,
+        duration: 20000,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      })
+    ).start();
+
+    return () => {
+      keyboardWillShow.remove();
+      keyboardWillHide.remove();
+    };
   }, [prefilledEmail]);
 
   const animateScreenElements = () => {
     fadeAnim.setValue(0);
     slideAnim.setValue(50);
     headerSlideAnim.setValue(-50);
+    logoScaleAnim.setValue(0.8);
 
     Animated.parallel([
       Animated.timing(fadeAnim, {
@@ -79,6 +107,12 @@ const LoginScreen = ({ navigateToLanding, navigateToSignUp, navigateToDashboard,
         toValue: 0,
         duration: 500,
         easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.spring(logoScaleAnim, {
+        toValue: 1,
+        tension: 50,
+        friction: 7,
         useNativeDriver: true,
       }),
     ]).start();
@@ -101,26 +135,10 @@ const LoginScreen = ({ navigateToLanding, navigateToSignUp, navigateToDashboard,
 
   const animateInputError = () => {
     Animated.sequence([
-      Animated.timing(inputShakeAnim, {
-        toValue: 10,
-        duration: 100,
-        useNativeDriver: true,
-      }),
-      Animated.timing(inputShakeAnim, {
-        toValue: -10,
-        duration: 100,
-        useNativeDriver: true,
-      }),
-      Animated.timing(inputShakeAnim, {
-        toValue: 10,
-        duration: 100,
-        useNativeDriver: true,
-      }),
-      Animated.timing(inputShakeAnim, {
-        toValue: 0,
-        duration: 100,
-        useNativeDriver: true,
-      }),
+      Animated.timing(inputShakeAnim, { toValue: 10, duration: 100, useNativeDriver: true }),
+      Animated.timing(inputShakeAnim, { toValue: -10, duration: 100, useNativeDriver: true }),
+      Animated.timing(inputShakeAnim, { toValue: 10, duration: 100, useNativeDriver: true }),
+      Animated.timing(inputShakeAnim, { toValue: 0, duration: 100, useNativeDriver: true }),
     ]).start();
   };
 
@@ -132,13 +150,13 @@ const LoginScreen = ({ navigateToLanding, navigateToSignUp, navigateToDashboard,
       newErrors.email = "Email is required";
       hasError = true;
     }
+
     if (!password) {
       newErrors.password = "Password is required";
       hasError = true;
     }
 
     setErrors(newErrors);
-
     if (hasError) {
       animateInputError();
       return;
@@ -146,6 +164,7 @@ const LoginScreen = ({ navigateToLanding, navigateToSignUp, navigateToDashboard,
 
     animateButtonPress();
     setIsLoading(true);
+    Keyboard.dismiss();
 
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
@@ -174,7 +193,6 @@ const LoginScreen = ({ navigateToLanding, navigateToSignUp, navigateToDashboard,
         totalXP: 0,
       };
 
-      // Fetch or create user document in Firestore
       const userDocRef = doc(db, "users", user.uid);
       const userDoc = await getDoc(userDocRef);
       let userData = { ...defaultUserData };
@@ -198,7 +216,6 @@ const LoginScreen = ({ navigateToLanding, navigateToSignUp, navigateToDashboard,
         console.log("Created new user document for UID:", user.uid);
       }
 
-      // Save only session data to AsyncStorage
       await AsyncStorage.multiSet([
         ["userSession", JSON.stringify({
           uid: user.uid,
@@ -208,7 +225,6 @@ const LoginScreen = ({ navigateToLanding, navigateToSignUp, navigateToDashboard,
         })],
         ["lastActiveScreen", "dashboard"],
       ]);
-      console.log("Saved to AsyncStorage:", { userSession: { uid: user.uid, email: user.email, emailVerified: user.emailVerified } });
 
       setUserData(userData);
       await NotificationService.sendWelcomeBackNotification(userData.username);
@@ -278,12 +294,12 @@ const LoginScreen = ({ navigateToLanding, navigateToSignUp, navigateToDashboard,
     }
 
     setIsLoading(true);
+    Keyboard.dismiss();
+
     try {
       await sendPasswordResetEmail(auth, email);
       setModalTitle("Password Reset Email Sent");
-      setModalMessage(
-        "A password reset email has been sent to your email address. Check your inbox and follow the instructions."
-      );
+      setModalMessage("A password reset email has been sent. Check your inbox and follow the instructions.");
       setModalType("success");
       setModalVisible(true);
     } catch (error) {
@@ -301,59 +317,155 @@ const LoginScreen = ({ navigateToLanding, navigateToSignUp, navigateToDashboard,
     setModalVisible(false);
   };
 
+  const patternRotation = patternAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
+
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      style={twrnc`flex-1 bg-[#121826]`}
-    >
-      <ScrollView contentContainerStyle={twrnc`flex-1`}>
-        <Animated.View
-          style={[
-            twrnc`absolute top-0 left-0 right-0 items-center pt-8 z-10`,
-            { transform: [{ translateY: headerSlideAnim }], opacity: fadeAnim },
+    <View style={twrnc`flex-1 bg-[#0f172a]`}>
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+        <ScrollView
+          ref={scrollViewRef}
+          contentContainerStyle={[
+            twrnc`flex-grow px-6 py-8`,
+            { paddingBottom: keyboardHeight > 0 ? keyboardHeight + 20 : 40 }
           ]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          bounces={false}
         >
-          <CustomText
-            weight="medium"
-            style={twrnc`text-white ${isSmallDevice ? "text-lg" : "text-xl"}`}
-          >
-            Sign In
-          </CustomText>
-        </Animated.View>
-
-        <View style={[twrnc`flex-1`, { paddingTop: 80, justifyContent: "center", alignItems: "center" }]}>
-          <View style={twrnc`mb-8`}>
-            <CustomText
-              weight="bold"
-              style={twrnc`text-white ${isSmallDevice ? "text-3xl" : "text-4xl"} mb-2`}
-            >
-              Welcome Back
-            </CustomText>
-            <CustomText
-              style={twrnc`text-[#8E8E93] ${isSmallDevice ? "text-sm" : "text-base"}`}
-            >
-              Sign in to your HakbangQuest account
-            </CustomText>
-          </View>
-
+          {/* Header Section with Decorative Pattern */}
           <Animated.View
-            style={[twrnc`w-full px-4 mb-6`, { transform: [{ translateX: inputShakeAnim }] }]}
+            style={[
+              twrnc`items-center mb-10 mt-8`,
+              {
+                opacity: fadeAnim,
+                transform: [{ translateY: headerSlideAnim }],
+              },
+            ]}
           >
-            <View style={twrnc`mb-4`}>
-              <CustomText
-                weight="medium"
-                style={twrnc`text-white mb-2 ${isSmallDevice ? "text-sm" : "text-base"}`}
+            <View
+              style={[
+                twrnc`rounded-3xl p-8 overflow-hidden relative`,
+                { backgroundColor: '#1e293b', width: '100%' }
+              ]}
+            >
+              {/* Decorative Background Pattern */}
+              <Animated.View
+                style={[
+                  twrnc`absolute top-0 right-0 w-40 h-40`,
+                  {
+                    opacity: 0.08,
+                    transform: [{ rotate: patternRotation }]
+                  }
+                ]}
               >
+                <View style={twrnc`absolute inset-0 flex-row flex-wrap`}>
+                  {[...Array(25)].map((_, i) => (
+                    <View
+                      key={i}
+                      style={[
+                        twrnc`w-1/5 h-1/5 border border-indigo-400`,
+                        { transform: [{ rotate: '45deg' }] }
+                      ]}
+                    />
+                  ))}
+                </View>
+              </Animated.View>
+
+              {/* Additional pattern on bottom left */}
+              <Animated.View
+                style={[
+                  twrnc`absolute bottom-0 left-0 w-32 h-32`,
+                  {
+                    opacity: 0.06,
+                    transform: [{ rotate: patternRotation }]
+                  }
+                ]}
+              >
+                <View style={twrnc`absolute inset-0 flex-row flex-wrap`}>
+                  {[...Array(16)].map((_, i) => (
+                    <View
+                      key={i}
+                      style={[
+                        twrnc`w-1/4 h-1/4 border border-indigo-400`,
+                        { transform: [{ rotate: '45deg' }] }
+                      ]}
+                    />
+                  ))}
+                </View>
+              </Animated.View>
+
+              {/* Logo and Branding */}
+              <View style={twrnc`items-center z-10 relative`}>
+                <Animated.View
+                  style={[
+                    twrnc`w-24 h-24 rounded-3xl items-center justify-center mb-4 shadow-xl overflow-hidden bg-white`,
+                    { transform: [{ scale: logoScaleAnim }] }
+                  ]}
+                >
+                  <Image
+                    source={require('../assets/image/icon.png')}
+                    style={{ width: '100%', height: '100%' }}
+                    resizeMode="cover"
+                  />
+                </Animated.View>
+
+                {/* App Name with Gradient Colors */}
+                <View style={twrnc`flex-row items-center mb-5`}>
+                  <View style={twrnc`w-1.5 h-7 bg-[#FFC107] rounded-full mr-2.5`} />
+                  <CustomText style={[twrnc`text-2xl font-bold tracking-wide`, { color: '#FFC107' }]}>
+                    Hakbang<CustomText style={[twrnc`text-2xl font-bold`, { color: '#4361EE' }]}>Quest</CustomText>
+                  </CustomText>
+                </View>
+
+                {/* Welcome Message */}
+                <View style={twrnc`items-center`}>
+                  <CustomText style={twrnc`text-3xl font-bold text-white mb-2`}>
+                    Welcome Back
+                  </CustomText>
+                  <CustomText style={twrnc`text-sm text-gray-400 text-center`}>
+                    Sign in to continue your fitness journey
+                  </CustomText>
+                </View>
+              </View>
+            </View>
+          </Animated.View>
+
+          {/* Form Section */}
+          <Animated.View
+            style={[
+              twrnc`bg-[#1e293b] rounded-3xl p-6 shadow-2xl`,
+              {
+                opacity: fadeAnim,
+                transform: [{ translateY: slideAnim }, { translateX: inputShakeAnim }],
+              },
+            ]}
+          >
+            {/* Email Input */}
+            <View style={twrnc`mb-5`}>
+              <CustomText style={twrnc`text-sm font-semibold text-gray-300 mb-2.5`}>
                 Email Address
               </CustomText>
-              <View style={twrnc`relative`}>
+              <View
+                style={[
+                  twrnc`flex-row items-center bg-[#0f172a] rounded-xl px-4`,
+                  isEmailFocused && twrnc`border-2 border-indigo-500`,
+                  errors.email && twrnc`border-2 border-red-500`,
+                  !isEmailFocused && !errors.email && twrnc`border border-gray-700`,
+                ]}
+              >
+                <Ionicons
+                  name="mail-outline"
+                  size={20}
+                  color={isEmailFocused ? "#6366f1" : "#6b7280"}
+                  style={twrnc`mr-3`}
+                />
                 <TextInput
-                  style={[
-                    twrnc`bg-[#1E2538] rounded-xl p-4 text-white ${isEmailFocused ? "border-2 border-[#4361EE]" : "border border-gray-600"} ${errors.email ? "border-red-500" : ""}`,
-                    { fontFamily: "Poppins-Regular", fontSize: isSmallDevice ? 14 : 16 },
-                  ]}
+                  style={twrnc`flex-1 text-base text-white py-3.5`}
                   placeholder="Enter your email"
-                  placeholderTextColor="#8E8E93"
+                  placeholderTextColor="#6b7280"
                   value={email}
                   onChangeText={(text) => {
                     setEmail(text);
@@ -363,129 +475,131 @@ const LoginScreen = ({ navigateToLanding, navigateToSignUp, navigateToDashboard,
                   onBlur={() => setIsEmailFocused(false)}
                   autoCapitalize="none"
                   keyboardType="email-address"
+                  returnKeyType="next"
+                  onSubmitEditing={() => passwordInputRef.current?.focus()}
+                  blurOnSubmit={false}
                 />
               </View>
               {errors.email && (
-                <View style={twrnc`flex-row items-center mt-2`}>
-                  <FontAwesome name="exclamation-circle" size={14} color="#EF4444" />
-                  <CustomText style={twrnc`text-red-500 ml-2 ${isSmallDevice ? "text-xs" : "text-sm"}`}>
-                    {errors.email}
-                  </CustomText>
-                </View>
+                <CustomText style={twrnc`text-red-400 text-xs mt-1.5 ml-1`}>
+                  {errors.email}
+                </CustomText>
               )}
             </View>
 
-            <View style={twrnc`mb-6`}>
-              <CustomText
-                weight="medium"
-                style={twrnc`text-white mb-2 ${isSmallDevice ? "text-sm" : "text-base"}`}
-              >
+            {/* Password Input */}
+            <View style={twrnc`mb-4`}>
+              <CustomText style={twrnc`text-sm font-semibold text-gray-300 mb-2.5`}>
                 Password
               </CustomText>
-              <View style={twrnc`relative`}>
+              <View
+                style={[
+                  twrnc`flex-row items-center bg-[#0f172a] rounded-xl px-4`,
+                  isPasswordFocused && twrnc`border-2 border-indigo-500`,
+                  errors.password && twrnc`border-2 border-red-500`,
+                  !isPasswordFocused && !errors.password && twrnc`border border-gray-700`,
+                ]}
+              >
+                <Ionicons
+                  name="lock-closed-outline"
+                  size={20}
+                  color={isPasswordFocused ? "#6366f1" : "#6b7280"}
+                  style={twrnc`mr-3`}
+                />
                 <TextInput
-                  style={[
-                    twrnc`bg-[#1E2538] rounded-xl p-4 pr-12 text-white ${isPasswordFocused ? "border-2 border-[#4361EE]" : "border border-gray-600"} ${errors.password ? "border-red-500" : ""}`,
-                    { fontFamily: "Poppins-Regular", fontSize: isSmallDevice ? 14 : 16 },
-                  ]}
+                  ref={passwordInputRef}
+                  style={twrnc`flex-1 text-base text-white py-3.5`}
                   placeholder="Enter your password"
-                  placeholderTextColor="#8E8E93"
+                  placeholderTextColor="#6b7280"
                   value={password}
                   onChangeText={(text) => {
                     setPassword(text);
                     if (errors.password) setErrors((prev) => ({ ...prev, password: "" }));
                   }}
                   secureTextEntry={!isPasswordVisible}
-                  onFocus={() => setIsPasswordFocused(true)}
+                  onFocus={() => {
+                    setIsPasswordFocused(true);
+                    setTimeout(() => {
+                      scrollViewRef.current?.scrollToEnd({ animated: true });
+                    }, 100);
+                  }}
                   onBlur={() => setIsPasswordFocused(false)}
+                  returnKeyType="done"
+                  onSubmitEditing={handleEmailSignIn}
                 />
                 <TouchableOpacity
-                  style={twrnc`absolute right-4 top-4`}
                   onPress={() => setIsPasswordVisible(!isPasswordVisible)}
+                  style={twrnc`p-2`}
                   hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 >
-                  <FontAwesome
-                    name={isPasswordVisible ? "eye" : "eye-slash"}
-                    size={16}
-                    color="#8E8E93"
+                  <Ionicons
+                    name={isPasswordVisible ? "eye-off-outline" : "eye-outline"}
+                    size={22}
+                    color="#9ca3af"
                   />
                 </TouchableOpacity>
               </View>
               {errors.password && (
-                <View style={twrnc`flex-row items-center mt-2`}>
-                  <FontAwesome name="exclamation-circle" size={14} color="#EF4444" />
-                  <CustomText style={twrnc`text-red-500 ml-2 ${isSmallDevice ? "text-xs" : "text-sm"}`}>
-                    {errors.password}
-                  </CustomText>
-                </View>
+                <CustomText style={twrnc`text-red-400 text-xs mt-1.5 ml-1`}>
+                  {errors.password}
+                </CustomText>
               )}
             </View>
 
+            {/* Forgot Password Link */}
+            <TouchableOpacity onPress={handleForgotPassword} style={twrnc`mb-6 self-end`}>
+              <CustomText style={twrnc`text-indigo-400 text-sm font-semibold`}>
+                Forgot Password?
+              </CustomText>
+            </TouchableOpacity>
+
+            {/* Sign In Button */}
             <Animated.View style={{ transform: [{ scale: buttonScaleAnim }] }}>
               <TouchableOpacity
-                style={twrnc`bg-[#4361EE] py-4 rounded-xl items-center flex-row justify-center ${isLoading ? "opacity-70" : ""}`}
                 onPress={handleEmailSignIn}
                 disabled={isLoading}
+                style={[
+                  twrnc`bg-indigo-600 rounded-xl py-4 items-center shadow-xl`,
+                  isLoading && twrnc`opacity-70`,
+                ]}
                 activeOpacity={0.8}
               >
                 {isLoading ? (
-                  <ActivityIndicator color="#fff" size="small" style={twrnc`mr-2`} />
+                  <ActivityIndicator size="small" color="white" />
                 ) : (
-                  <FontAwesome name="sign-in" size={18} color="white" style={twrnc`mr-2`} />
+                  <CustomText style={twrnc`text-white text-base font-bold`}>
+                    Sign In
+                  </CustomText>
                 )}
-                <CustomText
-                  weight="bold"
-                  style={twrnc`text-white ${isSmallDevice ? "text-base" : "text-lg"}`}
-                >
-                  {isLoading ? "Signing In..." : "Sign In"}
-                </CustomText>
               </TouchableOpacity>
             </Animated.View>
           </Animated.View>
 
-          <View style={twrnc`flex-row justify-center mb-6`}>
-            <TouchableOpacity onPress={handleForgotPassword} disabled={isLoading} activeOpacity={0.7}>
-              <CustomText style={twrnc`text-[#FFC107] ${isSmallDevice ? "text-sm" : "text-base"}`}>
-                Forgot Password?
+          {/* Sign Up Link */}
+          <View style={twrnc`flex-row items-center justify-center mt-8`}>
+            <CustomText style={twrnc`text-gray-400 text-sm`}>
+              Don't have an account?{" "}
+            </CustomText>
+            <TouchableOpacity onPress={navigateToSignUp}>
+              <CustomText style={twrnc`text-sm font-bold text-[#FFC107]`}>
+                Sign Up
               </CustomText>
+
             </TouchableOpacity>
           </View>
+        </ScrollView>
+      </TouchableWithoutFeedback>
 
-          <View style={twrnc`bg-[#1E2538] p-4 rounded-xl border border-gray-700`}>
-            <View style={twrnc`flex-row justify-center items-center`}>
-              <CustomText style={twrnc`text-[#8E8E93] ${isSmallDevice ? "text-sm" : "text-base"}`}>
-                Don't have an account?
-              </CustomText>
-              <TouchableOpacity onPress={navigateToSignUp} style={twrnc`ml-1`} activeOpacity={0.7}>
-                <CustomText
-                  weight="bold"
-                  style={twrnc`text-[#FFC107] ${isSmallDevice ? "text-sm" : "text-base"}`}
-                >
-                  Sign Up
-                </CustomText>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-
-        <CustomModal
-          visible={modalVisible}
-          onClose={handleModalClose}
-          onConfirm={modalTitle === "Email Not Verified" ? handleResendVerification : handleModalClose}
-          confirmText={modalTitle === "Email Not Verified" ? "Resend Verification" : "OK"}
-          icon={
-            modalType === "success"
-              ? "check-circle"
-              : modalType === "warning"
-                ? "exclamation-triangle"
-                : "exclamation-circle"
-          }
-          title={modalTitle}
-          message={modalMessage}
-          type={modalType}
-        />
-      </ScrollView>
-    </KeyboardAvoidingView>
+      {/* Modal */}
+      <CustomModal
+        visible={modalVisible}
+        title={modalTitle}
+        message={modalMessage}
+        type={modalType}
+        onClose={handleModalClose}
+        onResendVerification={modalType === "warning" ? handleResendVerification : undefined}
+      />
+    </View>
   );
 };
 

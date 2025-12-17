@@ -1,17 +1,19 @@
-import { View, TouchableOpacity, Modal, ScrollView, Dimensions } from "react-native"
+// FileName: BadgeComponents.js
+import { View, TouchableOpacity, Modal, ScrollView, Dimensions, Animated } from "react-native"
 import { Ionicons } from "@expo/vector-icons"
 import twrnc from "twrnc"
 import CustomText from "./CustomText"
 import { BADGE_COLORS } from "../screens/BadgeSystem"
+import { useEffect, useRef } from "react"
 
 const { width } = Dimensions.get("window")
 
 // Individual Badge Component
 export const BadgeItem = ({ badge, size = "medium", onPress }) => {
   const sizeStyles = {
-    small: { container: "w-12 h-12", icon: 16, text: "text-xs" },
-    medium: { container: "w-16 h-16", icon: 20, text: "text-sm" },
-    large: { container: "w-20 h-20", icon: 24, text: "text-base" },
+    small: { container: "w-12 h-12", icon: 16, text: "text-[10px]" },
+    medium: { container: "w-14 h-14", icon: 18, text: "text-xs" },
+    large: { container: "w-16 h-16", icon: 20, text: "text-sm" },
   }
 
   const style = sizeStyles[size]
@@ -19,201 +21,367 @@ export const BadgeItem = ({ badge, size = "medium", onPress }) => {
 
   return (
     <TouchableOpacity
-      style={[
-        twrnc`${style.container} rounded-2xl items-center justify-center m-1`,
-        { backgroundColor: badgeColor + "20", borderColor: badgeColor, borderWidth: 2 },
-      ]}
+      style={twrnc`${style.container} items-center justify-center rounded-xl relative`}
       onPress={() => onPress && onPress(badge)}
       activeOpacity={0.8}
     >
-      <Ionicons name={badge.icon} size={style.icon} color={badgeColor} />
-      {badge.isNew && <View style={twrnc`absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full`} />}
+      <View style={[twrnc`w-full h-full rounded-xl items-center justify-center`, { backgroundColor: `${badgeColor}20` }]}>
+        <Ionicons name={badge.icon || "trophy"} size={style.icon} color={badgeColor} />
+      </View>
+      {badge.isNew && (
+        <View style={twrnc`absolute -top-1 -right-1 bg-[#EF476F] rounded-full w-2.5 h-2.5 border border-[#1e293b]`} />
+      )}
     </TouchableOpacity>
   )
 }
 
 // Badge Grid Component
-export const BadgeGrid = ({ badges, onBadgePress, maxVisible = 6 }) => {
+export const BadgeGrid = ({ badges, onBadgePress, maxVisible = 6, variant = "default" }) => {
   const visibleBadges = badges.slice(0, maxVisible)
   const remainingCount = Math.max(0, badges.length - maxVisible)
 
+  const isCompact = variant === "compact"
+
   return (
-    <View style={twrnc`flex-row flex-wrap justify-center`}>
+    <View style={twrnc`flex-row flex-wrap ${isCompact ? "gap-2" : "gap-3"}`}>
       {visibleBadges.map((badge, index) => (
-        <BadgeItem key={badge.id} badge={badge} size="medium" onPress={onBadgePress} />
+        <BadgeItem key={badge.id || index} badge={badge} size={isCompact ? "small" : "medium"} onPress={onBadgePress} />
       ))}
       {remainingCount > 0 && (
-        <View style={twrnc`w-16 h-16 rounded-2xl bg-gray-600 items-center justify-center m-1`}>
-          <CustomText style={twrnc`text-white text-sm font-bold`}>+{remainingCount}</CustomText>
+        <View
+          style={[
+            twrnc`${isCompact ? "w-12 h-12" : "w-14 h-14"} rounded-xl items-center justify-center bg-[#0f172a] border border-gray-700`,
+          ]}
+        >
+          <CustomText weight="bold" style={twrnc`text-gray-400 text-xs`}>
+            +{remainingCount}
+          </CustomText>
         </View>
       )}
     </View>
   )
 }
 
-// Badge Details Modal
+// Badge Details Modal - REDESIGNED
 export const BadgeModal = ({ visible, badge, onClose }) => {
+  const fadeAnim = useRef(new Animated.Value(0)).current
+  const slideAnim = useRef(new Animated.Value(50)).current
+
+  useEffect(() => {
+    if (visible) {
+      fadeAnim.setValue(0)
+      slideAnim.setValue(50)
+      Animated.parallel([
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 300,
+          useNativeDriver: true,
+        }),
+        Animated.timing(slideAnim, {
+          toValue: 0,
+          duration: 400,
+          useNativeDriver: true,
+        }),
+      ]).start()
+    }
+  }, [visible])
+
   if (!badge) return null
 
   const badgeColor = BADGE_COLORS[badge.rarity] || BADGE_COLORS.common
 
   return (
     <Modal animationType="fade" transparent={true} visible={visible} onRequestClose={onClose}>
-      <View style={twrnc`flex-1 bg-black bg-opacity-70 justify-center items-center px-6`}>
-        <View style={twrnc`bg-[#121826] rounded-3xl p-6 w-full max-w-sm`}>
-          {/* Close Button */}
-          <TouchableOpacity style={twrnc`absolute top-4 right-4 z-10`} onPress={onClose}>
-            <Ionicons name="close" size={24} color="#FFFFFF" />
-          </TouchableOpacity>
-
-          {/* Badge Display */}
-          <View style={twrnc`items-center mb-6`}>
-            <View
-              style={[
-                twrnc`w-24 h-24 rounded-3xl items-center justify-center mb-4`,
-                { backgroundColor: badgeColor + "20", borderColor: badgeColor, borderWidth: 3 },
-              ]}
-            >
-              <Ionicons name={badge.icon} size={40} color={badgeColor} />
+      <View style={twrnc`flex-1 bg-black/60 justify-center items-center px-5`}>
+        <Animated.View
+          style={[
+            twrnc`bg-[#1e293b] rounded-3xl w-full max-w-sm overflow-hidden`,
+            {
+              opacity: fadeAnim,
+              transform: [{ translateY: slideAnim }],
+            },
+          ]}
+        >
+          {/* Header with Pattern */}
+          <View style={twrnc`bg-[#0f172a] p-5 relative overflow-hidden`}>
+            {/* Decorative Pattern */}
+            <View style={[twrnc`absolute -top-10 -right-10 w-32 h-32`, { opacity: 0.1 }]}>
+              <View style={twrnc`absolute inset-0 flex-row flex-wrap`}>
+                {[...Array(16)].map((_, i) => (
+                  <View key={i} style={[twrnc`w-1/4 h-1/4 border`, { borderColor: badgeColor, transform: [{ rotate: "45deg" }] }]} />
+                ))}
+              </View>
             </View>
 
-            <CustomText weight="bold" style={twrnc`text-white text-xl text-center mb-2`}>
+            {/* Close Button */}
+            <TouchableOpacity
+              style={twrnc`absolute top-3 right-3 bg-[#1e293b] p-2 rounded-xl z-10`}
+              onPress={onClose}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="close" size={18} color="#FFFFFF" />
+            </TouchableOpacity>
+
+            {/* Badge Icon */}
+            <View style={twrnc`items-center relative z-10`}>
+              <View
+                style={[
+                  twrnc`w-24 h-24 rounded-3xl items-center justify-center mb-3`,
+                  { backgroundColor: `${badgeColor}30` },
+                ]}
+              >
+                <Ionicons name={badge.icon || "trophy"} size={48} color={badgeColor} />
+              </View>
+
+              {/* Rarity Badge */}
+              <View style={[twrnc`rounded-full px-3 py-1 mb-2`, { backgroundColor: `${badgeColor}40` }]}>
+                <CustomText weight="bold" style={[twrnc`text-xs uppercase`, { color: badgeColor }]}>
+                  {badge.rarity}
+                </CustomText>
+              </View>
+            </View>
+          </View>
+
+          {/* Content */}
+          <View style={twrnc`p-5`}>
+            {/* Title */}
+            <CustomText weight="bold" style={twrnc`text-white text-lg mb-2 text-center`}>
               {badge.title}
             </CustomText>
 
-            <View style={[twrnc`px-3 py-1 rounded-full mb-3`, { backgroundColor: badgeColor }]}>
-              <CustomText style={twrnc`text-white text-xs font-bold uppercase`}>{badge.rarity}</CustomText>
-            </View>
+            {/* Description */}
+            <CustomText style={twrnc`text-gray-400 text-xs text-center mb-5`}>{badge.description}</CustomText>
 
-            <CustomText style={twrnc`text-gray-400 text-center text-sm leading-5`}>{badge.description}</CustomText>
-          </View>
-
-          {/* Badge Info */}
-          <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-4`}>
-            <View style={twrnc`flex-row justify-between items-center mb-2`}>
-              <CustomText style={twrnc`text-gray-400 text-sm`}>Category</CustomText>
-              <CustomText style={twrnc`text-white text-sm capitalize`}>{badge.category}</CustomText>
-            </View>
-
-            {badge.earnedAt && (
-              <View style={twrnc`flex-row justify-between items-center`}>
-                <CustomText style={twrnc`text-gray-400 text-sm`}>Earned</CustomText>
-                <CustomText style={twrnc`text-white text-sm`}>
-                  {badge.earnedAt.toDate
-                    ? badge.earnedAt.toDate().toLocaleDateString()
-                    : new Date(badge.earnedAt).toLocaleDateString()}
+            {/* Info Cards */}
+            <View style={twrnc`bg-[#0f172a] rounded-xl p-3 mb-3`}>
+              <View style={twrnc`flex-row items-center justify-between mb-2`}>
+                <View style={twrnc`flex-row items-center`}>
+                  <View style={[twrnc`w-6 h-6 rounded-lg items-center justify-center mr-2`, { backgroundColor: `${badgeColor}20` }]}>
+                    <Ionicons name="grid-outline" size={12} color={badgeColor} />
+                  </View>
+                  <CustomText style={twrnc`text-gray-400 text-xs`}>Category</CustomText>
+                </View>
+                <CustomText weight="bold" style={twrnc`text-white text-xs`}>
+                  {badge.category}
                 </CustomText>
               </View>
-            )}
+
+              {badge.earnedAt && (
+                <View style={twrnc`flex-row items-center justify-between pt-2 border-t border-gray-700`}>
+                  <View style={twrnc`flex-row items-center`}>
+                    <View style={[twrnc`w-6 h-6 rounded-lg items-center justify-center mr-2`, { backgroundColor: `${badgeColor}20` }]}>
+                      <Ionicons name="calendar-outline" size={12} color={badgeColor} />
+                    </View>
+                    <CustomText style={twrnc`text-gray-400 text-xs`}>Earned</CustomText>
+                  </View>
+                  <CustomText weight="bold" style={twrnc`text-white text-xs`}>
+                    {badge.earnedAt.toDate
+                      ? badge.earnedAt.toDate().toLocaleDateString()
+                      : new Date(badge.earnedAt).toLocaleDateString()}
+                  </CustomText>
+                </View>
+              )}
+            </View>
+
+            {/* Close Button */}
+            <TouchableOpacity style={twrnc`bg-[#4361EE] rounded-xl py-3 items-center`} onPress={onClose} activeOpacity={0.8}>
+              <CustomText weight="bold" style={twrnc`text-white text-sm`}>
+                Awesome!
+              </CustomText>
+            </TouchableOpacity>
           </View>
-        </View>
+        </Animated.View>
       </View>
     </Modal>
   )
 }
 
-// Badge Notification Component
+// Badge Notification Component - REDESIGNED
 export const BadgeNotification = ({ badges, visible, onClose }) => {
+  const fadeAnim = useRef(new Animated.Value(0)).current
+  const slideAnim = useRef(new Animated.Value(-100)).current
+  const scaleAnim = useRef(new Animated.Value(0.8)).current
+
+  useEffect(() => {
+    if (visible && badges.length > 0) {
+      fadeAnim.setValue(0)
+      slideAnim.setValue(-100)
+      scaleAnim.setValue(0.8)
+
+      Animated.parallel([
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+        Animated.spring(slideAnim, {
+          toValue: 0,
+          tension: 50,
+          friction: 8,
+          useNativeDriver: true,
+        }),
+        Animated.spring(scaleAnim, {
+          toValue: 1,
+          tension: 50,
+          friction: 7,
+          useNativeDriver: true,
+        }),
+      ]).start()
+    }
+  }, [visible, badges])
+
   if (!visible || badges.length === 0) return null
 
   return (
-    <Modal animationType="slide" transparent={true} visible={visible} onRequestClose={onClose}>
-      <View style={twrnc`flex-1 bg-black bg-opacity-70 justify-center items-center px-6`}>
-        <View style={twrnc`bg-[#121826] rounded-3xl p-6 w-full max-w-sm`}>
-          <View style={twrnc`items-center mb-6`}>
-            <View style={twrnc`bg-[#FFC107] rounded-full p-4 mb-4`}>
-              <Ionicons name="trophy" size={32} color="#121826" />
+    <Modal animationType="none" transparent={true} visible={visible} onRequestClose={onClose}>
+      <View style={twrnc`flex-1 bg-black/70 justify-center items-center px-5`}>
+        <Animated.View
+          style={[
+            twrnc`bg-[#1e293b] rounded-3xl w-full max-w-sm overflow-hidden`,
+            {
+              opacity: fadeAnim,
+              transform: [{ translateY: slideAnim }, { scale: scaleAnim }],
+            },
+          ]}
+        >
+          {/* Celebration Header */}
+          <View style={twrnc`bg-gradient-to-r from-[#4361EE] to-[#06D6A0] p-6 relative overflow-hidden`}>
+            {/* Decorative Elements */}
+            <View style={[twrnc`absolute top-0 right-0 w-32 h-32`, { opacity: 0.2 }]}>
+              <View style={twrnc`absolute inset-0 flex-row flex-wrap`}>
+                {[...Array(16)].map((_, i) => (
+                  <View key={i} style={[twrnc`w-1/4 h-1/4 border border-white`, { transform: [{ rotate: "45deg" }] }]} />
+                ))}
+              </View>
             </View>
 
-            <CustomText weight="bold" style={twrnc`text-white text-2xl text-center mb-2`}>
-              {badges.length === 1 ? "Badge Earned!" : `${badges.length} Badges Earned!`}
-            </CustomText>
-
-            <CustomText style={twrnc`text-gray-400 text-center text-sm mb-6`}>
-              Congratulations on your achievement!
-            </CustomText>
+            <View style={twrnc`items-center relative z-10`}>
+              <View style={twrnc`bg-white bg-opacity-30 rounded-full p-3 mb-3`}>
+                <Ionicons name="trophy" size={40} color="#FFFFFF" />
+              </View>
+              <CustomText weight="bold" style={twrnc`text-white text-xl mb-1`}>
+                {badges.length === 1 ? "Badge Earned!" : `${badges.length} Badges Earned!`}
+              </CustomText>
+              <CustomText style={twrnc`text-white text-opacity-90 text-xs`}>Congratulations on your achievement!</CustomText>
+            </View>
           </View>
 
           {/* Badge List */}
-          <ScrollView style={twrnc`max-h-60 mb-6`}>
+          <ScrollView style={twrnc`max-h-80 p-5`} showsVerticalScrollIndicator={false}>
             {badges.map((badge, index) => {
               const badgeColor = BADGE_COLORS[badge.rarity] || BADGE_COLORS.common
               return (
-                <View key={badge.id} style={twrnc`flex-row items-center mb-4 bg-[#2A2E3A] rounded-2xl p-3`}>
-                  <View
-                    style={[
-                      twrnc`w-12 h-12 rounded-2xl items-center justify-center mr-3`,
-                      { backgroundColor: badgeColor + "20", borderColor: badgeColor, borderWidth: 2 },
-                    ]}
-                  >
-                    <Ionicons name={badge.icon} size={20} color={badgeColor} />
+                <View key={index} style={twrnc`bg-[#0f172a] rounded-2xl p-4 mb-3 flex-row items-center`}>
+                  {/* Badge Icon */}
+                  <View style={[twrnc`w-14 h-14 rounded-xl items-center justify-center mr-3`, { backgroundColor: `${badgeColor}30` }]}>
+                    <Ionicons name={badge.icon || "trophy"} size={24} color={badgeColor} />
                   </View>
 
+                  {/* Badge Info */}
                   <View style={twrnc`flex-1`}>
-                    <CustomText weight="bold" style={twrnc`text-white text-sm mb-1`}>
-                      {badge.title}
-                    </CustomText>
+                    <View style={twrnc`flex-row items-center mb-1`}>
+                      <CustomText weight="bold" style={twrnc`text-white text-sm flex-1`}>
+                        {badge.title}
+                      </CustomText>
+                      <View style={[twrnc`rounded-full px-2 py-0.5`, { backgroundColor: `${badgeColor}40` }]}>
+                        <CustomText weight="bold" style={[twrnc`text-[9px] uppercase`, { color: badgeColor }]}>
+                          {badge.rarity}
+                        </CustomText>
+                      </View>
+                    </View>
                     <CustomText style={twrnc`text-gray-400 text-xs`}>{badge.description}</CustomText>
-                  </View>
-
-                  <View style={[twrnc`px-2 py-1 rounded-full`, { backgroundColor: badgeColor }]}>
-                    <CustomText style={twrnc`text-white text-xs font-bold`}>{badge.rarity.toUpperCase()}</CustomText>
                   </View>
                 </View>
               )
             })}
           </ScrollView>
 
-          <TouchableOpacity style={twrnc`bg-[#4361EE] rounded-2xl py-3 items-center`} onPress={onClose}>
-            <CustomText weight="bold" style={twrnc`text-white`}>
-              Awesome!
-            </CustomText>
-          </TouchableOpacity>
-        </View>
+          {/* Action Button */}
+          <View style={twrnc`p-5 pt-0`}>
+            <TouchableOpacity style={twrnc`bg-[#4361EE] rounded-xl py-3.5 items-center`} onPress={onClose} activeOpacity={0.8}>
+              <View style={twrnc`flex-row items-center`}>
+                <Ionicons name="checkmark-circle" size={18} color="white" style={twrnc`mr-2`} />
+                <CustomText weight="bold" style={twrnc`text-white text-sm`}>
+                  Awesome!
+                </CustomText>
+              </View>
+            </TouchableOpacity>
+          </View>
+        </Animated.View>
       </View>
     </Modal>
   )
 }
 
-// Badge Section for Dashboard
+// Badge Section for Dashboard - REDESIGNED
 export const BadgeSection = ({ badges, onViewAll, onBadgePress }) => {
   const recentBadges = badges.slice(0, 6)
 
   return (
-    <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-5 mb-6`}>
-      <View style={twrnc`flex-row justify-between items-center mb-4`}>
-        <View>
-          <CustomText weight="bold" style={twrnc`text-white text-lg`}>
-            Badges
-          </CustomText>
-          <CustomText style={twrnc`text-gray-400 text-sm`}>{badges.length} earned</CustomText>
+    <View style={twrnc`bg-[#1e293b] rounded-2xl p-4 mb-5 overflow-hidden relative`}>
+      {/* Pattern */}
+      <View style={[twrnc`absolute -top-10 -right-10 w-32 h-32 opacity-5`]}>
+        <View style={twrnc`absolute inset-0 flex-row flex-wrap`}>
+          {[...Array(16)].map((_, i) => (
+            <View key={i} style={[twrnc`w-1/4 h-1/4 border border-[#FFC107]`, { transform: [{ rotate: "45deg" }] }]} />
+          ))}
         </View>
-
-        {badges.length > 6 && (
-          <TouchableOpacity style={twrnc`bg-[#4361EE] px-3 py-2 rounded-xl`} onPress={onViewAll}>
-            <CustomText style={twrnc`text-white text-sm font-medium`}>View All</CustomText>
-          </TouchableOpacity>
-        )}
       </View>
 
-      {badges.length > 0 ? (
-        <BadgeGrid badges={recentBadges} onBadgePress={onBadgePress} maxVisible={6} />
-      ) : (
-        <View style={twrnc`items-center py-6`}>
-          <View style={twrnc`bg-[#4361EE] bg-opacity-20 rounded-2xl p-4 mb-3`}>
-            <Ionicons name="trophy-outline" size={32} color="#4361EE" />
+      <View style={twrnc`relative z-10`}>
+        {/* Header */}
+        <View style={twrnc`flex-row items-center justify-between mb-3`}>
+          <View style={twrnc`flex-row items-center`}>
+            <View style={twrnc`w-0.5 h-4 bg-[#FFC107] rounded-full mr-2`} />
+            <View>
+              <CustomText weight="bold" style={twrnc`text-white text-sm`}>
+                Badges
+              </CustomText>
+              <CustomText style={twrnc`text-gray-400 text-[9px]`}>{badges.length} earned</CustomText>
+            </View>
           </View>
-          <CustomText style={twrnc`text-gray-400 text-center text-sm`}>
-            Complete quests to earn your first badge!
-          </CustomText>
+
+          {badges.length > 6 && (
+            <TouchableOpacity onPress={onViewAll} activeOpacity={0.7}>
+              <View style={twrnc`flex-row items-center`}>
+                <CustomText style={twrnc`text-[#4361EE] text-xs mr-1`}>View All</CustomText>
+                <Ionicons name="chevron-forward" size={14} color="#4361EE" />
+              </View>
+            </TouchableOpacity>
+          )}
         </View>
-      )}
+
+        {/* Badge Grid */}
+        {badges.length > 0 ? (
+          <BadgeGrid badges={recentBadges} onBadgePress={onBadgePress} maxVisible={6} />
+        ) : (
+          <View style={twrnc`items-center py-8`}>
+            <View style={twrnc`bg-[#0f172a] rounded-full p-4 mb-3`}>
+              <Ionicons name="trophy-outline" size={32} color="#6B7280" />
+            </View>
+            <CustomText style={twrnc`text-gray-400 text-xs text-center`}>Complete quests to earn your first badge!</CustomText>
+          </View>
+        )}
+      </View>
     </View>
   )
 }
 
-// All Badges Modal (for viewing all badges)
+// All Badges Modal - REDESIGNED
 export const AllBadgesModal = ({ visible, badges, onClose, onBadgePress }) => {
+  const fadeAnim = useRef(new Animated.Value(0)).current
+
+  useEffect(() => {
+    if (visible) {
+      fadeAnim.setValue(0)
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 300,
+        useNativeDriver: true,
+      }).start()
+    }
+  }, [visible])
+
   const categorizedBadges = badges.reduce((acc, badge) => {
     if (!acc[badge.category]) {
       acc[badge.category] = []
@@ -224,27 +392,48 @@ export const AllBadgesModal = ({ visible, badges, onClose, onBadgePress }) => {
 
   return (
     <Modal animationType="slide" transparent={true} visible={visible} onRequestClose={onClose}>
-      <View style={twrnc`flex-1 bg-black bg-opacity-50 justify-end`}>
-        <View style={twrnc`bg-[#121826] rounded-t-2xl p-5 h-3/4`}>
-          <View style={twrnc`flex-row justify-between items-center mb-6`}>
-            <View>
-              <CustomText weight="bold" style={twrnc`text-white text-2xl`}>
-                All Badges
-              </CustomText>
-              <CustomText style={twrnc`text-gray-400 text-sm`}>{badges.length} badges earned</CustomText>
+      <View style={twrnc`flex-1 bg-black/50 justify-end`}>
+        <Animated.View
+          style={[
+            twrnc`bg-[#1e293b] rounded-t-3xl h-5/6`,
+            {
+              opacity: fadeAnim,
+            },
+          ]}
+        >
+          {/* Header */}
+          <View style={twrnc`px-5 pt-5 pb-4 border-b border-gray-700`}>
+            <View style={twrnc`flex-row items-center justify-between`}>
+              <View style={twrnc`flex-row items-center flex-1`}>
+                <View style={twrnc`w-1 h-6 bg-[#FFC107] rounded-full mr-3`} />
+                <View>
+                  <CustomText weight="bold" style={twrnc`text-white text-xl`}>
+                    All Badges
+                  </CustomText>
+                  <CustomText style={twrnc`text-gray-400 text-xs`}>{badges.length} badges earned</CustomText>
+                </View>
+              </View>
+              <TouchableOpacity style={twrnc`bg-[#0f172a] p-2 rounded-xl`} onPress={onClose} activeOpacity={0.7}>
+                <Ionicons name="close" size={20} color="#FFFFFF" />
+              </TouchableOpacity>
             </View>
-            <TouchableOpacity style={twrnc`bg-[#2A2E3A] p-3 rounded-2xl`} onPress={onClose}>
-              <Ionicons name="close" size={20} color="#FFFFFF" />
-            </TouchableOpacity>
           </View>
 
-          <ScrollView showsVerticalScrollIndicator={false}>
+          {/* Content */}
+          <ScrollView style={twrnc`flex-1 px-5 pt-4`} showsVerticalScrollIndicator={false}>
             {Object.keys(categorizedBadges).map((category) => (
-              <View key={category} style={twrnc`mb-6`}>
-                <CustomText weight="bold" style={twrnc`text-white text-lg mb-3 capitalize`}>
-                  {category}
-                </CustomText>
-                <View style={twrnc`flex-row flex-wrap`}>
+              <View key={category} style={twrnc`mb-5`}>
+                {/* Category Header */}
+                <View style={twrnc`bg-[#0f172a] rounded-xl px-4 py-2.5 mb-3 flex-row items-center`}>
+                  <View style={twrnc`w-1 h-4 bg-[#4361EE] rounded-full mr-2.5`} />
+                  <CustomText weight="bold" style={twrnc`text-white text-sm flex-1`}>
+                    {category}
+                  </CustomText>
+                  <CustomText style={twrnc`text-gray-400 text-xs`}>{categorizedBadges[category].length}</CustomText>
+                </View>
+
+                {/* Badge Grid */}
+                <View style={twrnc`flex-row flex-wrap gap-3`}>
                   {categorizedBadges[category].map((badge) => (
                     <BadgeItem key={badge.id} badge={badge} size="medium" onPress={onBadgePress} />
                   ))}
@@ -254,15 +443,19 @@ export const AllBadgesModal = ({ visible, badges, onClose, onBadgePress }) => {
 
             {badges.length === 0 && (
               <View style={twrnc`items-center justify-center py-20`}>
-                <Ionicons name="trophy-outline" size={64} color="#6B7280" style={twrnc`mb-4`} />
-                <CustomText style={twrnc`text-gray-400 text-center text-lg`}>No badges earned yet</CustomText>
-                <CustomText style={twrnc`text-gray-500 text-center text-sm mt-2`}>
-                  Complete quests to start earning badges!
+                <View style={twrnc`bg-[#0f172a] rounded-full p-6 mb-4`}>
+                  <Ionicons name="trophy-outline" size={48} color="#6B7280" />
+                </View>
+                <CustomText weight="bold" style={twrnc`text-gray-300 text-base mb-2 text-center`}>
+                  No badges earned yet
                 </CustomText>
+                <CustomText style={twrnc`text-gray-500 text-xs text-center`}>Complete quests to start earning badges!</CustomText>
               </View>
             )}
+
+            <View style={twrnc`h-5`} />
           </ScrollView>
-        </View>
+        </Animated.View>
       </View>
     </Modal>
   )

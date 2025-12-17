@@ -2,13 +2,12 @@
 
 import { useState, useEffect } from "react"
 import { View, Modal, TouchableOpacity, FlatList, ActivityIndicator, Animated } from "react-native"
-import { collection, query, where, orderBy, onSnapshot, doc, updateDoc } from "firebase/firestore"
+import { collection, query, where, orderBy, onSnapshot, doc, updateDoc, deleteDoc } from "firebase/firestore"
 import { auth, db } from "../firebaseConfig"
 import twrnc from "twrnc"
 import CustomText from "./CustomText"
 import { FontAwesome } from "@expo/vector-icons"
-
-const DEFAULT_AVATAR = "https://res.cloudinary.com/dljywnlvh/image/upload/v1747077348/default-avatar_jkbpwv.jpg"
+import CustomModal from "./CustomModal"
 
 const NotificationDropdown = ({ visible, onClose, navigateToActivity, navigateToCommunity }) => {
   const [notifications, setNotifications] = useState([])
@@ -17,9 +16,17 @@ const NotificationDropdown = ({ visible, onClose, navigateToActivity, navigateTo
   const [slideAnim] = useState(new Animated.Value(-300))
   const [fadeAnim] = useState(new Animated.Value(0))
 
+  const [isDeleteModalVisible, setIsDeleteModalVisible] = useState(false)
+  const [modalData, setModalData] = useState({
+    title: "",
+    message: "",
+    type: "error",
+    buttons: [],
+    targetNotificationId: null,
+  })
+
   useEffect(() => {
     if (visible) {
-      // Animate in
       Animated.parallel([
         Animated.timing(slideAnim, {
           toValue: 0,
@@ -33,9 +40,9 @@ const NotificationDropdown = ({ visible, onClose, navigateToActivity, navigateTo
         }),
       ]).start()
     } else {
-      // Reset animation values
       slideAnim.setValue(-300)
       fadeAnim.setValue(0)
+      setIsDeleteModalVisible(false)
     }
   }, [visible])
 
@@ -51,7 +58,6 @@ const NotificationDropdown = ({ visible, onClose, navigateToActivity, navigateTo
     setLoading(true)
     setError(null)
 
-    // Set up real-time listener for notifications
     const notificationsRef = collection(db, "notifications")
     const notificationsQuery = query(
       notificationsRef,
@@ -114,6 +120,26 @@ const NotificationDropdown = ({ visible, onClose, navigateToActivity, navigateTo
     }
   }
 
+  const deleteNotification = async (notificationId) => {
+    try {
+      await deleteDoc(doc(db, "notifications", notificationId))
+    } catch (err) {
+      console.error("Error deleting notification:", err)
+    }
+  }
+
+  const deleteAllNotifications = async () => {
+    try {
+      const deletePromises = notifications.map((notification) => {
+        const notificationRef = doc(db, "notifications", notification.id)
+        return deleteDoc(notificationRef)
+      })
+      await Promise.all(deletePromises)
+    } catch (err) {
+      console.error("Error deleting all notifications:", err)
+    }
+  }
+
   const handleNotificationPress = async (notification) => {
     if (!notification.read) {
       await markAsRead(notification.id)
@@ -134,6 +160,34 @@ const NotificationDropdown = ({ visible, onClose, navigateToActivity, navigateTo
         onClose()
         break
     }
+  }
+
+  const handleDeletePress = (notification) => {
+    setModalData({
+      title: "Delete Notification",
+      message: "Are you sure you want to delete this notification?",
+      type: "error",
+      targetNotificationId: notification.id,
+      buttons: [
+        { label: "Cancel", style: "secondary", action: () => {} },
+        { label: "Delete", style: "danger", action: () => deleteNotification(notification.id) },
+      ],
+    })
+    setIsDeleteModalVisible(true)
+  }
+
+  const handleDeleteAllPress = () => {
+    setModalData({
+      title: "Delete ALL Notifications",
+      message: `Are you sure you want to delete all ${notifications.length} notifications? This action cannot be undone.`,
+      type: "warning",
+      targetNotificationId: null,
+      buttons: [
+        { label: "Cancel", style: "secondary", action: () => {} },
+        { label: `Delete All`, style: "danger", action: deleteAllNotifications },
+      ],
+    })
+    setIsDeleteModalVisible(true)
   }
 
   const formatTimeAgo = (date) => {
@@ -159,7 +213,7 @@ const NotificationDropdown = ({ visible, onClose, navigateToActivity, navigateTo
       case "challenge":
         return "trophy"
       case "activity":
-        return "running"
+        return "heartbeat"
       default:
         return "bell"
     }
@@ -174,7 +228,7 @@ const NotificationDropdown = ({ visible, onClose, navigateToActivity, navigateTo
       case "challenge":
         return "#FFC107"
       case "activity":
-        return "#FF6B6B"
+        return "#EF476F"
       default:
         return "#4361EE"
     }
@@ -197,51 +251,92 @@ const NotificationDropdown = ({ visible, onClose, navigateToActivity, navigateTo
       ]}
     >
       <TouchableOpacity
-        style={twrnc`mx-4 mb-3 p-4 bg-[#2A2E3A] rounded-2xl shadow-lg ${
-          !item.read ? "border-l-4 border-[#4361EE]" : ""
-        }`}
         onPress={() => handleNotificationPress(item)}
         activeOpacity={0.8}
+        style={twrnc`mx-4 mb-3`}
       >
-        <View style={twrnc`flex-row items-start`}>
-          {/* Icon Container */}
-          <View
-            style={twrnc`w-12 h-12 rounded-full items-center justify-center mr-4`}
-            backgroundColor={getNotificationColor(item.type) + "20"}
-          >
-            <FontAwesome
-              name={getNotificationIcon(item.type)}
-              size={20}
-              color={getNotificationColor(item.type)}
-            />
+        <View 
+          style={[
+            twrnc`flex-row items-start p-4 bg-[#1F2937] rounded-2xl overflow-hidden`,
+            !item.read && { borderLeftWidth: 3, borderLeftColor: getNotificationColor(item.type) }
+          ]}
+        >
+          {/* Unread Indicator Strip */}
+          {!item.read && (
+            <View style={twrnc`absolute top-0 left-0 right-0 h-0.5 flex-row`}>
+              {[...Array(20)].map((_, i) => (
+                <View
+                  key={i}
+                  style={[
+                    twrnc`flex-1 h-full`,
+                    { backgroundColor: i % 2 === 0 ? getNotificationColor(item.type) : `${getNotificationColor(item.type)}80` }
+                  ]}
+                />
+              ))}
+            </View>
+          )}
+
+          {/* Icon Container - More compact */}
+          <View style={twrnc`relative mr-3`}>
+            <View 
+              style={[
+                twrnc`w-10 h-10 rounded-xl items-center justify-center`,
+                { backgroundColor: `${getNotificationColor(item.type)}20` }
+              ]}
+            >
+              <FontAwesome
+                name={getNotificationIcon(item.type)}
+                size={18}
+                color={getNotificationColor(item.type)}
+              />
+            </View>
+            {!item.read && (
+              <View 
+                style={[
+                  twrnc`absolute -top-1 -right-1 w-3 h-3 rounded-full border-2`,
+                  { 
+                    backgroundColor: getNotificationColor(item.type),
+                    borderColor: '#1F2937'
+                  }
+                ]} 
+              />
+            )}
           </View>
 
           {/* Content */}
           <View style={twrnc`flex-1`}>
-            <View style={twrnc`flex-row items-start justify-between mb-2`}>
-              <CustomText
-                weight={!item.read ? "bold" : "semibold"}
-                style={twrnc`text-white text-base flex-1 mr-2`}
-              >
-                {item.title}
-              </CustomText>
-              {!item.read && (
-                <View style={twrnc`w-3 h-3 bg-[#4361EE] rounded-full mt-1`} />
-              )}
-            </View>
+            <CustomText
+              weight={!item.read ? "bold" : "semibold"}
+              style={twrnc`text-white text-sm mb-1`}
+            >
+              {item.title}
+            </CustomText>
 
-            <CustomText style={twrnc`text-gray-300 text-sm mb-3 leading-5`}>
+            <CustomText style={twrnc`text-gray-400 text-xs mb-2 leading-4`}>
               {item.message}
             </CustomText>
 
             <View style={twrnc`flex-row items-center justify-between`}>
-              <CustomText style={twrnc`text-gray-400 text-xs`}>
+              <CustomText style={twrnc`text-gray-500 text-[10px]`}>
                 {formatTimeAgo(item.createdAt)}
               </CustomText>
-              
-              {/* Action indicator */}
+
               <View style={twrnc`flex-row items-center`}>
-                <FontAwesome name="chevron-right" size={12} color="#6B7280" />
+                <TouchableOpacity
+                  onPress={(e) => {
+                    e.stopPropagation()
+                    handleDeletePress(item)
+                  }}
+                  style={[
+                    twrnc`px-2 py-1 rounded-lg mr-2`,
+                    { backgroundColor: '#EF444420' }
+                  ]}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <FontAwesome name="trash" size={12} color="#EF4444" />
+                </TouchableOpacity>
+
+                <FontAwesome name="chevron-right" size={10} color="#6B7280" />
               </View>
             </View>
           </View>
@@ -256,116 +351,239 @@ const NotificationDropdown = ({ visible, onClose, navigateToActivity, navigateTo
   const unreadCount = notifications.filter((n) => !n.read).length
 
   return (
-    <Modal visible={visible} transparent={true} animationType="none" onRequestClose={onClose}>
-      <TouchableOpacity
-        style={twrnc`flex-1 bg-black bg-opacity-60`}
-        activeOpacity={1}
-        onPress={onClose}
-      >
-        <Animated.View
-          style={[
-            twrnc`absolute top-16 right-4 left-4 max-h-[80%]`,
-            {
-              opacity: fadeAnim,
-              transform: [{ translateY: slideAnim }],
-            },
-          ]}
+    <>
+      <Modal visible={visible} transparent={true} animationType="none" onRequestClose={onClose}>
+        <TouchableOpacity
+          style={twrnc`flex-1 bg-black bg-opacity-70`}
+          activeOpacity={1}
+          onPress={onClose}
         >
-          {/* Main Container */}
-          <View style={twrnc`bg-[#1A1D29] rounded-2xl shadow-2xl overflow-hidden`}>
-            {/* Header */}
-            <View style={twrnc`bg-gradient-to-r from-[#4361EE] to-[#7209B7] p-6`}>
-              <View style={twrnc`flex-row justify-between items-center`}>
-                <View style={twrnc`flex-row items-center`}>
-                  <View style={twrnc`w-10 h-10 bg-white bg-opacity-20 rounded-full items-center justify-center mr-3`}>
-                    <FontAwesome name="bell" size={20} color="#FFFFFF" />
+          <Animated.View
+            style={[
+              twrnc`absolute top-16 right-4 left-4 max-h-[80%]`,
+              {
+                opacity: fadeAnim,
+                transform: [{ translateY: slideAnim }],
+              },
+            ]}
+          >
+            {/* Main Container */}
+            <View style={twrnc`bg-[#111827] rounded-3xl shadow-2xl overflow-hidden`}>
+              {/* Header with Gradient-like Effect */}
+              <View style={twrnc`bg-[#1F2937] p-5 relative overflow-hidden`}>
+                {/* Decorative Pattern */}
+                <View style={twrnc`absolute top-0 right-0 w-32 h-32 opacity-5`}>
+                  <View style={twrnc`absolute inset-0 flex-row flex-wrap`}>
+                    {[...Array(16)].map((_, i) => (
+                      <View
+                        key={i}
+                        style={[
+                          twrnc`w-1/4 h-1/4 border border-[#4361EE]`,
+                          { transform: [{ rotate: '45deg' }] }
+                        ]}
+                      />
+                    ))}
                   </View>
-                  <View>
-                    <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                      Notifications
-                    </CustomText>
-                    {unreadCount > 0 && (
-                      <CustomText style={twrnc`text-blue-100 text-sm`}>
-                        {unreadCount} unread message{unreadCount !== 1 ? 's' : ''}
+                </View>
+
+                {/* Top accent strip */}
+                <View style={twrnc`absolute top-0 left-0 right-0 h-1 flex-row`}>
+                  {[...Array(30)].map((_, i) => (
+                    <View
+                      key={i}
+                      style={[
+                        twrnc`flex-1 h-full`,
+                        { backgroundColor: i % 2 === 0 ? '#4361EE' : '#7209B7' }
+                      ]}
+                    />
+                  ))}
+                </View>
+
+                <View style={twrnc`flex-row justify-between items-center z-10`}>
+                  <View style={twrnc`flex-row items-center flex-1`}>
+                    <View style={twrnc`w-1 h-8 bg-[#4361EE] rounded-full mr-3`} />
+                    <View>
+                      <CustomText weight="bold" style={twrnc`text-white text-lg`}>
+                        Notifications
                       </CustomText>
+                      {unreadCount > 0 && (
+                        <CustomText style={twrnc`text-gray-400 text-xs`}>
+                          {unreadCount} unread
+                        </CustomText>
+                      )}
+                    </View>
+                  </View>
+
+                  <TouchableOpacity
+                    onPress={onClose}
+                    style={[
+                      twrnc`w-9 h-9 rounded-xl items-center justify-center`,
+                      { backgroundColor: '#374151' }
+                    ]}
+                    activeOpacity={0.8}
+                  >
+                    <FontAwesome name="times" size={16} color="#FFFFFF" />
+                  </TouchableOpacity>
+                </View>
+
+                {/* Action Buttons - Compact */}
+                {(hasUnreadNotifications || notifications.length > 0) && (
+                  <View style={twrnc`flex-row mt-4 z-10`}>
+                    {hasUnreadNotifications && (
+                      <TouchableOpacity
+                        onPress={markAllAsRead}
+                        style={[
+                          twrnc`rounded-xl px-3 py-1.5 mr-2`,
+                          { backgroundColor: '#4361EE30' }
+                        ]}
+                        activeOpacity={0.8}
+                      >
+                        <CustomText weight="semibold" style={twrnc`text-[#4361EE] text-xs`}>
+                          Mark all read
+                        </CustomText>
+                      </TouchableOpacity>
+                    )}
+
+                    {notifications.length > 0 && (
+                      <TouchableOpacity
+                        onPress={handleDeleteAllPress}
+                        style={[
+                          twrnc`rounded-xl px-3 py-1.5`,
+                          { backgroundColor: '#EF444430' }
+                        ]}
+                        activeOpacity={0.8}
+                      >
+                        <CustomText weight="semibold" style={twrnc`text-[#EF4444] text-xs`}>
+                          Delete all
+                        </CustomText>
+                      </TouchableOpacity>
                     )}
                   </View>
-                </View>
-
-                <TouchableOpacity
-                  onPress={onClose}
-                  style={twrnc`w-10 h-10 bg-white bg-opacity-20 rounded-full items-center justify-center`}
-                >
-                  <FontAwesome name="times" size={18} color="#FFFFFF" />
-                </TouchableOpacity>
+                )}
               </View>
 
-              {/* Mark All Read Button */}
-              {hasUnreadNotifications && (
-                <TouchableOpacity
-                  onPress={markAllAsRead}
-                  style={twrnc`mt-4 bg-white bg-opacity-20 rounded-xl px-4 py-2 self-start`}
-                >
-                  <CustomText weight="semibold" style={twrnc`text-white text-sm`}>
-                    Mark all as read
-                  </CustomText>
-                </TouchableOpacity>
-              )}
-            </View>
+              {/* Content */}
+              <View style={twrnc`max-h-96 bg-[#111827]`}>
+                {loading ? (
+                  <View style={twrnc`items-center justify-center py-12`}>
+                    <View style={twrnc`relative mb-4`}>
+                      <View 
+                        style={[
+                          twrnc`absolute inset-0 rounded-full`,
+                          { 
+                            backgroundColor: '#4361EE',
+                            opacity: 0.1,
+                            transform: [{ scale: 1.3 }]
+                          }
+                        ]} 
+                      />
+                      <View 
+                        style={[
+                          twrnc`w-16 h-16 rounded-2xl items-center justify-center`,
+                          { backgroundColor: '#4361EE20' }
+                        ]}
+                      >
+                        <ActivityIndicator size="large" color="#4361EE" />
+                      </View>
+                    </View>
+                    <CustomText weight="bold" style={twrnc`text-white text-base mb-1`}>
+                      Loading notifications
+                    </CustomText>
+                    <CustomText style={twrnc`text-gray-400 text-xs text-center px-6`}>
+                      Fetching your latest updates
+                    </CustomText>
+                  </View>
+                ) : error ? (
+                  <View style={twrnc`items-center justify-center py-12`}>
+                    <View 
+                      style={[
+                        twrnc`w-16 h-16 rounded-2xl items-center justify-center mb-4`,
+                        { backgroundColor: '#EF444420' }
+                      ]}
+                    >
+                      <FontAwesome name="exclamation-circle" size={32} color="#EF4444" />
+                    </View>
+                    <CustomText weight="bold" style={twrnc`text-white text-base mb-1`}>
+                      Something went wrong
+                    </CustomText>
+                    <CustomText style={twrnc`text-gray-400 text-xs text-center px-6`}>
+                      {error}
+                    </CustomText>
+                  </View>
+                ) : !Array.isArray(notifications) || notifications.length === 0 ? (
+                  <View style={twrnc`items-center justify-center py-12`}>
+                    <View style={twrnc`relative mb-4`}>
+                      <View 
+                        style={[
+                          twrnc`absolute inset-0 rounded-full`,
+                          { 
+                            backgroundColor: '#6B7280',
+                            opacity: 0.1,
+                            transform: [{ scale: 1.3 }]
+                          }
+                        ]} 
+                      />
+                      <View 
+                        style={[
+                          twrnc`w-16 h-16 rounded-2xl items-center justify-center`,
+                          { backgroundColor: '#37415120' }
+                        ]}
+                      >
+                        <FontAwesome name="bell-slash" size={32} color="#6B7280" />
+                      </View>
+                    </View>
+                    <CustomText weight="bold" style={twrnc`text-white text-base mb-1`}>
+                      No notifications yet
+                    </CustomText>
+                    <CustomText style={twrnc`text-gray-400 text-xs text-center px-6`}>
+                      New updates will appear here
+                    </CustomText>
+                  </View>
+                ) : (
+                  <FlatList
+                    data={notifications}
+                    renderItem={renderNotificationItem}
+                    keyExtractor={(item) => item.id}
+                    showsVerticalScrollIndicator={false}
+                    style={twrnc`py-4`}
+                    contentContainerStyle={twrnc`pb-4`}
+                  />
+                )}
+              </View>
 
-            {/* Content */}
-            <View style={twrnc`max-h-96`}>
-              {loading ? (
-                <View style={twrnc`items-center justify-center py-12`}>
-                  <View style={twrnc`w-16 h-16 bg-[#4361EE] bg-opacity-20 rounded-full items-center justify-center mb-4`}>
-                    <ActivityIndicator size="large" color="#4361EE" />
-                  </View>
-                  <CustomText weight="semibold" style={twrnc`text-white text-lg mb-2`}>
-                    Loading notifications
-                  </CustomText>
-                  <CustomText style={twrnc`text-gray-400 text-center px-6`}>
-                    Please wait while we fetch your latest updates
-                  </CustomText>
-                </View>
-              ) : error ? (
-                <View style={twrnc`items-center justify-center py-12`}>
-                  <View style={twrnc`w-16 h-16 bg-red-500 bg-opacity-20 rounded-full items-center justify-center mb-4`}>
-                    <FontAwesome name="exclamation-circle" size={32} color="#EF4444" />
-                  </View>
-                  <CustomText weight="semibold" style={twrnc`text-white text-lg mb-2`}>
-                    Something went wrong
-                  </CustomText>
-                  <CustomText style={twrnc`text-gray-400 text-center px-6`}>
-                    {error}
-                  </CustomText>
-                </View>
-              ) : !Array.isArray(notifications) || notifications.length === 0 ? (
-                <View style={twrnc`items-center justify-center py-12`}>
-                  <View style={twrnc`w-16 h-16 bg-gray-500 bg-opacity-20 rounded-full items-center justify-center mb-4`}>
-                    <FontAwesome name="bell-slash" size={32} color="#6B7280" />
-                  </View>
-                  <CustomText weight="semibold" style={twrnc`text-white text-lg mb-2`}>
-                    No notifications yet
-                  </CustomText>
-                  <CustomText style={twrnc`text-gray-400 text-center px-6`}>
-                    When you have new updates, they'll appear here
-                  </CustomText>
-                </View>
-              ) : (
-                <FlatList
-                  data={notifications}
-                  renderItem={renderNotificationItem}
-                  keyExtractor={(item) => item.id}
-                  showsVerticalScrollIndicator={false}
-                  style={twrnc`py-4`}
-                  contentContainerStyle={twrnc`pb-4`}
-                />
-              )}
+              {/* Bottom accent line */}
+              <View style={twrnc`h-1 flex-row`}>
+                {[...Array(20)].map((_, i) => (
+                  <View
+                    key={i}
+                    style={[
+                      twrnc`flex-1 h-full`,
+                      { backgroundColor: i % 2 === 0 ? '#4361EE40' : '#7209B740' }
+                    ]}
+                  />
+                ))}
+              </View>
             </View>
-          </View>
-        </Animated.View>
-      </TouchableOpacity>
-    </Modal>
+          </Animated.View>
+        </TouchableOpacity>
+      </Modal>
+
+      <CustomModal
+        visible={isDeleteModalVisible}
+        onClose={() => setIsDeleteModalVisible(false)}
+        title={modalData.title}
+        message={modalData.message}
+        type={modalData.type}
+        buttons={modalData.buttons.map(button => ({
+          ...button,
+          action: () => {
+            const result = button.action()
+            setIsDeleteModalVisible(false)
+            return result
+          }
+        }))}
+      />
+    </>
   )
 }
 

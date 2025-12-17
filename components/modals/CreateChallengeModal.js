@@ -30,40 +30,43 @@ const GroupTypeButton = memo(({ groupType, isSelected, onPress }) => (
 
 const ActivityButton = memo(({ activity, isSelected, onPress }) => (
   <TouchableOpacity
+    style={[
+      twrnc`mr-3 rounded-2xl p-4 min-w-[100px] items-center border-2`,
+      {
+        backgroundColor: isSelected ? `${activity.color}20` : "#1e293b",
+        borderColor: isSelected ? activity.color : "transparent",
+      },
+    ]}
     onPress={onPress}
-    style={twrnc`mr-4`}
     activeOpacity={0.7}
   >
     <View
-      style={twrnc`items-center justify-center w-28 rounded-2xl p-4 ${isSelected
-        ? `border-2 border-[${activity.color}] bg-[#2A2E3A]`
-        : "bg-[#2A2E3A]"
-        }`}
+      style={[
+        twrnc`w-12 h-12 rounded-xl items-center justify-center mb-2`,
+        { backgroundColor: isSelected ? `${activity.color}30` : "#0f172a" },
+      ]}
     >
-      <View
+      <Image
+        source={activity.icon}
         style={[
-          twrnc`w-14 h-14 rounded-2xl items-center justify-center mb-2`,
-          {
-            backgroundColor: isSelected ? activity.color : "#3A3F4B",
-          },
+          twrnc`w-7 h-7`,
+          activity.id === 'pushup' && { tintColor: '#FFFFFF' }
         ]}
-      >
-        <Image
-          source={activity.icon}
-          style={twrnc`w-7 h-7`}
-          resizeMode="contain"
-        />
-      </View>
-      <CustomText
-        weight={isSelected ? "bold" : "medium"}
-        style={twrnc`text-white text-sm text-center`}
-        numberOfLines={1}
-      >
-        {activity.name}
-      </CustomText>
+        resizeMode="contain"
+      />
     </View>
+    <CustomText
+      weight="semibold"
+      style={[
+        twrnc`text-xs text-center`,
+        { color: isSelected ? activity.color : "#9CA3AF" },
+      ]}
+    >
+      {activity.name}
+    </CustomText>
   </TouchableOpacity>
 ));
+
 
 const FriendButton = memo(({ friend, isSelected, onPress }) => (
   <TouchableOpacity
@@ -111,9 +114,8 @@ const CreateChallengeModal = ({
   handleCreateChallenge,
   creatingChallenge,
 }) => {
-  const [selectedDurationKey, setSelectedDurationKey] = useState(null);
-  const [stakeXP, setStakeXP] = useState(50);
-  const [prizePool, setPrizePool] = useState(100);
+  const [selectedDurationKey, setSelectedDurationKey] = useState('1m');
+  const [baseXP, setBaseXP] = useState(200); // Changed name from stakeXP to baseXP for clarity
   const [inviteError, setInviteError] = useState(null);
 
   // Animation values
@@ -140,22 +142,22 @@ const CreateChallengeModal = ({
     }));
   }, [setNewChallenge]);
 
-  // Update the existing useEffect to only calculate base XP
+  // Logic for setting base XP based on duration
   useEffect(() => {
-    const mins = newChallenge.durationMinutes || 0;
-    let baseXP = 50;
+    const mins = newChallenge.durationMinutes || 30;
+    let newBaseXP = 50;
 
-    if (mins >= 2 && mins <= 5) baseXP = 100;
-    else if (mins > 5 && mins <= 10) baseXP = 150;
-    else if (mins > 10 && mins <= 30) baseXP = 200;
-    else if (mins > 30 && mins <= 60) baseXP = 300;
-    else if (mins > 60 && mins <= 180) baseXP = 500;
-    else if (mins > 180 && mins <= 360) baseXP = 800;
-    else if (mins > 360 && mins <= 720) baseXP = 1000;
-    else if (mins > 720) baseXP = 1500;
+    if (mins >= 2 && mins <= 5) newBaseXP = 100;
+    else if (mins > 5 && mins <= 10) newBaseXP = 150;
+    else if (mins > 10 && mins <= 30) newBaseXP = 200;
+    else if (mins > 30 && mins <= 60) newBaseXP = 300;
+    else if (mins > 60 && mins <= 180) newBaseXP = 500;
+    else if (mins > 180 && mins <= 360) newBaseXP = 800;
+    else if (mins > 360 && mins <= 720) newBaseXP = 1000;
+    else if (mins > 720) newBaseXP = 1500;
 
-    setStakeXP(baseXP);
-  }, [newChallenge.durationMinutes, setNewChallenge]);
+    setBaseXP(newBaseXP);
+  }, [newChallenge.durationMinutes]);
 
   // Fast entrance animations
   useEffect(() => {
@@ -174,60 +176,66 @@ const CreateChallengeModal = ({
         duration: 250,
         useNativeDriver: true,
       }).start();
+
+      // Initialize with default duration on mount/visibility if minutes is 0
+      if (!newChallenge.durationMinutes) {
+        handleDurationSelect(1, '1m');
+      }
     }
   }, [isVisible, fadeAnim, slideAnim]);
 
 
   // Add these helper functions inside your component
   const getParticipantCount = useCallback(() => {
-    const baseCount = 1; // Always include yourself
+    if (newChallenge.groupType === 'solo') return 1;
 
-    if (newChallenge.groupType === 'solo') {
-      return 1;
-    } else if (newChallenge.groupType === 'duo') {
-      return baseCount + (newChallenge.selectedFriendsForGroupChallenge?.length || 0);
-    } else {
-      // For group challenges, count selected friends + yourself
-      return baseCount + (newChallenge.selectedFriendsForGroupChallenge?.length || 0);
-    }
+    // Creator (1) + invited friends
+    return 1 + (newChallenge.selectedFriendsForGroupChallenge?.length || 0);
   }, [newChallenge.groupType, newChallenge.selectedFriendsForGroupChallenge]);
 
-  useEffect(() => {
-    const calculatedStake = calculateStakeXP();
-    setNewChallenge(prev => ({
-      ...prev,
-      stakeXP: calculatedStake
-    }));
-  }, [calculateStakeXP, setNewChallenge]);
 
-  const calculateStakeXP = useCallback(() => {
-    const baseXP = stakeXP; 
-    const participantCount = getParticipantCount();
-
-    // Scale stake based on participant count
+  const calculateIndividualStake = useCallback(() => {
+    const xp = baseXP;
     if (newChallenge.groupType === 'solo') {
-      return baseXP;
+      return xp;
     } else if (newChallenge.groupType === 'duo') {
-      return baseXP * 1.5; // 50% more for duos
+      return Math.round(xp * 1.5); // 50% more for duos
     } else {
-      // For groups, scale based on size
-      return baseXP * Math.min(participantCount, 5); // Cap at 5x for balance
+      // For groups, baseXP
+      return xp;
     }
-  }, [stakeXP, getParticipantCount, newChallenge.groupType]);
+  }, [baseXP, newChallenge.groupType]);
 
   const calculatePrizePool = useCallback(() => {
-    const participantStake = calculateStakeXP();
-    const participantCount = getParticipantCount();
+    const individualStake = calculateIndividualStake();
 
-    // Prize pool = total stakes from all participants
-    return participantStake * participantCount;
-  }, [calculateStakeXP, getParticipantCount]);
+    // For Solo, the Prize Pool is just the stake
+    if (newChallenge.groupType === 'solo') {
+      return individualStake;
+    }
+
+    const actualParticipants = 1 + (newChallenge.selectedFriendsForGroupChallenge?.length || 0);
+
+    return individualStake * actualParticipants;
+  }, [calculateIndividualStake, newChallenge.groupType, newChallenge.selectedFriendsForGroupChallenge]);
+
+
+  useEffect(() => {
+    const calculatedStake = calculateIndividualStake();
+    const calculatedPrizePool = calculatePrizePool();
+    setNewChallenge(prev => ({
+      ...prev,
+      stakeXP: calculatedPrizePool, // Set stakeXP as the Prize Pool
+      individualStake: calculatedStake, // Add individual stake for clarity/backend
+    }));
+  }, [calculateIndividualStake, calculatePrizePool, setNewChallenge]);
 
   // Optimized handlers with stable references
   const handleFriendSelect = useCallback((friendId) => {
     setNewChallenge((prev) => {
       let updatedList = [...(prev.selectedFriendsForGroupChallenge || [])];
       const friend = friends.find(f => f.id === friendId);
+      const maxParticipants = CHALLENGE_GROUP_TYPES.find(t => t.id === prev.groupType)?.maxParticipants || 5;
 
       if (prev.groupType === "duo") {
         updatedList = updatedList[0]?.id === friendId ? [] : [friend];
@@ -237,8 +245,9 @@ const CreateChallengeModal = ({
         if (exists) {
           updatedList = updatedList.filter((f) => f.id !== friendId);
         } else {
-          if (updatedList.length >= 4) {
-            setInviteError("Group challenges can only have up to 5 members including you.");
+          // Check against max invited slots (maxParticipants - 1 for creator)
+          if (updatedList.length >= (maxParticipants - 1)) {
+            setInviteError(`Lobby challenges can only invite up to ${maxParticipants - 1} friends.`);
             setTimeout(() => setInviteError(null), 3000);
             return prev;
           }
@@ -252,15 +261,41 @@ const CreateChallengeModal = ({
         selectedFriendsForGroupChallenge: updatedList,
       };
     });
-  }, [friends, setNewChallenge]);
+  }, [friends, setNewChallenge, CHALLENGE_GROUP_TYPES]);
 
   const handleGroupTypeSelect = useCallback((groupTypeId) => {
-    setNewChallenge((prev) => ({
-      ...prev,
-      groupType: groupTypeId,
-      selectedFriendsForGroupChallenge: [],
-    }));
-  }, [setNewChallenge]);
+    setNewChallenge((prev) => {
+      const selectedGroup = CHALLENGE_GROUP_TYPES.find(t => t.id === groupTypeId);
+
+      let newFriends = [];
+      if (groupTypeId !== 'solo' && prev.selectedFriendsForGroupChallenge) {
+        if (groupTypeId === 'duo') {
+          newFriends = prev.selectedFriendsForGroupChallenge.slice(0, 1);
+        } else {
+          const maxInvited = (selectedGroup?.maxParticipants || 5) - 1;
+          newFriends = prev.selectedFriendsForGroupChallenge.slice(0, maxInvited);
+        }
+      }
+
+      let newGoal = prev.goal;
+
+      if (groupTypeId === 'duo' || groupTypeId === 'lobby') {
+        newGoal = null;
+      } else {
+        newGoal = prev.goal === null ? 5 : prev.goal;
+      }
+
+      return {
+        ...prev,
+        groupType: groupTypeId,
+        selectedFriendsForGroupChallenge: newFriends,
+        goal: newGoal,
+      }
+    });
+    setInviteError(null);
+  }, [setNewChallenge, CHALLENGE_GROUP_TYPES]);
+
+
 
   const handleActivitySelect = useCallback((activityId, activityUnit) => {
     setNewChallenge((prev) => ({
@@ -283,6 +318,14 @@ const CreateChallengeModal = ({
   const handleDescriptionChange = useCallback((text) => {
     setNewChallenge((prev) => ({ ...prev, description: text }));
   }, [setNewChallenge]);
+
+  const selectedGroupType = CHALLENGE_GROUP_TYPES.find((type) => type.id === newChallenge.groupType);
+  const isMultiplayer = newChallenge.groupType === 'duo' || newChallenge.groupType === 'lobby';
+  const individualStake = calculateIndividualStake();
+  const prizePool = calculatePrizePool();
+  const maxParticipants = selectedGroupType?.maxParticipants || 1;
+  const numInvited = newChallenge.selectedFriendsForGroupChallenge?.length || 0;
+  const numParticipants = getParticipantCount();
 
   return (
     <Modal animationType="none" transparent={true} visible={isVisible} onRequestClose={onClose}>
@@ -327,8 +370,8 @@ const CreateChallengeModal = ({
               <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
                 Challenge Type
               </CustomText>
-              <View style={twrnc`flex-row flex-wrap justify-between`}>
-                {CHALLENGE_GROUP_TYPES.map((groupType) => (
+              <View style={twrnc`flex-row flex-wrap justify-between -mx-1`}>
+                {CHALLENGE_GROUP_TYPES.filter(groupType => groupType.id !== 'solo').map((groupType) => (
                   <GroupTypeButton
                     key={groupType.id}
                     groupType={groupType}
@@ -363,10 +406,10 @@ const CreateChallengeModal = ({
             </View>
 
             {/* Invite Friends */}
-            {friends?.length > 0 && (
+            {isMultiplayer && friends?.length > 0 && (
               <View style={twrnc`mb-6`}>
                 <CustomText weight="semibold" style={twrnc`text-white mb-2`}>
-                  Invite {newChallenge.groupType === "duo" ? "a Friend" : "Friends"}
+                  Invite {newChallenge.groupType === "duo" ? "a Friend (1 max)" : `Friends (up to ${maxParticipants - 1})`}
                 </CustomText>
 
                 {inviteError && (
@@ -374,6 +417,13 @@ const CreateChallengeModal = ({
                     {inviteError}
                   </CustomText>
                 )}
+
+                {numInvited >= (maxParticipants - 1) && (
+                  <CustomText style={twrnc`text-[#FFC107] text-sm mb-2`}>
+                    {newChallenge.groupType === "duo" ? "One friend slot selected." : `Max friends invited (${maxParticipants - 1}/${maxParticipants - 1}).`}
+                  </CustomText>
+                )}
+
 
                 <ScrollView
                   horizontal
@@ -485,13 +535,13 @@ const CreateChallengeModal = ({
                         Participants
                       </CustomText>
                       <CustomText style={twrnc`text-gray-400 text-xs`}>
-                        Including you
+                        {isMultiplayer ? `Max ${maxParticipants} people` : `Solo`}
                       </CustomText>
                     </View>
                   </View>
                   <View style={twrnc`bg-[#2A3245] px-3 py-1 rounded-full`}>
                     <CustomText weight="bold" style={twrnc`text-white text-sm`}>
-                      {getParticipantCount()} {getParticipantCount() === 1 ? 'person' : 'people'}
+                      {numParticipants} / {maxParticipants}
                     </CustomText>
                   </View>
                 </View>
@@ -510,7 +560,7 @@ const CreateChallengeModal = ({
                     </View>
                     <View style={twrnc`bg-[#2A3245] p-3 rounded-xl border-l-4 border-l-[#FFC107]`}>
                       <CustomText weight="bold" style={twrnc`text-[#FFC107] text-lg text-center`}>
-                        {calculateStakeXP().toLocaleString()}
+                        {individualStake.toLocaleString()}
                       </CustomText>
                       <CustomText style={twrnc`text-gray-400 text-xs text-center mt-1`}>
                         XP
@@ -525,12 +575,12 @@ const CreateChallengeModal = ({
                         <Ionicons name="trophy-outline" size={14} color="#4361EE" />
                       </View>
                       <CustomText style={twrnc`text-gray-300 text-xs`}>
-                        Prize Pool
+                        {isMultiplayer ? 'Prize Pool' : 'Reward'}
                       </CustomText>
                     </View>
                     <View style={twrnc`bg-[#2A3245] p-3 rounded-xl border-l-4 border-l-[#4361EE] relative`}>
                       <CustomText weight="bold" style={twrnc`text-[#4361EE] text-lg text-center`}>
-                        {calculatePrizePool().toLocaleString()}
+                        {prizePool.toLocaleString()}
                       </CustomText>
                       <CustomText style={twrnc`text-gray-400 text-xs text-center mt-1`}>
                         XP
@@ -543,21 +593,23 @@ const CreateChallengeModal = ({
                 </View>
 
                 {/* Multiplier Indicator */}
-                <View style={twrnc`bg-[#2A3245] rounded-xl px-4 py-3 mt-4 border border-[#3A3F4B]`}>
-                  <View style={twrnc`flex-row justify-between items-center`}>
-                    <CustomText style={twrnc`text-gray-300 text-xs`}>
-                      Calculation
-                    </CustomText>
-                    <View style={twrnc`bg-[#4361EE] px-2 py-1 rounded-full`}>
-                      <CustomText weight="bold" style={twrnc`text-white text-xs`}>
-                        {getParticipantCount()} × {calculateStakeXP()} XP
+                {isMultiplayer && (
+                  <View style={twrnc`bg-[#2A3245] rounded-xl px-4 py-3 mt-4 border border-[#3A3F4B]`}>
+                    <View style={twrnc`flex-row justify-between items-center`}>
+                      <CustomText style={twrnc`text-gray-300 text-xs`}>
+                        Calculation
                       </CustomText>
+                      <View style={twrnc`bg-[#4361EE] px-2 py-1 rounded-full`}>
+                        <CustomText weight="bold" style={twrnc`text-white text-xs`}>
+                          {maxParticipants} × {individualStake.toLocaleString()} XP
+                        </CustomText>
+                      </View>
                     </View>
+                    <CustomText style={twrnc`text-gray-400 text-xs mt-1 text-center`}>
+                      Each participant contributes {individualStake.toLocaleString()} XP to the prize pool (max players)
+                    </CustomText>
                   </View>
-                  <CustomText style={twrnc`text-gray-400 text-xs mt-1 text-center`}>
-                    Each participant contributes {calculateStakeXP()} XP to the prize pool
-                  </CustomText>
-                </View>
+                )}
               </View>
             </View>
 

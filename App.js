@@ -18,7 +18,7 @@ import { useFonts } from "expo-font";
 import * as Location from "expo-location";
 import * as Notifications from "expo-notifications";
 import twrnc from "twrnc";
-import { FontAwesome } from "@expo/vector-icons";
+import { Ionicons } from "@expo/vector-icons";
 import { onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc, collection, query, where, onSnapshot, setDoc } from "firebase/firestore";
 import { auth, db } from "./firebaseConfig";
@@ -35,35 +35,13 @@ import CustomText from "./components/CustomText";
 import CustomModal from "./components/CustomModal";
 import NotificationDropdown from "./components/NotificationDropdown";
 import NotificationService from "./services/NotificationService";
-import RunningIcon from "./components/icons/running.png";
-import FootprintsIcon from "./components/icons/footprints.png";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 
 SplashScreen.preventAutoHideAsync();
 
-// Responsive dimensions
 const { width, height } = Dimensions.get("window");
-const isSmallDevice = width < 375;
-const isMediumDevice = width >= 375 && width < 414;
-const isLargeDevice = width >= 414;
-
-// Responsive font sizes
-const responsiveFontSizes = {
-  xs: isSmallDevice ? 10 : isMediumDevice ? 11 : 12,
-  sm: isSmallDevice ? 12 : isMediumDevice ? 13 : 14,
-  base: isSmallDevice ? 14 : isMediumDevice ? 15 : 16,
-  lg: isSmallDevice ? 16 : isMediumDevice ? 18 : 20,
-  xl: isSmallDevice ? 18 : isMediumDevice ? 20 : 22,
-  "2xl": isSmallDevice ? 20 : isMediumDevice ? 22 : 24,
-};
-
-// Responsive padding/margin
-const responsivePadding = {
-  base: isSmallDevice ? 3 : isMediumDevice ? 4 : 5,
-  lg: isSmallDevice ? 4 : isMediumDevice ? 5 : 6,
-};
 
 // Helper function to safely parse JSON
 const safeParseJSON = (str, defaultValue = {}) => {
@@ -79,18 +57,8 @@ const formatDate = () => {
   const date = new Date();
   const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   const months = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
   ];
   return `${days[date.getDay()]}, ${date.getDate()} ${months[date.getMonth()]} ${date.getFullYear()}`;
 };
@@ -130,12 +98,11 @@ const checkLocationPermissions = async () => {
 
 // Initialize user data from Firestore using UID
 const initializeUserData = async (user, setUserData) => {
-  console.log("initializeUserData called with user:", user ? { uid: user.uid, email: user.email, displayName: user.displayName } : null);
   try {
     const defaultUserData = {
       username: "User",
       email: "user@example.com",
-      avatar: "https://randomuser.me/api/portraits/men/1.jpg",
+      avatar: "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y",
       uid: null,
       privacySettings: {
         showProfile: true,
@@ -153,13 +120,10 @@ const initializeUserData = async (user, setUserData) => {
     let userData = { ...defaultUserData };
     let isValidSession = false;
 
-    // Check for cached session
     const storedSession = await AsyncStorage.getItem("userSession");
     const sessionData = safeParseJSON(storedSession, null);
-    console.log("Cached session data:", sessionData);
 
     if (user && user.emailVerified) {
-      // Active Firebase user session
       isValidSession = true;
       userData = await fetchUserDataFromFirestore(user.uid, defaultUserData);
       await AsyncStorage.setItem("userSession", JSON.stringify({
@@ -168,10 +132,8 @@ const initializeUserData = async (user, setUserData) => {
         emailVerified: user.emailVerified,
         lastLogin: new Date().toISOString(),
       }));
-      console.log("Updated AsyncStorage with userSession:", { uid: user.uid, email: user.email, emailVerified: user.emailVerified });
       setUserData(userData);
     } else if (sessionData?.uid && sessionData.emailVerified) {
-      // No active Firebase user, but valid cached session
       try {
         isValidSession = true;
         userData = await fetchUserDataFromFirestore(sessionData.uid, defaultUserData);
@@ -183,7 +145,6 @@ const initializeUserData = async (user, setUserData) => {
         setUserData(userData);
       }
     } else {
-      // No valid session
       await AsyncStorage.removeItem("userSession");
       userData = { ...defaultUserData };
       setUserData(userData);
@@ -220,10 +181,8 @@ const fetchUserDataFromFirestore = async (uid, defaultUserData) => {
         totalXP: firestoreData.totalXP || defaultUserData.totalXP,
       };
     } else {
-      // Create a new user document
       const newUserData = { ...defaultUserData, uid };
       await setDoc(userDocRef, newUserData);
-      console.log("Created new user document for UID:", uid);
       return newUserData;
     }
   } catch (error) {
@@ -238,7 +197,6 @@ const TimeBasedGreeting = ({ userData }) => {
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const slideAnim = useRef(new Animated.Value(0)).current;
 
-  // Time-based greetings and messages
   const getTimeBasedGreeting = () => {
     const hour = new Date().getHours();
     if (hour < 12) return { greeting: "Good Morning", messages: motivationalMessages.morning };
@@ -248,94 +206,51 @@ const TimeBasedGreeting = ({ userData }) => {
   };
 
   const motivationalMessages = {
-    morning: [
-      "Rise and shine!",
-      "New day, new energy!",
-      "Make today count!",
-      "Morning moves matter!",
-      "Start strong!",
-      "Seize the day!"
-    ],
-    afternoon: [
-      "Keep it up!",
-      "Stay focused!",
-      "You're crushing it!",
-      "Halfway there!",
-      "Push forward!",
-      "Making progress!"
-    ],
-    evening: [
-      "Great work today!",
-      "Finish strong!",
-      "Almost there!",
-      "Proud of you!",
-      "End on a high note!",
-      "You did amazing!"
-    ],
-    night: [
-      "Rest and recover!",
-      "Dream big tonight!",
-      "Tomorrow awaits!",
-      "Recharge for tomorrow!",
-      "Sleep well, achieve more!",
-      "You earned this rest!"
-    ]
+    morning: ["Rise and shine!", "New day, new energy!", "Make today count!", "Morning moves matter!", "Start strong!", "Seize the day!"],
+    afternoon: ["Keep it up!", "Stay focused!", "You're crushing it!", "Halfway there!", "Push forward!", "Making progress!"],
+    evening: ["Great work today!", "Finish strong!", "Almost there!", "Proud of you!", "End on a high note!", "You did amazing!"],
+    night: ["Rest and recover!", "Dream big tonight!", "Tomorrow awaits!", "Recharge for tomorrow!", "Sleep well, achieve more!", "You earned this rest!"]
   };
 
   const { greeting, messages } = getTimeBasedGreeting();
 
-  // Rotate through messages with animation
   useEffect(() => {
     const interval = setInterval(() => {
-      // Fade out and slide up current message
       Animated.parallel([
         Animated.timing(fadeAnim, {
           toValue: 0,
-          duration: 500,
+          duration: 300,
           useNativeDriver: true,
-          easing: Easing.ease
         }),
         Animated.timing(slideAnim, {
           toValue: -10,
-          duration: 500,
+          duration: 300,
           useNativeDriver: true,
-          easing: Easing.ease
         })
       ]).start(() => {
-        // Change to next message
         setCurrentMessageIndex((prevIndex) =>
           prevIndex >= messages.length - 1 ? 0 : prevIndex + 1
         );
-
-        // Fade in and slide up new message
         Animated.parallel([
           Animated.timing(fadeAnim, {
             toValue: 1,
-            duration: 500,
+            duration: 300,
             useNativeDriver: true,
-            easing: Easing.ease
           }),
           Animated.timing(slideAnim, {
             toValue: 0,
-            duration: 500,
+            duration: 300,
             useNativeDriver: true,
-            easing: Easing.ease
           })
         ]).start();
       });
-    }, 5000); // Change message every 5 seconds
-
+    }, 5000);
     return () => clearInterval(interval);
   }, [messages.length]);
 
   return (
-    <View style={twrnc`flex-1`}>
-      <CustomText
-        weight="bold"
-        style={twrnc`text-white text-[${isSmallDevice ? responsiveFontSizes.xl : responsiveFontSizes["2xl"]}px]`}
-        numberOfLines={null}
-        ellipsizeMode="tail"
-      >
+    <View>
+      <CustomText weight="bold" style={twrnc`text-white text-lg`}>
         {greeting}, {userData.username || "User"}!
       </CustomText>
       <Animated.View
@@ -344,10 +259,7 @@ const TimeBasedGreeting = ({ userData }) => {
           transform: [{ translateY: slideAnim }],
         }}
       >
-        <CustomText
-          style={twrnc`text-[#FFC107] text-[${responsiveFontSizes.sm}px]`}
-          numberOfLines={2}
-        >
+        <CustomText style={[twrnc`text-xs font-semibold`, { color: '#FFD700' }]}>
           {messages[currentMessageIndex]}
         </CustomText>
       </Animated.View>
@@ -355,248 +267,152 @@ const TimeBasedGreeting = ({ userData }) => {
   );
 };
 
-// Animated Screen Wrapper Component
-const AnimatedScreenWrapper = ({ children, isActive, animationType = "fade" }) => {
+// Smooth Screen Wrapper Component (no bouncing)
+const AnimatedScreenWrapper = ({ children, isActive }) => {
   const fadeAnim = useRef(new Animated.Value(isActive ? 1 : 0)).current;
-  const scaleAnim = useRef(new Animated.Value(isActive ? 1 : 0.95)).current;
 
   useEffect(() => {
     if (isActive) {
-      Animated.parallel([
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-        Animated.timing(scaleAnim, {
-          toValue: 1,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-      ]).start();
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+        easing: Easing.ease,
+      }).start();
     } else {
-      Animated.parallel([
-        Animated.timing(fadeAnim, {
-          toValue: 0,
-          duration: 100,
-          useNativeDriver: true,
-        }),
-        Animated.timing(scaleAnim, {
-          toValue: 0.95,
-          duration: 100,
-          useNativeDriver: true,
-        }),
-      ]).start();
+      fadeAnim.setValue(0);
     }
-  }, [isActive, fadeAnim, scaleAnim]);
+  }, [isActive]);
 
   if (!isActive) return null;
 
   return (
     <Animated.View
-      style={[{ flex: 1 }, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}
+      style={[
+        twrnc`flex-1`,
+        {
+          opacity: fadeAnim,
+        },
+      ]}
     >
-      <SafeAreaView style={twrnc`flex-1 pt--6 bg-[#121826]`}>
-        {children}
-      </SafeAreaView>
+      {children}
     </Animated.View>
   );
 };
 
-// Enhanced Map Button Component
-const EnhancedMapButton = ({ onPress, isActive }) => {
+const AnimatedNavTab = ({ icon, label, isActive, onPress, isCenterButton }) => {
   const scaleAnim = useRef(new Animated.Value(1)).current;
-  const glowAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    const pulseAnimation = Animated.loop(
-      Animated.sequence([
-        Animated.timing(scaleAnim, {
-          toValue: 1.05,
-          duration: 1200,
-          useNativeDriver: true,
-        }),
-        Animated.timing(scaleAnim, {
-          toValue: 1,
-          duration: 1200,
-          useNativeDriver: true,
-        }),
-      ])
-    );
-
-    const glowAnimation = Animated.loop(
-      Animated.sequence([
-        Animated.timing(glowAnim, {
-          toValue: 0.3,
-          duration: 1500,
-          useNativeDriver: true,
-        }),
-        Animated.timing(glowAnim, {
-          toValue: 0,
-          duration: 1500,
-          useNativeDriver: true,
-        }),
-      ])
-    );
-
-    pulseAnimation.start();
-    glowAnimation.start();
-
-    return () => {
-      pulseAnimation.stop();
-      glowAnimation.stop();
-    };
-  }, [scaleAnim, glowAnim]);
 
   const handlePress = useCallback(() => {
     Animated.sequence([
       Animated.timing(scaleAnim, {
         toValue: 0.9,
-        duration: 80,
-        useNativeDriver: true,
-      }),
-      Animated.timing(scaleAnim, {
-        toValue: 1.05,
-        duration: 80,
+        duration: 100,
         useNativeDriver: true,
       }),
       Animated.timing(scaleAnim, {
         toValue: 1,
-        duration: 80,
+        duration: 100,
         useNativeDriver: true,
       }),
     ]).start(() => onPress());
   }, [onPress, scaleAnim]);
 
-  return (
-    <TouchableOpacity
-      onPress={handlePress}
-      style={twrnc`items-center flex-1 -mt-8`}
-    >
-      <Animated.View
-        style={[
-          twrnc`absolute w-20 h-20 rounded-full`,
-          {
-            backgroundColor: "#FFC107",
-            opacity: glowAnim.interpolate({
-              inputRange: [0, 0.3],
-              outputRange: [0.15, 0.35],
-            }),
-            transform: [
+  if (isCenterButton) {
+    return (
+      <View style={twrnc`flex-1 items-center justify-center`}>
+        {/* Static Pulse Rings */}
+        <View style={twrnc`absolute items-center justify-center -mt-15`}>
+          {/* Ring 1 */}
+          <View
+            style={[
+              twrnc`w-24 h-24 rounded-full absolute`,
               {
-                scale: glowAnim.interpolate({
-                  inputRange: [0, 0.3],
-                  outputRange: [1, 1.2],
-                }),
+                borderWidth: 2,
+                borderColor: '#FFD700',
+                opacity: 0.3,
               },
-            ],
-          },
-        ]}
-      />
-      <Animated.View
-        style={[
-          twrnc`bg-gradient-to-r from-[#FFC107] to-[#FFD700] w-18 h-18 rounded-full items-center justify-center shadow-2xl`,
-          {
-            transform: [{ scale: scaleAnim }],
-            elevation: 8,
-            shadowColor: "#FFC107",
-            shadowOffset: { width: 0, height: 4 },
-            shadowOpacity: 0.6,
-            shadowRadius: 8,
-            padding: responsivePadding.lg,
-          },
-        ]}
-      >
-        <View style={twrnc`absolute top-1 left-1 w-4 h-4 bg-white/30 rounded-full`} />
-        <Image
-          source={FootprintsIcon}
-          style={{
-            width: 36,
-            height: 36,
-            resizeMode: "contain",
-            tintColor: "#FFFFFF",
-          }}
-        />
-      </Animated.View>
-    </TouchableOpacity>
-  );
-};
+            ]}
+          />
+          {/* Ring 2 */}
+          <View
+            style={[
+              twrnc`w-28 h-28 rounded-full absolute`,
+              {
+                borderWidth: 2,
+                borderColor: '#FFD700',
+                opacity: 0.2,
+              },
+            ]}
+          />
+          {/* Ring 3 */}
+          <View
+            style={[
+              twrnc`w-32 h-32 rounded-full absolute`,
+              {
+                borderWidth: 2,
+                borderColor: '#FFD700',
+                opacity: 0.1,
+              },
+            ]}
+          />
+        </View>
 
-// Animated Navigation Tab Component
-const AnimatedNavTab = ({ icon, label, isActive, onPress, iconSource = null }) => {
-  const scaleAnim = useRef(new Animated.Value(isActive ? 1 : 0.9)).current;
-  const opacityAnim = useRef(new Animated.Value(isActive ? 1 : 0.7)).current;
-
-  useEffect(() => {
-    Animated.parallel([
-      Animated.timing(scaleAnim, {
-        toValue: isActive ? 1 : 0.9,
-        duration: 150,
-        useNativeDriver: true,
-      }),
-      Animated.timing(opacityAnim, {
-        toValue: isActive ? 1 : 0.7,
-        duration: 150,
-        useNativeDriver: true,
-      }),
-    ]).start();
-  }, [isActive]);
-
-  const handlePress = useCallback(() => {
-    Animated.sequence([
-      Animated.timing(scaleAnim, {
-        toValue: 0.8,
-        duration: 80,
-        useNativeDriver: true,
-      }),
-      Animated.timing(scaleAnim, {
-        toValue: isActive ? 1 : 0.9,
-        duration: 80,
-        useNativeDriver: true,
-      }),
-    ]).start(() => onPress());
-  }, [isActive, onPress, scaleAnim]);
+        {/* Main Gold Button */}
+        <TouchableOpacity
+          onPress={handlePress}
+          activeOpacity={0.8}
+          style={[
+            twrnc`w-20 h-20 rounded-full items-center justify-center -mt-15`,
+            {
+              backgroundColor: "#FFD700",
+              shadowColor: "#FFD700",
+              shadowOffset: { width: 0, height: 8 },
+              shadowOpacity: 0.4,
+              shadowRadius: 12,
+              elevation: 100,
+            },
+          ]}
+        >
+          <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+            <Ionicons name={icon} size={40} color="#FFFFFF" />
+          </Animated.View>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <TouchableOpacity
+      style={twrnc`flex-1 items-center justify-center py-3`}
       onPress={handlePress}
-      style={twrnc`items-center flex-1 p-[${responsivePadding.base}px]`}
+      activeOpacity={0.7}
     >
       <Animated.View
         style={[
-          twrnc`${isActive ? "bg-[#FFC107]/20" : ""} rounded-xl p-[${responsivePadding.lg}px]`,
-          {
-            transform: [{ scale: scaleAnim }],
-            opacity: opacityAnim,
-          },
+          twrnc`items-center justify-center`,
+          { transform: [{ scale: scaleAnim }] },
         ]}
       >
-        {iconSource ? (
-          <Image
-            source={iconSource}
-            style={{
-              width: responsiveFontSizes.xl,
-              height: responsiveFontSizes.xl,
-              resizeMode: "contain",
-              tintColor: isActive ? "#FFC107" : "#FFFFFF",
-            }}
-          />
-        ) : (
-          <FontAwesome
-            name={icon}
-            size={responsiveFontSizes.xl}
-            color={isActive ? "#FFC107" : "#FFFFFF"}
-          />
-        )}
+        <Ionicons
+          name={icon}
+          size={24}
+          color={isActive ? "#FFFFFF" : "#64748B"}
+        />
+        <CustomText
+          weight={isActive ? "semibold" : "regular"}
+          style={[
+            twrnc`text-[10px] mt-1`,
+            { color: isActive ? "#FFFFFF" : "#64748B" },
+          ]}
+        >
+          {label}
+        </CustomText>
       </Animated.View>
-      <CustomText
-        style={twrnc`text-[${responsiveFontSizes.xs}px] mt-1 ${isActive ? "text-[#FFC107]" : "text-gray-400"}`}
-      >
-        {label || icon}
-      </CustomText>
     </TouchableOpacity>
   );
 };
+
 
 export default function App() {
   const [activeScreen, setActiveScreen] = useState("landing");
@@ -635,47 +451,24 @@ export default function App() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [notificationCount, setNotificationCount] = useState(0);
   const [notificationDropdownVisible, setNotificationDropdownVisible] = useState(false);
+
   const notificationListener = useRef();
   const responseListener = useRef();
   const notificationsUnsubscribe = useRef(null);
   const backPressedTimeRef = useRef(0);
-  const screenTransitionAnim = useRef(new Animated.Value(1)).current;
 
   const tabScreens = ["dashboard", "activity", "map", "Leaderboard", "community"];
 
   const navigateWithAnimation = useCallback((newScreen, params = {}) => {
     if (newScreen === activeScreen) return;
 
-    const isTabSwitch = tabScreens.includes(activeScreen) && tabScreens.includes(newScreen);
+    setPreviousScreen(activeScreen);
+    setActiveScreen(newScreen);
 
-    if (isTabSwitch) {
-      setPreviousScreen(activeScreen);
-      setActiveScreen(newScreen);
-      if (Object.keys(params).length > 0) {
-        setActivityParams(params);
-      }
-    } else {
-      setPreviousScreen(activeScreen);
-
-      Animated.sequence([
-        Animated.timing(screenTransitionAnim, {
-          toValue: 0,
-          duration: 100,
-          useNativeDriver: true,
-        }),
-        Animated.timing(screenTransitionAnim, {
-          toValue: 1,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-      ]).start(() => {
-        setActiveScreen(newScreen);
-        if (Object.keys(params).length > 0) {
-          setActivityParams(params);
-        }
-      });
+    if (Object.keys(params).length > 0) {
+      setActivityParams(params);
     }
-  }, [activeScreen, screenTransitionAnim]);
+  }, [activeScreen]);
 
   useEffect(() => {
     NotificationService.initialize();
@@ -790,47 +583,87 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let userDataUnsubscribe = null; // Store the Firestore listener cleanup function
+
     const initApp = async () => {
-      console.log("initApp started");
       try {
-        // Add a flag to track if this is a logout scenario
         const isLogoutScenario = await AsyncStorage.getItem("isLoggingOut");
-
-        // Initialize user data and session
         const { userData: loadedUserData, isValidSession } = await initializeUserData(auth.currentUser, setUserData);
-        console.log("initializeUserData returned:", { userData: loadedUserData, isValidSession });
 
-        // Check location permissions
         const hasPermissions = await checkLocationPermissions();
         setLocationGranted(hasPermissions);
         if (!hasPermissions) {
-          console.log("Requesting location permissions");
           const granted = await requestLocationPermissions(setModalTitle, setModalMessage, setModalVisible);
           setLocationGranted(granted);
         }
 
-        // Subscribe to auth state changes
         let authInitialized = false;
         const unsubscribe = onAuthStateChanged(auth, async (user) => {
-          console.log("onAuthStateChanged triggered with user:", user ? { uid: user.uid, email: user.email, emailVerified: user.emailVerified } : null);
           authInitialized = true;
-
           try {
             const { userData: loadedUserData, isValidSession } = await initializeUserData(user, setUserData);
-            console.log("initializeUserData in auth state change:", { userData: loadedUserData, isValidSession });
-
-            // Check if this is a logout scenario
             const isLogoutScenario = await AsyncStorage.getItem("isLoggingOut");
 
+            // ✅ Clean up previous listener if exists
+            if (userDataUnsubscribe) {
+              userDataUnsubscribe();
+              userDataUnsubscribe = null;
+            }
+
             if (user && user.emailVerified) {
-              console.log("User is logged in and email verified");
-              // Clear logout flag if user logs back in
               await AsyncStorage.removeItem("isLoggingOut");
+
+              // ✅ SET UP REAL-TIME LISTENER FOR USER DATA
+              const userRef = doc(db, "users", user.uid);
+              userDataUnsubscribe = onSnapshot(
+                userRef,
+                (docSnapshot) => {
+                  if (docSnapshot.exists()) {
+                    const firestoreData = docSnapshot.data();
+
+                    setUserData((prevData) => ({
+                      ...prevData,
+                      username: firestoreData.username || prevData.username,
+                      email: firestoreData.email || prevData.email,
+                      avatar: firestoreData.avatar || prevData.avatar,
+                      uid: user.uid,
+                      privacySettings: firestoreData.privacySettings || prevData.privacySettings,
+                      avgDailySteps: firestoreData.avgDailySteps || prevData.avgDailySteps,
+                      avgDailyDistance: firestoreData.avgDailyDistance || prevData.avgDailyDistance,
+                      avgActiveDuration: firestoreData.avgActiveDuration || prevData.avgActiveDuration,
+                      avgDailyReps: firestoreData.avgDailyReps || prevData.avgDailyReps,
+                      level: firestoreData.level || prevData.level,
+                      totalXP: firestoreData.totalXP || prevData.totalXP,
+                      totalDistance: firestoreData.totalDistance || 0,
+                      totalDuration: firestoreData.totalDuration || 0,
+                      totalReps: firestoreData.totalReps || 0,
+                      totalActivities: firestoreData.totalActivities || 0,
+                      totalStrengthDuration: firestoreData.totalStrengthDuration || 0,
+                      friends: firestoreData.friends || [],
+                      deviceType: firestoreData.deviceType || [],
+                      pushToken: firestoreData.pushToken || [],
+                      isOnline: firestoreData.isOnline || false,
+                      createdAt: firestoreData.createdAt || null,
+                      lastSeen: firestoreData.lastSeen || null,
+                      lastActivityDate: firestoreData.lastActivityDate || null,
+                      lastQuestCompleted: firestoreData.lastQuestCompleted || null,
+                    }));
+
+                    // Update AsyncStorage cache
+                    AsyncStorage.setItem("userData", JSON.stringify(firestoreData)).catch((err) => {
+                      console.warn("Could not cache user data", err);
+                    });
+                  }
+                },
+                (error) => {
+                  console.error("Error in user data listener:", error);
+                }
+              );
+
               const lastScreen = await AsyncStorage.getItem("lastActiveScreen");
               const targetScreen = lastScreen && ["dashboard", "activity", "profile", "community", "Leaderboard"].includes(lastScreen)
                 ? lastScreen
                 : "dashboard";
-              console.log(`Navigating to ${targetScreen}`);
               navigateWithAnimation(targetScreen);
               if (targetScreen === "activity") {
                 const savedParams = await AsyncStorage.getItem("activityParams");
@@ -840,7 +673,6 @@ export default function App() {
               }
               fetchNotificationCount();
             } else if (user && !user.emailVerified) {
-              console.log("User logged in but email not verified");
               await AsyncStorage.removeItem("isLoggingOut");
               if (!verificationModalShown) {
                 setModalVisible(true);
@@ -850,14 +682,58 @@ export default function App() {
                 navigateWithAnimation("signin", { email: user.email });
               }
             } else if (isValidSession && user) {
-              // Only restore session if there's ALSO an active Firebase user
-              console.log("Active user with valid cached session found");
               await AsyncStorage.removeItem("isLoggingOut");
+
+              // ✅ SET UP REAL-TIME LISTENER FOR VALID SESSION
+              const userRef = doc(db, "users", user.uid);
+              userDataUnsubscribe = onSnapshot(
+                userRef,
+                (docSnapshot) => {
+                  if (docSnapshot.exists()) {
+                    const firestoreData = docSnapshot.data();
+
+                    setUserData((prevData) => ({
+                      ...prevData,
+                      username: firestoreData.username || prevData.username,
+                      email: firestoreData.email || prevData.email,
+                      avatar: firestoreData.avatar || prevData.avatar,
+                      uid: user.uid,
+                      privacySettings: firestoreData.privacySettings || prevData.privacySettings,
+                      avgDailySteps: firestoreData.avgDailySteps || prevData.avgDailySteps,
+                      avgDailyDistance: firestoreData.avgDailyDistance || prevData.avgDailyDistance,
+                      avgActiveDuration: firestoreData.avgActiveDuration || prevData.avgActiveDuration,
+                      avgDailyReps: firestoreData.avgDailyReps || prevData.avgDailyReps,
+                      level: firestoreData.level || prevData.level,
+                      totalXP: firestoreData.totalXP || prevData.totalXP,
+                      totalDistance: firestoreData.totalDistance || 0,
+                      totalDuration: firestoreData.totalDuration || 0,
+                      totalReps: firestoreData.totalReps || 0,
+                      totalActivities: firestoreData.totalActivities || 0,
+                      totalStrengthDuration: firestoreData.totalStrengthDuration || 0,
+                      friends: firestoreData.friends || [],
+                      deviceType: firestoreData.deviceType || [],
+                      pushToken: firestoreData.pushToken || [],
+                      isOnline: firestoreData.isOnline || false,
+                      createdAt: firestoreData.createdAt || null,
+                      lastSeen: firestoreData.lastSeen || null,
+                      lastActivityDate: firestoreData.lastActivityDate || null,
+                      lastQuestCompleted: firestoreData.lastQuestCompleted || null,
+                    }));
+
+                    AsyncStorage.setItem("userData", JSON.stringify(firestoreData)).catch((err) => {
+                      console.warn("Could not cache user data", err);
+                    });
+                  }
+                },
+                (error) => {
+                  console.error("Error in user data listener:", error);
+                }
+              );
+
               const lastScreen = await AsyncStorage.getItem("lastActiveScreen");
               const targetScreen = lastScreen && ["dashboard", "activity", "profile", "community", "Leaderboard"].includes(lastScreen)
                 ? lastScreen
                 : "dashboard";
-              console.log(`Navigating to ${targetScreen}`);
               navigateWithAnimation(targetScreen);
               if (targetScreen === "activity") {
                 const savedParams = await AsyncStorage.getItem("activityParams");
@@ -867,21 +743,16 @@ export default function App() {
               }
               fetchNotificationCount();
             } else {
-              // CRITICAL FIX: Check if this is a logout vs fresh app start
+              // User is logged out
               if (isLogoutScenario === "true") {
-                console.log("User logged out, navigating to signin");
                 await AsyncStorage.removeItem("isLoggingOut");
                 await AsyncStorage.multiRemove(["userSession", "lastActiveScreen", "activityParams"]);
                 setUserData({
                   username: "User",
                   email: "user@example.com",
-                  avatar: "https://randomuser.me/api/portraits/men/1.jpg",
+                  avatar: "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y",
                   uid: null,
-                  privacySettings: {
-                    showProfile: true,
-                    showActivities: true,
-                    showStats: true,
-                  },
+                  privacySettings: { showProfile: true, showActivities: true, showStats: true },
                   avgDailySteps: 5000,
                   avgDailyDistance: 2.5,
                   avgActiveDuration: 45,
@@ -889,21 +760,16 @@ export default function App() {
                   level: 1,
                   totalXP: 0,
                 });
-                navigateWithAnimation("signin"); // Go to signin instead of landing
+                navigateWithAnimation("signin");
                 setNotificationCount(0);
               } else {
-                console.log("Fresh app start or no user, navigating to landing");
                 await AsyncStorage.multiRemove(["userSession", "lastActiveScreen", "activityParams"]);
                 setUserData({
                   username: "User",
                   email: "user@example.com",
-                  avatar: "https://randomuser.me/api/portraits/men/1.jpg",
+                  avatar: "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y",
                   uid: null,
-                  privacySettings: {
-                    showProfile: true,
-                    showActivities: true,
-                    showStats: true,
-                  },
+                  privacySettings: { showProfile: true, showActivities: true, showStats: true },
                   avgDailySteps: 5000,
                   avgDailyDistance: 2.5,
                   avgActiveDuration: 45,
@@ -911,10 +777,9 @@ export default function App() {
                   level: 1,
                   totalXP: 0,
                 });
-                navigateWithAnimation("landing"); // Fresh app start goes to landing
+                navigateWithAnimation("landing");
                 setNotificationCount(0);
               }
-
               if (notificationsUnsubscribe.current) {
                 notificationsUnsubscribe.current();
                 notificationsUnsubscribe.current = null;
@@ -936,8 +801,13 @@ export default function App() {
           }
         });
 
-        // Rest of your timeout logic...
-        return unsubscribe;
+        return () => {
+          // ✅ Cleanup both auth and user data listeners
+          unsubscribe();
+          if (userDataUnsubscribe) {
+            userDataUnsubscribe();
+          }
+        };
       } catch (error) {
         console.error("Error in initApp:", error.message);
         await AsyncStorage.multiRemove(["userSession", "lastActiveScreen", "activityParams", "isLoggingOut"]);
@@ -953,7 +823,6 @@ export default function App() {
   }, [fetchNotificationCount, verificationModalShown]);
 
 
-
   const onLayoutRootView = useCallback(async () => {
     if (fontsLoaded) await SplashScreen.hideAsync();
   }, [fontsLoaded]);
@@ -966,6 +835,7 @@ export default function App() {
       setModalVisible(true);
       return;
     }
+
     if (params.stats) {
       params.stats = {
         distance: Number(params.stats.distance || 0),
@@ -975,6 +845,7 @@ export default function App() {
         steps: Number(params.stats.steps || 0),
       };
     }
+
     navigateWithAnimation("map", params);
   }, [isNavigationLocked, locationGranted, navigateWithAnimation]);
 
@@ -988,7 +859,6 @@ export default function App() {
         steps: Number(params.stats.steps || 0),
       };
     }
-    console.log("Navigating to activity with params:", params);
     navigateWithAnimation("activity", params);
     setIsNavigationLocked(false);
   };
@@ -1004,10 +874,22 @@ export default function App() {
     setIsNavigationLocked(false);
   };
 
+  const navigateToProfile = () => {
+    navigateWithAnimation('profile');
+    setIsNavigationLocked(false);
+  };
+
   const navigateToSignIn = (email = "") => {
     setLoginEmail(email);
     navigateWithAnimation("signin");
     setIsNavigationLocked(true);
+  };
+
+  const updateUserData = (newUserData) => {
+    setUserData(prevData => ({
+      ...prevData,
+      ...newUserData
+    }));
   };
 
   const navigateToSignUp = () => {
@@ -1022,35 +904,32 @@ export default function App() {
 
   if (isInitializing) {
     return (
-      <View style={twrnc`flex-1 bg-[#121826] justify-center items-center`}>
-        <StatusBar style={Platform.OS === "android" ? "light" : "dark"} backgroundColor="#121826" />
+      <View style={twrnc`flex-1 bg-[#0f172a] items-center justify-center`}>
+        <CustomText style={twrnc`text-white text-lg`}>Loading...</CustomText>
       </View>
     );
   }
 
   if (!fontsLoaded) return null;
 
-  const StatusBarSpacer = () => <View style={Platform.OS === "android" ? twrnc`bg-[#121826] h-8` : twrnc`h-0`} />;
-
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <GestureHandlerRootView style={twrnc`flex-1`}>
       <SafeAreaProvider>
-        <StatusBar style={Platform.OS === "android" ? "light" : "dark"} backgroundColor="#121826" />
-        <View style={twrnc`flex-1 bg-[#121826]`} onLayout={onLayoutRootView}>
-          <StatusBarSpacer />
-
+        <StatusBar style="light" />
+        <View style={twrnc`flex-1 bg-[#0f172a]`} onLayout={onLayoutRootView}>
           {!locationGranted && (
-            <View style={twrnc`bg-[#FFC107] p-[${responsivePadding.base}px] mx-4 rounded-xl mb-2`}>
-              <CustomText weight="medium" style={twrnc`text-[#121826] text-[${responsiveFontSizes.base}px] text-center`}>
+            <View style={twrnc`bg-red-500 p-2`}>
+              <CustomText style={twrnc`text-white text-center text-xs`}>
                 Location permissions are required for full functionality.
               </CustomText>
             </View>
           )}
 
           <CustomModal
-            visible={modalVisible}
             title={modalTitle}
             message={modalMessage}
+            type="error"
+            visible={modalVisible}
             onClose={() => {
               setModalVisible(false);
               setIsNavigationLocked(false);
@@ -1065,147 +944,142 @@ export default function App() {
             navigateToCommunity={navigateToCommunity}
           />
 
-          <Animated.View
-            style={[
-              { flex: 1 },
-              {
-                opacity: screenTransitionAnim,
-                transform: [
-                  {
-                    translateY: screenTransitionAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [20, 0],
-                    }),
-                  },
-                ],
-              },
-            ]}
-          >
-            <AnimatedScreenWrapper isActive={activeScreen === "dashboard"} animationType="fade">
-              <View style={twrnc`px-5 mb-2`}>
-                <CustomText style={twrnc`text-gray-400 text-[${responsiveFontSizes.sm}px]`}>{formatDate()}</CustomText>
-                <View style={twrnc`flex-row justify-between items-center mt-2`}>
+          {/* HEADER - ONLY ON DASHBOARD */}
+          {activeScreen === "dashboard" && (
+            <View style={[twrnc`px-5 pt-12 `, { backgroundColor: "#1e293b" }]}>
+              <View style={twrnc`flex-row justify-between items-center mb-3`}>
+                <View style={twrnc`flex-1`}>
+                  {/* Date */}
+                  <CustomText style={[twrnc`text-[13px] font-semibold pt-2 mb-2 text-gray-400`]}>
+                    {formatDate()}
+                  </CustomText>
                   <TimeBasedGreeting userData={userData} />
-                  <View style={twrnc`flex-row`}>
-                    <TouchableOpacity
-                      style={twrnc`bg-[#2A2E3A] rounded-full w-12 h-12 items-center justify-center mr-3 relative shadow-lg p-[${responsivePadding.base}px]`}
-                      onPress={() => setNotificationDropdownVisible(true)}
-                    >
-                      <FontAwesome name="bell" size={responsiveFontSizes.lg} color="#fff" />
-                      {notificationCount > 0 && (
-                        <View
-                          style={twrnc`absolute -top-1 -right-1 bg-[#EF476F] rounded-full min-w-5 h-5 items-center justify-center px-1`}
-                        >
-                          <CustomText weight="bold" style={twrnc`text-white text-[${responsiveFontSizes.xs}px]`}>
-                            {notificationCount > 99 ? "99+" : notificationCount}
-                          </CustomText>
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={twrnc`bg-[#2A2E3A] rounded-full w-12 h-12 items-center justify-center shadow-lg p-[${responsivePadding.base}px]`}
-                      onPress={() => navigateWithAnimation("profile")}
-                    >
-                      <FontAwesome name="user" size={responsiveFontSizes.lg} color="#FFFFFF" />
-                    </TouchableOpacity>
-                  </View>
+
+                </View>
+
+                <View style={twrnc`flex-row items-center gap-3`}>
+                  {/* Notification Bell */}
+                  <TouchableOpacity
+                    style={twrnc`relative bg-[#0f172a] p-2.5 rounded-xl`}
+                    onPress={() => setNotificationDropdownVisible(true)}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="notifications-outline" size={22} color="#FFFFFF" />
+                    {notificationCount > 0 && (
+                      <View style={[twrnc`absolute -top-1 -right-1 bg-[#EF476F] rounded-full min-w-[18px] h-[18px] items-center justify-center px-1`]}>
+                        <CustomText weight="bold" style={twrnc`text-white text-[9px]`}>
+                          {notificationCount > 99 ? "99+" : notificationCount}
+                        </CustomText>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+
+                  {/* Profile Avatar */}
+                  <TouchableOpacity
+                    onPress={() => navigateWithAnimation("profile")}
+                    activeOpacity={0.7}
+                  >
+                    <Image
+                      source={{ uri: userData.avatar }}
+                      style={twrnc`w-10 h-10 rounded-xl`}
+                    />
+                  </TouchableOpacity>
                 </View>
               </View>
-              <DashboardScreen
-                navigateToActivity={navigateToActivity}
+
+
+            </View>
+          )}
+
+          {/* SCREENS */}
+          <AnimatedScreenWrapper isActive={activeScreen === "landing"}>
+            <LandingScreen navigateToSignIn={navigateToSignIn} navigateToSignUp={navigateToSignUp} />
+          </AnimatedScreenWrapper>
+
+          <AnimatedScreenWrapper isActive={activeScreen === "signin"}>
+            <LoginScreen navigateToDashboard={navigateToDashboard} navigateToSignUp={navigateToSignUp} initialEmail={loginEmail} />
+          </AnimatedScreenWrapper>
+
+          <AnimatedScreenWrapper isActive={activeScreen === "signup"}>
+            <SignupScreen
+              navigateToDashboard={navigateToDashboard}
+              navigateToSignIn={navigateToSignIn}
+              setIsNavigationLocked={setIsNavigationLocked}
+            />
+
+          </AnimatedScreenWrapper>
+
+          <AnimatedScreenWrapper isActive={activeScreen === "dashboard"}>
+            <DashboardScreen
+              userData={userData}
+              navigateToActivity={navigateToActivity}
+              navigateToMap={navigateToMap}
+              updateUserData={updateUserData}
+            />
+          </AnimatedScreenWrapper>
+
+          <AnimatedScreenWrapper isActive={activeScreen === "activity"}>
+            <ActivityScreen
+              navigateToDashboard={navigateToDashboard}
+              navigateToMap={navigateToMap}
+              params={activityParams}
+            />
+          </AnimatedScreenWrapper>
+
+          <AnimatedScreenWrapper isActive={activeScreen === "profile"}>
+            <ProfileScreen navigateToDashboard={navigateToDashboard} navigateToLanding={navigateToLanding} userData={userData} updateUserData={updateUserData} isActive={activeScreen === "profile"} />
+          </AnimatedScreenWrapper>
+
+          <AnimatedScreenWrapper isActive={activeScreen === "community"}>
+            <CommunityScreen
+              navigateToActivity={navigateToActivity}
+              userData={userData}
+              navigateToDashboard={navigateToDashboard}
+              navigateToProfile={navigateToProfile}
+            />
+          </AnimatedScreenWrapper>
+
+
+          <AnimatedScreenWrapper isActive={activeScreen === "Leaderboard"}>
+            {auth.currentUser ? (
+              <LeaderboardScreen
                 userData={userData}
-              />
-            </AnimatedScreenWrapper>
-
-            <AnimatedScreenWrapper isActive={activeScreen === "landing"} animationType="fade">
-              <LandingScreen navigateToSignIn={navigateToSignIn} navigateToSignUp={navigateToSignUp} />
-            </AnimatedScreenWrapper>
-
-            <AnimatedScreenWrapper isActive={activeScreen === "signin"} animationType="scale">
-              <LoginScreen
-                navigateToLanding={navigateToLanding}
-                navigateToSignUp={navigateToSignUp}
                 navigateToDashboard={navigateToDashboard}
-                prefilledEmail={loginEmail}
-                setUserData={setUserData}
               />
-            </AnimatedScreenWrapper>
+            ) : (
+              <View style={twrnc`flex-1 items-center justify-center px-5`}>
+                <CustomText style={twrnc`text-white text-center mb-5`}>
+                  Please sign in to view the leaderboard.
+                </CustomText>
+                <TouchableOpacity
+                  style={twrnc`bg-[#4361EE] rounded-2xl px-8 py-3`}
+                  onPress={navigateToSignIn}
+                >
+                  <CustomText weight="bold" style={twrnc`text-white`}>
+                    Sign In
+                  </CustomText>
+                </TouchableOpacity>
+              </View>
+            )}
+          </AnimatedScreenWrapper>
 
-            <AnimatedScreenWrapper isActive={activeScreen === "signup"} animationType="scale">
-              <SignupScreen
-                navigateToLanding={navigateToLanding}
-                navigateToSignIn={navigateToSignIn}
-                setIsNavigationLocked={setIsNavigationLocked}
-                setUserData={setUserData}
-              />
-            </AnimatedScreenWrapper>
+          <AnimatedScreenWrapper isActive={activeScreen === "map"}>
+            <MapScreen
+              navigateToDashboard={navigateToDashboard}
+              navigateToActivity={navigateToActivity}
+              params={activityParams}
+            />
+          </AnimatedScreenWrapper>
 
-            <AnimatedScreenWrapper isActive={activeScreen === "activity"} animationType="fade">
-              <ActivityScreen
-                navigateToDashboard={navigateToDashboard}
-                navigateToMap={navigateToMap}
-                params={activityParams}
-              />
-            </AnimatedScreenWrapper>
-
-            <AnimatedScreenWrapper isActive={activeScreen === "profile"} animationType="fade">
-              <ProfileScreen
-                navigateToDashboard={navigateToDashboard}
-                navigateToLanding={navigateToLanding}
-                navigateToSignIn={navigateToSignIn}
-              />
-            </AnimatedScreenWrapper>
-
-            <AnimatedScreenWrapper isActive={activeScreen === "community"} animationType="fade">
-              <CommunityScreen
-                navigateToDashboard={navigateToDashboard}
-                navigateToActivity={navigateToActivity}
-              />
-            </AnimatedScreenWrapper>
-
-            <AnimatedScreenWrapper isActive={activeScreen === "Leaderboard"} animationType="fade">
-              {auth.currentUser ? (
-                <LeaderboardScreen navigateToDashboard={navigateToDashboard} />
-              ) : (
-                <View style={twrnc`flex-1 bg-[#121826] justify-center items-center px-[${responsivePadding.lg}px]`}>
-                  <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-[${responsivePadding.lg}px] items-center shadow-lg`}>
-                    <FontAwesome name="lock" size={responsiveFontSizes["2xl"]} color="#FFC107" style={twrnc`mb-4`} />
-                    <CustomText weight="semibold" style={twrnc`text-white text-[${responsiveFontSizes.lg}px] text-center mb-4`}>
-                      Please sign in to view the leaderboard.
-                    </CustomText>
-                    <TouchableOpacity style={twrnc`bg-[#4361EE] px-6 py-3 rounded-xl shadow-lg`} onPress={navigateToSignIn}>
-                      <CustomText weight="semibold" style={twrnc`text-white text-[${responsiveFontSizes.base}px]`}>
-                        Sign In
-                      </CustomText>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              )}
-            </AnimatedScreenWrapper>
-
-            <AnimatedScreenWrapper isActive={activeScreen === "map"} animationType="fade">
-              <MapScreen
-                navigateToActivity={navigateToActivity}
-                navigateToDashboard={navigateToDashboard}
-                params={activityParams}
-              />
-            </AnimatedScreenWrapper>
-          </Animated.View>
-
-          {(activeScreen === "dashboard" || activeScreen === "Leaderboard") && (
-            <Animated.View
+          {/* DARK CRYPTO-STYLE BOTTOM NAVIGATION - ONLY ON HOME AND LEADERBOARD */}
+          {["dashboard", "Leaderboard"].includes(activeScreen) && (
+            <View
               style={[
-                twrnc`flex-row justify-between items-center bg-[#1E2538] px-[${responsivePadding.lg}px] py-[${responsivePadding.base}px] absolute bottom-0 w-full shadow-2xl`,
+                twrnc`flex-row items-center px-2 py-2`,
                 {
-                  opacity: screenTransitionAnim,
-                  transform: [
-                    {
-                      translateY: screenTransitionAnim.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: [50, 0],
-                      }),
-                    },
-                  ],
+                  backgroundColor: "#0f172a",
+                  borderTopWidth: 1,
+                  borderTopColor: "#1e293b",
                 },
               ]}
             >
@@ -1216,15 +1090,19 @@ export default function App() {
                 onPress={() => navigateWithAnimation("dashboard")}
               />
               <AnimatedNavTab
-                iconSource={RunningIcon}
+                icon="fitness"
                 label="Activity"
                 isActive={activeScreen === "activity"}
                 onPress={() => navigateWithAnimation("activity")}
               />
-              <EnhancedMapButton
+
+              {/* Center Map Button */}
+              <AnimatedNavTab
+                icon="footsteps"
+                isCenterButton={true}
                 onPress={() => navigateToMap({})}
-                isActive={activeScreen === "map"}
               />
+
               <AnimatedNavTab
                 icon="trophy"
                 label="Leaderboard"
@@ -1232,15 +1110,16 @@ export default function App() {
                 onPress={() => navigateWithAnimation("Leaderboard")}
               />
               <AnimatedNavTab
-                icon="users"
+                icon="people"
                 label="Community"
                 isActive={activeScreen === "community"}
                 onPress={() => navigateWithAnimation("community")}
               />
-            </Animated.View>
+            </View>
           )}
         </View>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
+
 }

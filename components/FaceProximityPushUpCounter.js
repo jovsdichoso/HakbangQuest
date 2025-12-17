@@ -10,8 +10,7 @@ import Animated, { Easing } from "react-native-reanimated"
 import { Accelerometer } from "expo-sensors"
 import tw from "twrnc"
 import CustomText from "./CustomText"
-import { db, auth } from "../firebaseConfig"
-import { addDoc, doc, getDoc, updateDoc, serverTimestamp, collection } from "firebase/firestore"
+// ✅ FIX: Removed all 'firebase/firestore' imports. This component should not talk to the database.
 import CustomModal from "./CustomModal"
 
 // Get responsive dimensions
@@ -42,7 +41,7 @@ const responsivePadding = {
 // Accept repGoal, durationGoal, stakeXP, onRepUpdate, onFinish as props
 export default function FaceProximityPushUpCounter({
   repGoal = 20,
-  durationGoal = 0,
+  durationGoal = 0, // This is in minutes
   stakeXP = 0,
   onRepUpdate,
   onFinish,
@@ -52,10 +51,10 @@ export default function FaceProximityPushUpCounter({
   const [pushUpCount, setPushUpCount] = useState(0)
   const [currentState, setCurrentState] = useState("calibrating")
   const [calibrationCountdown, setCalibrationCountdown] = useState(3)
-  const [debugInfo, setDebugInfo] = useState("")
+  const [statusInfo, setStatusInfo] = useState("") // ✅ FIX: Renamed from debugInfo
   const [isFlat, setIsFlat] = useState(true)
-  const [showDebug, setShowDebug] = useState(false)
-  const [isSaving, setIsSaving] = useState(false)
+  // const [showDebug, setShowDebug] = useState(false) // ✅ FIX: Removed debug state
+  const [isFinished, setIsFinished] = useState(false) // ✅ FIX: Renamed 'isSaving' to 'isFinished'
   const [remainingSecs, setRemainingSecs] = useState(null)
 
   const [modalVisible, setModalVisible] = useState(false)
@@ -68,8 +67,18 @@ export default function FaceProximityPushUpCounter({
 
   const device = useCameraDevice("front")
   const startTimeRef = useRef(null)
-  const savedRef = useRef(false)
+  const finishReportedRef = useRef(false) // ✅ FIX: Prevents multiple 'onFinish' calls
   const countdownIntervalRef = useRef(null)
+
+  // ✅ --- START OF FIX ---
+  // Create a ref to hold the latest rep count.
+  // This solves the "stale closure" problem in the timer.
+  const repCountRef = useRef(pushUpCount);
+  useEffect(() => {
+    repCountRef.current = pushUpCount;
+  }, [pushUpCount]);
+  // ✅ --- END OF FIX ---
+
 
   // Counter animation
   const counterScale = useSharedValue(1)
@@ -144,27 +153,121 @@ export default function FaceProximityPushUpCounter({
   useEffect(() => {
     if (onRepUpdate) onRepUpdate(pushUpCount)
   }, [pushUpCount, onRepUpdate])
+  
+  // ✅ FIX: Replaced 'saveWorkout' with 'handleFinishWorkout'
+  // This function NO LONGER saves to Firestore. It just bundles the
+  // final stats and sends them to ActivityScreen via the onFinish prop.
+  const handleFinishWorkout = useCallback(async (isCancel = false) => {
+    if (finishReportedRef.current) return; // Prevent multiple finishes
+    finishReportedRef.current = true;
+    setIsFinished(true);
 
-  // Start time when calibration finishes and counting begins
+    // Stop the timer if it's running
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+
+    // ✅ FIX: Handle CANCEL button press
+    if (isCancel) {
+      console.log("[FaceCounter] Workout cancelled by user.");
+      if (onFinish) {
+        onFinish(null); // Send null to signal cancellation
+      }
+      return;
+    }
+
+    try {
+      // ✅ --- START OF FIX ---
+      // Read the rep count from the ref to get the LATEST value
+      const finalRepCount = repCountRef.current;
+      // ✅ --- END OF FIX ---
+
+      // Allow short activities for timer-based challenges
+      const isTimerChallenge = durationGoal > 0;
+      // ✅ FIX: Allow 0 reps for timer challenge (winner-takes-all), but use finalRepCount
+      if (finalRepCount < 1 && !isTimerChallenge) { // Changed minimum to 1 rep
+        setModalContent({
+          title: "Workout Too Short",
+          message: "Please complete at least 1 push-up to finish your workout.",
+          type: "info",
+          buttons: [{ label: "OK", style: "primary", action: () => {
+            finishReportedRef.current = false; // Allow retry
+            setIsFinished(false);
+            return true;
+          } }],
+        });
+        setModalVisible(true);
+        return;
+      }
+
+      const endTime = Date.now();
+      const duration = startTimeRef.current
+        ? Math.round((endTime - startTimeRef.current) / 1000)
+        : 0;
+
+      // Calculate calories
+      const calories = Math.round(finalRepCount * 0.5); // ✅ FIX: Use finalRepCount
+
+      // ✅ Bundle the final stats for ActivityScreen
+      const finalStats = {
+        reps: finalRepCount, // ✅ FIX: Use finalRepCount
+        duration: duration, // Send total duration
+        calories: calories,
+        activityType: "pushup",
+        unit: "reps",
+        // This flag tells ActivityScreen's saveActivity it was a strength workout
+        isStrengthActivity: true, 
+      };
+
+      console.log("[FaceCounter] Finishing workout. Sending stats to parent:", finalStats);
+
+      // ✅ Pass all data back to ActivityScreen to handle saving
+      if (onFinish) {
+        onFinish(finalStats);
+      }
+
+      // We don't show a modal here. ActivityScreen will show the "Activity Saved" modal.
+
+    } catch (error) {
+      setModalContent({
+        title: "Error Finishing Workout",
+        message: `An error occurred.\n\n${error?.message || "Please try again later."}`,
+        type: "error",
+        buttons: [{ label: "OK", style: "primary", action: () => true }],
+      });
+      setModalVisible(true);
+      finishReportedRef.current = false; // Allow retry on error
+      setIsFinished(false);
+    }
+    // ✅ --- START OF FIX ---
+    // Removed 'pushUpCount' from dependency array, as we now use the ref.
+  }, [durationGoal, onFinish]);
+  // ✅ --- END OF FIX ---
+
+
+  // ✅ FIX: Cleaned up timer and auto-finish logic
   useEffect(() => {
     if (currentState === "up" && startTimeRef.current === null) {
       startTimeRef.current = Date.now();
 
-      // Start countdown timer if durationGoal is provided
+      // Start challenge countdown timer if durationGoal is provided
       if (durationGoal && durationGoal > 0 && remainingSecs === null) {
         const initialSeconds = durationGoal * 60;
         setRemainingSecs(initialSeconds);
+        console.log(`[FaceCounter] Starting ${initialSeconds}s timer.`);
 
-        // Start interval timer using ref for proper cleanup
         countdownIntervalRef.current = setInterval(() => {
           setRemainingSecs(prev => {
-            if (prev <= 1) {
+            if (prev === null || prev <= 1) {
               clearInterval(countdownIntervalRef.current);
-              // Auto-save when timer reaches 0 (only once)
-              if (!savedRef.current) {
-                savedRef.current = true;
-                setTimeout(() => saveWorkout(), 500);
-              }
+              countdownIntervalRef.current = null;
+              
+              console.log("[FaceCounter] Timer finished. Auto-finishing workout.");
+              Vibration.vibrate(500); // Long vibration on finish
+              
+              // Auto-finish when timer reaches 0
+              handleFinishWorkout(false); // Pass false to indicate not a cancel
               return 0;
             }
 
@@ -178,7 +281,7 @@ export default function FaceProximityPushUpCounter({
         }, 1000);
       }
     }
-  }, [currentState, durationGoal]);
+  }, [currentState, durationGoal, remainingSecs, handleFinishWorkout]); // Added handleFinishWorkout to dep array
 
   // Clean up timer on unmount
   useEffect(() => {
@@ -191,7 +294,7 @@ export default function FaceProximityPushUpCounter({
 
   const finishCalibration = () => {
     if (!isFlat) {
-      setDebugInfo("⚠️ Place phone flat on the ground for calibration")
+      setStatusInfo("⚠️ Place phone flat on the ground for calibration")
       setCalibrationCountdown(3)
       return
     }
@@ -209,17 +312,17 @@ export default function FaceProximityPushUpCounter({
       upThreshold.current = baselineFaceSize.current * 1.2
 
       setCurrentState("up")
-      setDebugInfo(`✅ Calibrated! Baseline: ${baselineFaceSize.current.toFixed(0)}`)
+      setStatusInfo(`✅ Calibrated! Baseline: ${baselineFaceSize.current.toFixed(0)}`)
     } else {
       let msg = ""
       if (calibrationSamples.current.length <= 10) {
         msg = "Not enough samples - hold steady longer"
       } else if (!hasEyesOpen.current) {
-        msg = "No open eyes detected - keep eyes open most of the time"
+        msg = "No open eyes detected - keep eyes open"
       } else if (!hasEyesClosed.current) {
-        msg = "No closed eyes detected - please blink during calibration to prevent spoofing"
+        msg = "No closed eyes detected - please blink"
       }
-      setDebugInfo(msg)
+      setStatusInfo(msg)
       setCalibrationCountdown(3)
       calibrationSamples.current = []
       hasEyesOpen.current = false
@@ -237,7 +340,7 @@ export default function FaceProximityPushUpCounter({
 
   const detectPushUpFromFaceSize = (face) => {
     if (!isFlat) {
-      setDebugInfo("⚠️ Phone not flat on ground! Push-ups blocked.")
+      setStatusInfo("⚠️ Phone not flat. Paused.")
       return
     }
 
@@ -255,10 +358,9 @@ export default function FaceProximityPushUpCounter({
       if (leftEye > 0.7 && rightEye > 0.7) {
         hasEyesOpen.current = true
       }
-
-      setDebugInfo(
-        `Calibrating... ${calibrationCountdown}s\nSamples: ${calibrationSamples.current.length}\nCurrent size: ${faceArea.toFixed(0)}\nEyes Open: L:${leftEye.toFixed(2)} R:${rightEye.toFixed(2)}\nLiveness: Open ${hasEyesOpen.current ? "✅" : "❌"} Closed ${hasEyesClosed.current ? "✅" : "❌"}`,
-      )
+      
+      // ✅ FIX: Simplified status info
+      setStatusInfo(`Calibrating... ${calibrationCountdown}s\nBlink to prove liveness.`)
       return
     }
 
@@ -266,17 +368,9 @@ export default function FaceProximityPushUpCounter({
     if (currentTime - lastStateChange.current < minStateChangeInterval) {
       return
     }
-
-    const sizeRatio = smoothedFaceSize / baselineFaceSize.current
-
-    setDebugInfo(
-      `State: ${currentState.toUpperCase()}\n` +
-      `Face Size: ${smoothedFaceSize.toFixed(0)}\n` +
-      `Baseline: ${baselineFaceSize.current.toFixed(0)}\n` +
-      `Ratio: ${sizeRatio.toFixed(2)}\n` +
-      `Down Threshold: ${(downThreshold.current / baselineFaceSize.current).toFixed(2)}\n` +
-      (isFlat ? "📱 Flat ✅" : "⚠️ Not Flat ❌"),
-    )
+    
+    // ✅ FIX: Simplified status info
+    setStatusInfo(isFlat ? "✅ Ready" : "⚠️ Phone not flat. Paused.")
 
     if (currentState === "up" && smoothedFaceSize > downThreshold.current) {
       setCurrentState("down")
@@ -289,7 +383,7 @@ export default function FaceProximityPushUpCounter({
   }
 
   const resetCounter = () => {
-    if (savedRef.current) return; // Prevent reset after auto-save
+    if (isFinished) return; // Prevent reset after finish
 
     setPushUpCount(0)
     setCurrentState("calibrating")
@@ -301,7 +395,7 @@ export default function FaceProximityPushUpCounter({
     hasEyesOpen.current = false
     hasEyesClosed.current = false
     startTimeRef.current = null
-    savedRef.current = false;
+    finishReportedRef.current = false;
 
     // Reset timer
     if (countdownIntervalRef.current) {
@@ -310,118 +404,6 @@ export default function FaceProximityPushUpCounter({
     }
     setRemainingSecs(null);
   }
-
-  // Enhanced saveWorkout function
-  const saveWorkout = useCallback(async () => {
-    if (savedRef.current) return; // Prevent multiple saves
-    savedRef.current = true;
-
-    setIsSaving(true);
-    try {
-      const user = auth.currentUser;
-      if (!user) {
-        setModalContent({
-          title: "Error",
-          message: "You must be logged in to save your workout.",
-          type: "error",
-          buttons: [{ label: "OK", style: "primary", action: () => true }],
-        });
-        setModalVisible(true);
-        setIsSaving(false);
-        return;
-      }
-
-      // Allow short activities for timer-based challenges
-      const isTimerCompleted = durationGoal > 0;
-      if (pushUpCount < 5 && !isTimerCompleted) {
-        setModalContent({
-          title: "Workout Too Short",
-          message: "Please complete at least 5 push-ups to save your workout.",
-          type: "info",
-          buttons: [{ label: "OK", style: "primary", action: () => true }],
-        });
-        setModalVisible(true);
-        setIsSaving(false);
-        return;
-      }
-
-      const endTime = Date.now();
-      const duration = startTimeRef.current
-        ? Math.round((endTime - startTimeRef.current) / 1000)
-        : 0;
-
-      // Calculate XP and calories
-      const calories = Math.round(pushUpCount * 0.5);
-      const xpEarned = 50 + Math.floor(pushUpCount / 10) * 5;
-
-      // 🧩 Detect active quest (if any)
-      // You may already have activeQuest passed in as a prop
-      // If not, get it from context or route params
-      const questData = activeQuest
-        ? {
-          id: activeQuest.id,
-          title: activeQuest.title,
-          goal: activeQuest.goal,
-          xpReward: activeQuest.xpReward,
-          unit: activeQuest.unit,
-          activityType: activeQuest.activityType,
-        }
-        : null;
-
-      const activityParams = {
-        type: questData ? "quest" : "normal",
-        questId: questData ? questData.id : null,
-        activityType: "pushup",
-      };
-
-      // ✅ Pass questData and activityParams in onFinish
-      setModalContent({
-        title: "Workout Saved!",
-        message: `You completed ${pushUpCount} push-ups!\nCalories burned: ${calories}\nXP earned: ${xpEarned}`,
-        type: "success",
-        buttons: [
-          {
-            label: "OK",
-            style: "primary",
-            action: () => {
-              if (onFinish) {
-                const finalStats = {
-                  reps: pushUpCount,
-                  duration: duration,
-                  calories: calories,
-                  xpEarned: xpEarned,
-                  activityType: "pushup",
-                  unit: "reps",
-                };
-
-                onFinish({
-                  ...finalStats,
-                  questData,          // <-- 🔥 Pass quest info
-                  activityParams,     // <-- 🔥 Pass activity type (quest/normal)
-                });
-              }
-              resetCounter();
-              return true;
-            },
-          },
-        ],
-      });
-
-      setModalVisible(true);
-    } catch (error) {
-      setModalContent({
-        title: "Failed to Save Workout",
-        message: `An error occurred while saving your workout.\n\n${error?.message || "Please try again later."}`,
-        type: "error",
-        buttons: [{ label: "OK", style: "primary", action: () => true }],
-      });
-      setModalVisible(true);
-      savedRef.current = false; // Allow retry on error
-    } finally {
-      setIsSaving(false);
-    }
-  }, [pushUpCount, durationGoal, onFinish, activeQuest]);
-
 
   const aFaceW = useSharedValue(0)
   const aFaceH = useSharedValue(0)
@@ -456,6 +438,8 @@ export default function FaceProximityPushUpCounter({
 
   const handleFacesDetection = (faces) => {
     try {
+      if (isFinished) return; // Stop processing if finished
+
       if (faces?.length > 0) {
         const face = faces[0]
         drawFaceBounds(face)
@@ -463,12 +447,12 @@ export default function FaceProximityPushUpCounter({
       } else {
         drawFaceBounds()
         if (currentState !== "calibrating") {
-          setDebugInfo("❌ No face detected")
+          setStatusInfo("❌ No face detected. Move closer.") // ✅ FIX: Clearer message
         }
       }
     } catch (error) {
       console.error("Error in face detection:", error)
-      setDebugInfo(`Error: ${error}`)
+      setStatusInfo(`Error: ${error}`) // ✅ FIX: Use statusInfo
     }
   }
 
@@ -531,7 +515,7 @@ export default function FaceProximityPushUpCounter({
       <Camera
         style={tw`absolute inset-0`}
         device={device}
-        isActive={!isSaving}
+        isActive={!isFinished} // ✅ FIX: Use 'isFinished'
         faceDetectionCallback={handleFacesDetection}
         faceDetectionOptions={faceDetectionOptions}
         resizeMode="cover"
@@ -543,6 +527,8 @@ export default function FaceProximityPushUpCounter({
           `absolute top-4 left-0 right-0 flex-row justify-center items-center z-30`,
           {
             gap: responsivePadding.lg,
+            // Use safe area top padding if available
+            paddingTop: responsivePadding.base,
           }
         )}
       >
@@ -596,7 +582,8 @@ export default function FaceProximityPushUpCounter({
         style={tw.style(
           `absolute items-center w-full z-20`,
           {
-            top: responsivePadding.lg * (remainingSecs !== null ? 8 : 2),
+            // Adjust top position based on timer/stake visibility
+            top: (remainingSecs !== null || stakeXP > 0) ? responsivePadding.lg * 8 : responsivePadding.lg * 2,
           }
         )}
       >
@@ -604,9 +591,10 @@ export default function FaceProximityPushUpCounter({
           style={[
             counterStyle,
             tw.style(
-              `bg-black/90 rounded-3xl border-4 border-cyan-400 shadow-2xl px-8 py-4`,
+              `bg-black/90 rounded-3xl border-4 border-cyan-400 shadow-2xl px-8 py-4 items-center`, // ✅ FIX: Added items-center
               {
                 elevation: 10,
+                minWidth: 240, // ✅ FIX: Give it a minimum width
               }
             ),
           ]}
@@ -645,70 +633,28 @@ export default function FaceProximityPushUpCounter({
                   ? "🔴 DOWN"
                   : "🟢 UP"}
           </CustomText>
+          
+          {/* ✅ FIX: Moved statusInfo into the scoreboard */}
+          {statusInfo.length > 0 && currentState !== "calibrating" && (
+             <CustomText
+              weight="medium"
+              style={tw.style(`text-yellow-300 text-center`, { 
+                fontSize: responsiveFontSizes.sm, 
+                marginTop: 8,
+              })}
+            >
+              {statusInfo}
+            </CustomText>
+          )}
+
         </Animated.View>
       </Animated.View>
 
       {/* Face Box Overlay */}
       <Animated.View style={faceBoxStyle} />
 
-      {/* Info Panel */}
-      <View
-        style={tw.style(`absolute w-full items-center z-10`, {
-          bottom: isSmallDevice ? responsivePadding.lg * 18 : responsivePadding.lg * 20,
-        })}
-      >
-        <View
-          style={tw.style(`bg-black/80 rounded-2xl border-2 border-cyan-400 shadow-lg px-6 py-4 w-[90%]`, {
-            maxWidth: 400,
-          })}
-        >
-          <CustomText
-            weight="bold"
-            style={tw.style(`text-cyan-300 text-center`, {
-              fontSize: responsiveFontSizes.base,
-              marginBottom: responsivePadding.base,
-              letterSpacing: 1,
-            })}
-          >
-            🎮 PUSH-UP QUEST
-          </CustomText>
-          <CustomText
-            weight="regular"
-            style={tw.style(`text-cyan-100 text-center`, {
-              fontSize: responsiveFontSizes.sm,
-              lineHeight: responsiveFontSizes.sm * 1.5,
-            })}
-            numberOfLines={5}
-            ellipsizeMode="tail"
-          >
-            {currentState === "calibrating"
-              ? "1. Place phone flat\n2. Get in position\n3. Blink a few times\n4. Hold steady to calibrate"
-              : "✅ Ready! Do push-ups above the phone.\nFace size + flat phone triggers UP/DOWN."}
-          </CustomText>
-        </View>
-      </View>
-
-      {/* Debug Info */}
-      {showDebug && (
-        <View
-          style={tw.style(`absolute w-full items-center z-10`, {
-            bottom: responsivePadding.lg * 13,
-          })}
-        >
-          <View
-            style={tw.style(`bg-black/80 rounded-2xl border-2 border-cyan-400 shadow-lg px-4 py-2 w-[90%]`, {
-              maxWidth: 400,
-            })}
-          >
-            <CustomText
-              weight="regular"
-              style={tw.style(`text-cyan-200 text-center`, { fontSize: responsiveFontSizes.xs })}
-            >
-              {debugInfo}
-            </CustomText>
-          </View>
-        </View>
-      )}
+      {/* ✅ FIX: Removed Info Panel */}
+      {/* ✅ FIX: Removed Debug Info Panel */}
 
       {/* Gaming Buttons - Always Accessible, Centered */}
       <View
@@ -717,65 +663,82 @@ export default function FaceProximityPushUpCounter({
           gap: responsivePadding.lg * 2,
         })}
       >
-        {!savedRef.current && (
+        {/* ✅ FIX: Updated button logic */}
+        {!isFinished && (
           <>
-            <Animated.View style={resetButtonStyle}>
+            {/* --- Challenge Mode (Timer) --- */}
+            {durationGoal > 0 && (
               <TouchableOpacity
                 style={tw.style(
-                  `bg-fuchsia-600 rounded-full border-4 border-fuchsia-300 shadow-2xl mx-2`,
+                  `bg-red-600 rounded-full border-4 border-red-300 shadow-2xl mx-2`,
                   {
                     paddingHorizontal: responsivePadding.lg * 2,
                     paddingVertical: responsivePadding.base * 1.5,
                     elevation: 10,
                   }
                 )}
-                onPress={resetCounter}
+                onPress={() => {
+                  handleFinishWorkout(true); // Pass true to signal cancellation
+                }}
                 activeOpacity={0.85}
-                accessibilityLabel="Reset Counter"
-                disabled={isSaving}
+                accessibilityLabel="Cancel Challenge"
               >
                 <CustomText weight="bold" style={tw.style(`text-white text-center`, { fontSize: responsiveFontSizes.lg })}>
-                  RESET
+                  CANCEL
                 </CustomText>
               </TouchableOpacity>
-            </Animated.View>
+            )}
 
-            <TouchableOpacity
-              style={tw.style(
-                `bg-emerald-600 rounded-full border-4 border-emerald-300 shadow-2xl mx-2`,
-                {
-                  paddingHorizontal: responsivePadding.lg * 2,
-                  paddingVertical: responsivePadding.base * 1.5,
-                  opacity: (isSaving || pushUpCount === 0) ? 0.6 : 1,
-                  elevation: 10,
-                }
-              )}
-              onPress={saveWorkout}
-              disabled={isSaving || pushUpCount === 0}
-              activeOpacity={0.85}
-              accessibilityLabel="Save Activity"
-            >
-              <CustomText weight="bold" style={tw.style(`text-white text-center`, { fontSize: responsiveFontSizes.lg })}>
-                {isSaving ? "SAVING..." : "SAVE ACTIVITY"}
-              </CustomText>
-            </TouchableOpacity>
+            {/* --- Practice Mode (No Timer) --- */}
+            {(durationGoal === 0 || !durationGoal) && (
+              <>
+                <Animated.View style={resetButtonStyle}>
+                  <TouchableOpacity
+                    style={tw.style(
+                      `bg-fuchsia-600 rounded-full border-4 border-fuchsia-300 shadow-2xl mx-2`,
+                      {
+                        paddingHorizontal: responsivePadding.lg * 2,
+                        paddingVertical: responsivePadding.base * 1.5,
+                        elevation: 10,
+                      }
+                    )}
+                    onPress={resetCounter}
+                    activeOpacity={0.85}
+                    accessibilityLabel="Reset Counter"
+                    disabled={isFinished}
+                  >
+                    <CustomText weight="bold" style={tw.style(`text-white text-center`, { fontSize: responsiveFontSizes.lg })}>
+                      RESET
+                    </CustomText>
+                  </TouchableOpacity>
+                </Animated.View>
+
+                <TouchableOpacity
+                  style={tw.style(
+                    `bg-emerald-600 rounded-full border-4 border-emerald-300 shadow-2xl mx-2`,
+                    {
+                      paddingHorizontal: responsivePadding.lg * 2,
+                      paddingVertical: responsivePadding.base * 1.5,
+                      opacity: (isFinished || (pushUpCount === 0 && !durationGoal)) ? 0.6 : 1,
+                      elevation: 10,
+                    }
+                  )}
+                  onPress={() => handleFinishWorkout(false)} // Pass false to signal not a cancel
+                  disabled={isFinished || (pushUpCount === 0 && !durationGoal)}
+                  activeOpacity={0.85}
+                  accessibilityLabel="Finish Activity"
+                >
+                  <CustomText weight="bold" style={tw.style(`text-white text-center`, { fontSize: responsiveFontSizes.lg })}>
+                    {isFinished ? "FINISHED" : "FINISH"} 
+                  </CustomText>
+                </TouchableOpacity>
+              </>
+            )}
           </>
         )}
       </View>
 
-      {/* Show Debug Button */}
-      <TouchableOpacity
-        style={tw.style(`absolute right-6 bottom-24 bg-cyan-700 rounded-full border-2 border-cyan-300 shadow-lg z-40`, {
-          padding: responsivePadding.sm * 2,
-        })}
-        onPress={() => setShowDebug(!showDebug)}
-        activeOpacity={0.85}
-        accessibilityLabel="Toggle Debug Info"
-      >
-        <CustomText weight="bold" style={tw.style(`text-white`, { fontSize: responsiveFontSizes.sm })}>
-          {showDebug ? "Hide Debug" : "Show Debug"}
-        </CustomText>
-      </TouchableOpacity>
+      {/* ✅ FIX: Removed Show Debug Button */}
 
       {/* Not Flat Warning */}
       {!isFlat && (
@@ -807,3 +770,4 @@ export default function FaceProximityPushUpCounter({
     </View>
   )
 }
+

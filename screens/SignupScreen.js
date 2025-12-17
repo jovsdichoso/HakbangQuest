@@ -1,22 +1,24 @@
 "use client"
+
 import { useState, useEffect, useRef } from "react"
 import {
   View,
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
-  KeyboardAvoidingView,
   Platform,
   ScrollView,
   Dimensions,
   Animated,
   Easing,
+  Keyboard,
+  TouchableWithoutFeedback,
 } from "react-native"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import twrnc from "twrnc"
-import CustomText from "../components/CustomText" 
+import CustomText from "../components/CustomText"
 import CustomModal from "../components/CustomModal"
-import { auth, db } from "../firebaseConfig" 
+import { auth, db } from "../firebaseConfig"
 import NotificationService from "../services/NotificationService"
 import { createUserWithEmailAndPassword, sendEmailVerification } from "firebase/auth"
 import { doc, setDoc } from "firebase/firestore"
@@ -30,24 +32,30 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
   const [username, setUsername] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [confirmPassword, setConfirmPassword] = useState("")
   const [height, setHeight] = useState("")
   const [weight, setWeight] = useState("")
   const [bmi, setBmi] = useState(null)
   const [fitnessGoal, setFitnessGoal] = useState("")
+  const [passwordStrength, setPasswordStrength] = useState({ score: 0, label: "", color: "" })
 
   // UI states
   const [isPasswordVisible, setIsPasswordVisible] = useState(false)
+  const [isConfirmPasswordVisible, setIsConfirmPasswordVisible] = useState(false)
   const [isUsernameFocused, setIsUsernameFocused] = useState(false)
   const [isEmailFocused, setIsEmailFocused] = useState(false)
   const [isPasswordFocused, setIsPasswordFocused] = useState(false)
+  const [isConfirmPasswordFocused, setIsConfirmPasswordFocused] = useState(false)
   const [isHeightFocused, setIsHeightFocused] = useState(false)
   const [isWeightFocused, setIsWeightFocused] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [currentStep, setCurrentStep] = useState(1)
+  const [keyboardHeight, setKeyboardHeight] = useState(0)
   const [errors, setErrors] = useState({
     username: "",
     email: "",
     password: "",
+    confirmPassword: "",
     height: "",
     weight: "",
   })
@@ -56,7 +64,14 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
   const [modalVisible, setModalVisible] = useState(false)
   const [modalTitle, setModalTitle] = useState("")
   const [modalMessage, setModalMessage] = useState("")
-  const [modalType, setModalType] = useState("success") // success, warning, error
+  const [modalType, setModalType] = useState("success")
+
+  // Refs
+  const scrollViewRef = useRef(null)
+  const emailInputRef = useRef(null)
+  const passwordInputRef = useRef(null)
+  const confirmPasswordInputRef = useRef(null)
+  const weightInputRef = useRef(null)
 
   // Animations
   const fadeAnim = useRef(new Animated.Value(0)).current
@@ -65,14 +80,61 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
   const buttonScaleAnim = useRef(new Animated.Value(1)).current
   const inputShakeAnim = useRef(new Animated.Value(0)).current
   const stepTransitionAnim = useRef(new Animated.Value(0)).current
+  
+  // Bubble animations for each step
+  const bubbleAnims = [
+    useRef(new Animated.Value(1)).current,
+    useRef(new Animated.Value(1)).current,
+    useRef(new Animated.Value(1)).current,
+  ]
+  const bubbleOpacity = [
+    useRef(new Animated.Value(0)).current,
+    useRef(new Animated.Value(0)).current,
+    useRef(new Animated.Value(0)).current,
+  ]
 
   // Fitness goals options
   const fitnessGoals = [
-    { id: "weight_loss", label: "Weight Loss", icon: "line-chart", color: "#EF476F" },
-    { id: "muscle_gain", label: "Muscle Gain", icon: "plus-circle", color: "#06D6A0" },
+    { id: "weight_loss", label: "Weight Loss", icon: "trending-down", color: "#EF476F" },
+    { id: "muscle_gain", label: "Muscle Gain", icon: "barbell", color: "#06D6A0" },
     { id: "endurance", label: "Endurance", icon: "heart", color: "#4361EE" },
     { id: "general_fitness", label: "General Fitness", icon: "star", color: "#FFC107" },
   ]
+
+  // Password strength evaluation
+  const evaluatePasswordStrength = (pass) => {
+    if (!pass) return { score: 0, label: "", color: "" }
+    
+    let score = 0
+    
+    // Check password length
+    if (pass.length >= 8) score += 1
+    if (pass.length >= 12) score += 1
+    // Contains lowercase
+    if (/[a-z]/.test(pass)) score += 1
+    // Contains uppercase
+    if (/[A-Z]/.test(pass)) score += 1
+    // Contains number
+    if (/[0-9]/.test(pass)) score += 1
+    // Contains special character
+    if (/[^A-Za-z0-9]/.test(pass)) score += 1
+    
+    let label = ""
+    let color = ""
+    
+    if (score <= 2) {
+      label = "Weak"
+      color = "#EF476F"
+    } else if (score <= 4) {
+      label = "Medium"
+      color = "#FFC107"
+    } else {
+      label = "Strong"
+      color = "#06D6A0"
+    }
+    
+    return { score, label, color }
+  }
 
   // Lock navigation when modal is open
   useEffect(() => {
@@ -83,16 +145,35 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
     }
   }, [modalVisible, setIsNavigationLocked])
 
-  // Entrance animations
+  // Entrance animations and keyboard listeners
   useEffect(() => {
     animateScreenElements()
+
+    const keyboardWillShow = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e) => {
+        setKeyboardHeight(e.endCoordinates.height)
+      }
+    )
+    
+    const keyboardWillHide = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setKeyboardHeight(0)
+      }
+    )
+
+    return () => {
+      keyboardWillShow.remove()
+      keyboardWillHide.remove()
+    }
   }, [])
 
   // BMI calculation
   useEffect(() => {
     if (height && weight) {
-      const heightInMeters = Number.parseFloat(height) / 100
-      const weightInKg = Number.parseFloat(weight)
+      const heightInMeters = parseFloat(height) / 100
+      const weightInKg = parseFloat(weight)
       if (heightInMeters > 0 && weightInKg > 0) {
         const calculatedBmi = weightInKg / (heightInMeters * heightInMeters)
         setBmi(calculatedBmi.toFixed(1))
@@ -100,97 +181,96 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
     }
   }, [height, weight])
 
-  // Animate screen elements
+  // Trigger bubble animation when step changes
+  useEffect(() => {
+    animateBubble(currentStep - 1)
+  }, [currentStep])
+
   const animateScreenElements = () => {
     fadeAnim.setValue(0)
     slideAnim.setValue(50)
     headerSlideAnim.setValue(-50)
+    
     Animated.parallel([
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 600,
-        useNativeDriver: true,
-      }),
-      Animated.timing(slideAnim, {
-        toValue: 0,
-        duration: 600,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-      Animated.timing(headerSlideAnim, {
-        toValue: 0,
-        duration: 500,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
+      Animated.timing(fadeAnim, { toValue: 1, duration: 600, useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 600, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(headerSlideAnim, { toValue: 0, duration: 500, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+    ]).start()
+  }
+
+  const animateBubble = (index) => {
+    // Reset previous bubbles
+    bubbleOpacity.forEach((anim, i) => {
+      if (i !== index) {
+        anim.setValue(0)
+      }
+    })
+
+    // Animate current bubble
+    Animated.parallel([
+      Animated.sequence([
+        Animated.timing(bubbleAnims[index], {
+          toValue: 1.3,
+          duration: 400,
+          easing: Easing.out(Easing.back(1.5)),
+          useNativeDriver: true,
+        }),
+        Animated.timing(bubbleAnims[index], {
+          toValue: 1,
+          duration: 300,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+      Animated.sequence([
+        Animated.timing(bubbleOpacity[index], {
+          toValue: 1,
+          duration: 200,
+          useNativeDriver: true,
+        }),
+        Animated.timing(bubbleOpacity[index], {
+          toValue: 0,
+          duration: 400,
+          delay: 200,
+          useNativeDriver: true,
+        }),
+      ]),
     ]).start()
   }
 
   const animateButtonPress = () => {
     Animated.sequence([
-      Animated.timing(buttonScaleAnim, {
-        toValue: 0.95,
-        duration: 100,
-        useNativeDriver: true,
-      }),
-      Animated.timing(buttonScaleAnim, {
-        toValue: 1,
-        duration: 100,
-        useNativeDriver: true,
-      }),
+      Animated.timing(buttonScaleAnim, { toValue: 0.95, duration: 100, useNativeDriver: true }),
+      Animated.timing(buttonScaleAnim, { toValue: 1, duration: 100, useNativeDriver: true }),
     ]).start()
   }
 
   const animateInputError = () => {
     Animated.sequence([
-      Animated.timing(inputShakeAnim, {
-        toValue: 10,
-        duration: 100,
-        useNativeDriver: true,
-      }),
-      Animated.timing(inputShakeAnim, {
-        toValue: -10,
-        duration: 100,
-        useNativeDriver: true,
-      }),
-      Animated.timing(inputShakeAnim, {
-        toValue: 10,
-        duration: 100,
-        useNativeDriver: true,
-      }),
-      Animated.timing(inputShakeAnim, {
-        toValue: 0,
-        duration: 100,
-        useNativeDriver: true,
-      }),
+      Animated.timing(inputShakeAnim, { toValue: 10, duration: 100, useNativeDriver: true }),
+      Animated.timing(inputShakeAnim, { toValue: -10, duration: 100, useNativeDriver: true }),
+      Animated.timing(inputShakeAnim, { toValue: 10, duration: 100, useNativeDriver: true }),
+      Animated.timing(inputShakeAnim, { toValue: 0, duration: 100, useNativeDriver: true }),
     ]).start()
   }
 
   const animateStepTransition = () => {
     Animated.sequence([
-      Animated.timing(stepTransitionAnim, {
-        toValue: 1,
-        duration: 300,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-      Animated.timing(stepTransitionAnim, {
-        toValue: 0,
-        duration: 300,
-        easing: Easing.in(Easing.cubic),
-        useNativeDriver: true,
-      }),
+      Animated.timing(stepTransitionAnim, { toValue: 1, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(stepTransitionAnim, { toValue: 0, duration: 300, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
     ]).start()
   }
 
   // Validation functions
   const validateStep1 = () => {
-    const newErrors = { username: "", email: "", password: "" }
+    const newErrors = { username: "", email: "", password: "", confirmPassword: "" }
     let hasError = false
+
     if (!username.trim()) {
       newErrors.username = "Username is required"
       hasError = true
     }
+
     if (!email.trim()) {
       newErrors.email = "Email is required"
       hasError = true
@@ -198,13 +278,23 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
       newErrors.email = "Invalid email format"
       hasError = true
     }
+
     if (!password) {
       newErrors.password = "Password is required"
       hasError = true
-    } else if (password.length < 6) {
-      newErrors.password = "Password must be at least 6 characters"
+    } else if (password.length < 8) {
+      newErrors.password = "Password must be at least 8 characters"
       hasError = true
     }
+
+    if (!confirmPassword) {
+      newErrors.confirmPassword = "Please confirm your password"
+      hasError = true
+    } else if (password !== confirmPassword) {
+      newErrors.confirmPassword = "Passwords do not match"
+      hasError = true
+    }
+
     setErrors({ ...errors, ...newErrors })
     return !hasError
   }
@@ -212,46 +302,50 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
   const validateStep2 = () => {
     const newErrors = { height: "", weight: "" }
     let hasError = false
+
     if (!height.trim()) {
       newErrors.height = "Height is required"
       hasError = true
-    } else if (isNaN(Number.parseFloat(height)) || Number.parseFloat(height) <= 0) {
+    } else if (isNaN(parseFloat(height)) || parseFloat(height) <= 0) {
       newErrors.height = "Please enter a valid height"
       hasError = true
     }
+
     if (!weight.trim()) {
       newErrors.weight = "Weight is required"
       hasError = true
-    } else if (isNaN(Number.parseFloat(weight)) || Number.parseFloat(weight) <= 0) {
+    } else if (isNaN(parseFloat(weight)) || parseFloat(weight) <= 0) {
       newErrors.weight = "Please enter a valid weight"
       hasError = true
     }
+
     setErrors({ ...errors, ...newErrors })
     return !hasError
   }
 
   const handleNextStep = () => {
+    Keyboard.dismiss()
     if (currentStep === 1 && validateStep1()) {
       animateStepTransition()
-      setCurrentStep(2)
+      setTimeout(() => setCurrentStep(2), 150)
     } else if (currentStep === 2 && validateStep2()) {
       animateStepTransition()
-      setCurrentStep(3)
+      setTimeout(() => setCurrentStep(3), 150)
     } else if (currentStep === 1 || currentStep === 2) {
       animateInputError()
     }
   }
 
   const handlePrevStep = () => {
+    Keyboard.dismiss()
     if (currentStep > 1) {
       animateStepTransition()
-      setCurrentStep(currentStep - 1)
+      setTimeout(() => setCurrentStep(currentStep - 1), 150)
     } else {
       navigateToSignIn()
     }
   }
 
-  // Sign up process
   const validateAndSignUp = async () => {
     if (!fitnessGoal) {
       setModalTitle("Selection Required")
@@ -266,17 +360,18 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
   const handleEmailSignUp = async () => {
     animateButtonPress()
     setIsLoading(true)
+    Keyboard.dismiss()
+
     try {
       const userCredential = await createUserWithEmailAndPassword(auth, email, password)
       const user = userCredential.user
 
-      // Save user data
       await setDoc(doc(db, "users", user.uid), {
         username,
         email,
-        height: Number.parseFloat(height),
-        weight: Number.parseFloat(weight),
-        bmi: Number.parseFloat(bmi),
+        height: parseFloat(height),
+        weight: parseFloat(weight),
+        bmi: parseFloat(bmi),
         fitnessGoal,
         createdAt: new Date(),
         level: 1,
@@ -288,7 +383,6 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
         badges: [],
       })
 
-      // Store email in AsyncStorage
       const storedEmails = await AsyncStorage.getItem("registeredEmails")
       const emails = storedEmails ? JSON.parse(storedEmails) : []
       if (!emails.includes(email)) {
@@ -297,12 +391,10 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
       }
 
       setModalTitle("Account Created Successfully!")
-      setModalMessage(
-        "Your HakbangQuest account has been created. Please verify your email before logging in to start your fitness journey."
-      )
+      setModalMessage("Your HakbangQuest account has been created. Please verify your email before logging in.")
       setModalType("success")
       setModalVisible(true)
-
+      
       await sendEmailVerification(user)
       await NotificationService.sendVerifyAccountNotification()
     } catch (error) {
@@ -322,7 +414,7 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
       case "auth/invalid-email":
         return "Please enter a valid email address."
       case "auth/weak-password":
-        return "Password should be at least 6 characters."
+        return "Password should be at least 8 characters."
       default:
         return "Failed to create account. Please try again."
     }
@@ -336,7 +428,7 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
   }
 
   const getBmiCategory = (bmiValue) => {
-    const bmiNum = Number.parseFloat(bmiValue)
+    const bmiNum = parseFloat(bmiValue)
     if (bmiNum < 18.5) return { category: "Underweight", color: "#FFD166" }
     if (bmiNum < 25) return { category: "Normal", color: "#06D6A0" }
     if (bmiNum < 30) return { category: "Overweight", color: "#FFC107" }
@@ -344,61 +436,80 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
   }
 
   const renderStepIndicator = () => (
-    <View style={twrnc`flex-row justify-center mb-8`}>
-      {[1, 2, 3].map((step) => (
-        <View key={step} style={twrnc`flex-row items-center ${step !== 3 ? "mr-2" : ""}`}>
-          <View
-            style={twrnc`w-10 h-10 rounded-full items-center justify-center ${
-              currentStep === step
-                ? "bg-[#4361EE] border-2 border-[#4361EE]"
-                : currentStep > step
-                ? "bg-[#06D6A0] border-2 border-[#06D6A0]"
-                : "bg-[#1E2538] border border-gray-600"
-            }`}
-          >
-            {currentStep > step ? (
-              <FontAwesome name="check" size={16} color="#FFFFFF" />
-            ) : (
-              <CustomText weight="semibold" style={twrnc`text-white ${isSmallDevice ? "text-sm" : "text-base"}`}>
-                {step}
-              </CustomText>
-            )}
+    <View style={twrnc`flex-row items-center justify-center mb-8`}>
+      {[1, 2, 3].map((step, index) => (
+        <View key={step} style={twrnc`flex-row items-center`}>
+          <View style={twrnc`relative`}>
+            {/* Bubble effect */}
+            <Animated.View
+              style={[
+                twrnc`absolute w-16 h-16 rounded-full`,
+                {
+                  backgroundColor: "#6366f1",
+                  opacity: bubbleOpacity[index],
+                  transform: [{ scale: bubbleAnims[index] }],
+                  top: -12,
+                  left: -12,
+                },
+              ]}
+            />
+            
+            <Animated.View
+              style={[
+                twrnc`w-10 h-10 rounded-full items-center justify-center z-10`,
+                currentStep >= step
+                  ? twrnc`bg-indigo-600 border-2 border-indigo-600`
+                  : twrnc`bg-[#1e293b] border-2 border-gray-600`,
+                {
+                  transform: [{ scale: currentStep === step ? bubbleAnims[index] : 1 }],
+                },
+              ]}
+            >
+              {currentStep > step ? (
+                <Ionicons name="checkmark" size={20} color="white" />
+              ) : (
+                <CustomText style={twrnc`text-white font-bold`}>{step}</CustomText>
+              )}
+            </Animated.View>
           </View>
           {step !== 3 && (
-            <View style={twrnc`h-1 w-12 ${currentStep > step ? "bg-[#06D6A0]" : "bg-[#1E2538]"} rounded-full mx-2`} />
+            <View style={[twrnc`w-16 h-1 mx-2`, currentStep > step ? twrnc`bg-indigo-600` : twrnc`bg-gray-600`]} />
           )}
         </View>
       ))}
     </View>
   )
 
-  // Render Step 1 - Account Details
   const renderStep1 = () => (
-    <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}>
-      <View style={twrnc`mb-8`}>
-        <CustomText weight="bold" style={twrnc`text-white ${isSmallDevice ? "text-3xl" : "text-4xl"} mb-2`}>
-          Create Account
-        </CustomText>
-        <CustomText style={twrnc`text-[#8E8E93] ${isSmallDevice ? "text-sm" : "text-base"}`}>
-          Let's create your HakbangQuest account
-        </CustomText>
+    <Animated.View
+      style={[
+        {
+          opacity: fadeAnim,
+          transform: [{ translateY: slideAnim }, { translateX: inputShakeAnim }],
+        },
+      ]}
+    >
+      <View style={twrnc`mb-6`}>
+        <CustomText style={twrnc`text-2xl font-bold text-white mb-2`}>Create Account</CustomText>
+        <CustomText style={twrnc`text-sm text-gray-400`}>Let's create your HakbangQuest account</CustomText>
       </View>
 
-      <Animated.View style={{ transform: [{ translateX: inputShakeAnim }] }}>
-        {/* Username Input */}
-        <View style={twrnc`mb-4`}>
-          <CustomText weight="medium" style={twrnc`text-white mb-2 ${isSmallDevice ? "text-sm" : "text-base"}`}>
-            Username
-          </CustomText>
+      {/* Username Input */}
+      <View style={twrnc`mb-5`}>
+        <CustomText style={twrnc`text-sm font-semibold text-gray-300 mb-2.5`}>Username</CustomText>
+        <View
+          style={[
+            twrnc`flex-row items-center bg-[#0f172a] rounded-xl px-4`,
+            isUsernameFocused && twrnc`border-2 border-indigo-500`,
+            errors.username && twrnc`border-2 border-red-500`,
+            !isUsernameFocused && !errors.username && twrnc`border border-gray-700`,
+          ]}
+        >
+          <Ionicons name="person-outline" size={20} color={isUsernameFocused ? "#6366f1" : "#6b7280"} style={twrnc`mr-3`} />
           <TextInput
-            style={[
-              twrnc`bg-[#1E2538] rounded-xl p-4 text-white ${
-                isUsernameFocused ? "border-2 border-[#4361EE]" : "border border-gray-600"
-              } ${errors.username ? "border-red-500" : ""}`,
-              { fontFamily: "Poppins-Regular", fontSize: isSmallDevice ? 14 : 16 },
-            ]}
+            style={twrnc`flex-1 text-base text-white py-3.5`}
             placeholder="Enter your username"
-            placeholderTextColor="#8E8E93"
+            placeholderTextColor="#6b7280"
             value={username}
             onChangeText={(text) => {
               setUsername(text)
@@ -406,31 +517,31 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
             }}
             onFocus={() => setIsUsernameFocused(true)}
             onBlur={() => setIsUsernameFocused(false)}
+            returnKeyType="next"
+            onSubmitEditing={() => emailInputRef.current?.focus()}
+            blurOnSubmit={false}
           />
-          {errors.username ? (
-            <View style={twrnc`flex-row items-center mt-2`}>
-              <FontAwesome name="exclamation-circle" size={14} color="#EF4444" />
-              <CustomText style={twrnc`text-red-500 ml-2 ${isSmallDevice ? "text-xs" : "text-sm"}`}>
-                {errors.username}
-              </CustomText>
-            </View>
-          ) : null}
         </View>
+        {errors.username && <CustomText style={twrnc`text-red-400 text-xs mt-1.5 ml-1`}>{errors.username}</CustomText>}
+      </View>
 
-        {/* Email Input */}
-        <View style={twrnc`mb-4`}>
-          <CustomText weight="medium" style={twrnc`text-white mb-2 ${isSmallDevice ? "text-sm" : "text-base"}`}>
-            Email Address
-          </CustomText>
+      {/* Email Input */}
+      <View style={twrnc`mb-5`}>
+        <CustomText style={twrnc`text-sm font-semibold text-gray-300 mb-2.5`}>Email Address</CustomText>
+        <View
+          style={[
+            twrnc`flex-row items-center bg-[#0f172a] rounded-xl px-4`,
+            isEmailFocused && twrnc`border-2 border-indigo-500`,
+            errors.email && twrnc`border-2 border-red-500`,
+            !isEmailFocused && !errors.email && twrnc`border border-gray-700`,
+          ]}
+        >
+          <Ionicons name="mail-outline" size={20} color={isEmailFocused ? "#6366f1" : "#6b7280"} style={twrnc`mr-3`} />
           <TextInput
-            style={[
-              twrnc`bg-[#1E2538] rounded-xl p-4 text-white ${
-                isEmailFocused ? "border-2 border-[#4361EE]" : "border border-gray-600"
-              } ${errors.email ? "border-red-500" : ""}`,
-              { fontFamily: "Poppins-Regular", fontSize: isSmallDevice ? 14 : 16 },
-            ]}
+            ref={emailInputRef}
+            style={twrnc`flex-1 text-base text-white py-3.5`}
             placeholder="Enter your email"
-            placeholderTextColor="#8E8E93"
+            placeholderTextColor="#6b7280"
             value={email}
             onChangeText={(text) => {
               setEmail(text)
@@ -440,363 +551,401 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
             onBlur={() => setIsEmailFocused(false)}
             autoCapitalize="none"
             keyboardType="email-address"
+            returnKeyType="next"
+            onSubmitEditing={() => passwordInputRef.current?.focus()}
+            blurOnSubmit={false}
           />
-          {errors.email ? (
-            <View style={twrnc`flex-row items-center mt-2`}>
-              <FontAwesome name="exclamation-circle" size={14} color="#EF4444" />
-              <CustomText style={twrnc`text-red-500 ml-2 ${isSmallDevice ? "text-xs" : "text-sm"}`}>
-                {errors.email}
-              </CustomText>
-            </View>
-          ) : null}
         </View>
-
-        {/* Password Input */}
-        <View style={twrnc`mb-6`}>
-          <CustomText weight="medium" style={twrnc`text-white mb-2 ${isSmallDevice ? "text-sm" : "text-base"}`}>
-            Password
-          </CustomText>
-          <View style={twrnc`relative`}>
-            <TextInput
-              style={[
-                twrnc`bg-[#1E2538] rounded-xl p-4 pr-12 text-white ${
-                  isPasswordFocused ? "border-2 border-[#4361EE]" : "border border-gray-600"
-                } ${errors.password ? "border-red-500" : ""}`,
-                { fontFamily: "Poppins-Regular", fontSize: isSmallDevice ? 14 : 16 },
-              ]}
-              placeholder="Enter your password"
-              placeholderTextColor="#8E8E93"
-              value={password}
-              onChangeText={(text) => {
-                setPassword(text)
-                if (errors.password) setErrors((prev) => ({ ...prev, password: "" }))
-              }}
-              secureTextEntry={!isPasswordVisible}
-              onFocus={() => setIsPasswordFocused(true)}
-              onBlur={() => setIsPasswordFocused(false)}
-            />
-            <TouchableOpacity
-              style={twrnc`absolute right-4 top-4`}
-              onPress={() => setIsPasswordVisible(!isPasswordVisible)}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            >
-              <FontAwesome name={isPasswordVisible ? "eye" : "eye-slash"} size={16} color="#8E8E93" />
-            </TouchableOpacity>
-          </View>
-          {errors.password ? (
-            <View style={twrnc`flex-row items-center mt-2`}>
-              <FontAwesome name="exclamation-circle" size={14} color="#EF4444" />
-              <CustomText style={twrnc`text-red-500 ml-2 ${isSmallDevice ? "text-xs" : "text-sm"}`}>
-                {errors.password}
-              </CustomText>
-            </View>
-          ) : null}
-        </View>
-      </Animated.View>
-    </Animated.View>
-  )
-
-  // Render Step 2 - Body Metrics
-  const renderStep2 = () => (
-    <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}>
-      <View style={twrnc`mb-8`}>
-        <CustomText weight="bold" style={twrnc`text-white ${isSmallDevice ? "text-3xl" : "text-4xl"} mb-2`}>
-          Body Metrics
-        </CustomText>
-        <CustomText style={twrnc`text-[#8E8E93] ${isSmallDevice ? "text-sm" : "text-base"}`}>
-          Help us personalize your fitness journey
-        </CustomText>
+        {errors.email && <CustomText style={twrnc`text-red-400 text-xs mt-1.5 ml-1`}>{errors.email}</CustomText>}
       </View>
 
-      <Animated.View style={{ transform: [{ translateX: inputShakeAnim }] }}>
-        {/* Height Input */}
-        <View style={twrnc`flex-row mb-6`}>
-          <View style={twrnc`flex-1 mr-2`}>
-            <CustomText weight="medium" style={twrnc`text-white mb-2 ${isSmallDevice ? "text-sm" : "text-base"}`}>
-              Height (cm)
-            </CustomText>
-            <TextInput
-              style={[
-                twrnc`bg-[#1E2538] rounded-xl p-4 text-white ${
-                  isHeightFocused ? "border-2 border-[#4361EE]" : "border border-gray-600"
-                } ${errors.height ? "border-red-500" : ""}`,
-                { fontFamily: "Poppins-Regular", fontSize: isSmallDevice ? 14 : 16 },
-              ]}
-              placeholder="175"
-              placeholderTextColor="#8E8E93"
-              value={height}
-              onChangeText={(text) => {
-                setHeight(text)
-                if (errors.height) setErrors((prev) => ({ ...prev, height: "" }))
-              }}
-              onFocus={() => setIsHeightFocused(true)}
-              onBlur={() => setIsHeightFocused(false)}
-              keyboardType="numeric"
-            />
-            {errors.height ? (
-              <View style={twrnc`flex-row items-center mt-2`}>
-                <FontAwesome name="exclamation-circle" size={12} color="#EF4444" />
-                <CustomText style={twrnc`text-red-500 ml-1 text-xs`}>{errors.height}</CustomText>
-              </View>
-            ) : null}
-          </View>
-
-          {/* Weight Input */}
-          <View style={twrnc`flex-1 ml-2`}>
-            <CustomText weight="medium" style={twrnc`text-white mb-2 ${isSmallDevice ? "text-sm" : "text-base"}`}>
-              Weight (kg)
-            </CustomText>
-            <TextInput
-              style={[
-                twrnc`bg-[#1E2538] rounded-xl p-4 text-white ${
-                  isWeightFocused ? "border-2 border-[#4361EE]" : "border border-gray-600"
-                } ${errors.weight ? "border-red-500" : ""}`,
-                { fontFamily: "Poppins-Regular", fontSize: isSmallDevice ? 14 : 16 },
-              ]}
-              placeholder="70"
-              placeholderTextColor="#8E8E93"
-              value={weight}
-              onChangeText={(text) => {
-                setWeight(text)
-                if (errors.weight) setErrors((prev) => ({ ...prev, weight: "" }))
-              }}
-              onFocus={() => setIsWeightFocused(true)}
-              onBlur={() => setIsWeightFocused(false)}
-              keyboardType="numeric"
-            />
-            {errors.weight ? (
-              <View style={twrnc`flex-row items-center mt-2`}>
-                <FontAwesome name="exclamation-circle" size={12} color="#EF4444" />
-                <CustomText style={twrnc`text-red-500 ml-1 text-xs`}>{errors.weight}</CustomText>
-              </View>
-            ) : null}
-          </View>
+      {/* Password Input */}
+      <View style={twrnc`mb-4`}>
+        <CustomText style={twrnc`text-sm font-semibold text-gray-300 mb-2.5`}>Password</CustomText>
+        <View
+          style={[
+            twrnc`flex-row items-center bg-[#0f172a] rounded-xl px-4`,
+            isPasswordFocused && twrnc`border-2 border-indigo-500`,
+            errors.password && twrnc`border-2 border-red-500`,
+            !isPasswordFocused && !errors.password && twrnc`border border-gray-700`,
+          ]}
+        >
+          <Ionicons name="lock-closed-outline" size={20} color={isPasswordFocused ? "#6366f1" : "#6b7280"} style={twrnc`mr-3`} />
+          <TextInput
+            ref={passwordInputRef}
+            style={twrnc`flex-1 text-base text-white py-3.5`}
+            placeholder="Enter your password"
+            placeholderTextColor="#6b7280"
+            value={password}
+            onChangeText={(text) => {
+              setPassword(text)
+              setPasswordStrength(evaluatePasswordStrength(text))
+              if (errors.password) setErrors((prev) => ({ ...prev, password: "" }))
+            }}
+            secureTextEntry={!isPasswordVisible}
+            onFocus={() => {
+              setIsPasswordFocused(true)
+              setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100)
+            }}
+            onBlur={() => setIsPasswordFocused(false)}
+            returnKeyType="next"
+            onSubmitEditing={() => confirmPasswordInputRef.current?.focus()}
+            blurOnSubmit={false}
+          />
+          <TouchableOpacity
+            onPress={() => setIsPasswordVisible(!isPasswordVisible)}
+            style={twrnc`p-2`}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Ionicons name={isPasswordVisible ? "eye-off-outline" : "eye-outline"} size={22} color="#9ca3af" />
+          </TouchableOpacity>
         </View>
-
-        {/* BMI Display */}
-        {bmi && (
-          <View style={twrnc`bg-[#1E2538] p-4 rounded-xl border border-gray-600 mb-6`}>
-            <View style={twrnc`flex-row justify-between items-center mb-3`}>
-              <CustomText weight="medium" style={twrnc`text-white ${isSmallDevice ? "text-sm" : "text-base"}`}>
-                Your BMI
+        {errors.password && <CustomText style={twrnc`text-red-400 text-xs mt-1.5 ml-1`}>{errors.password}</CustomText>}
+        
+        {/* Password Strength Indicator */}
+        {password.length > 0 && (
+          <View style={twrnc`mt-3`}>
+            <View style={twrnc`flex-row items-center justify-between mb-2`}>
+              <CustomText style={twrnc`text-xs text-gray-400`}>Password Strength</CustomText>
+              <CustomText style={[twrnc`text-xs font-bold`, { color: passwordStrength.color }]}>
+                {passwordStrength.label}
               </CustomText>
-              <View style={twrnc`flex-row items-center`}>
-                <CustomText weight="bold" style={twrnc`text-white ${isSmallDevice ? "text-xl" : "text-2xl"} mr-2`}>
-                  {bmi}
-                </CustomText>
-                <View style={[twrnc`px-3 py-1 rounded-full`, { backgroundColor: getBmiCategory(bmi).color }]}>
-                  <CustomText weight="medium" style={twrnc`text-white text-xs`}>
-                    {getBmiCategory(bmi).category}
-                  </CustomText>
-                </View>
-              </View>
             </View>
-            {/* BMI Bar */}
-            <View style={twrnc`h-2 bg-[#2A2E3A] rounded-full overflow-hidden mb-2`}>
-              <View
-                style={[
-                  twrnc`h-2 rounded-full`,
-                  {
-                    width: `${Math.min((Number.parseFloat(bmi) / 40) * 100, 100)}%`,
-                    backgroundColor: getBmiCategory(bmi).color,
-                  },
-                ]}
-              />
+            <View style={twrnc`flex-row gap-1`}>
+              {[1, 2, 3, 4, 5, 6].map((bar) => (
+                <View
+                  key={bar}
+                  style={[
+                    twrnc`flex-1 h-1.5 rounded-full`,
+                    bar <= passwordStrength.score
+                      ? { backgroundColor: passwordStrength.color }
+                      : twrnc`bg-gray-700`,
+                  ]}
+                />
+              ))}
             </View>
-            {/* BMI Scale Labels */}
-            <View style={twrnc`flex-row justify-between`}>
-              <CustomText style={twrnc`text-[#8E8E93] text-xs`}>18.5</CustomText>
-              <CustomText style={twrnc`text-[#8E8E93] text-xs`}>25</CustomText>
-              <CustomText style={twrnc`text-[#8E8E93] text-xs`}>30</CustomText>
-              <CustomText style={twrnc`text-[#8E8E93] text-xs`}>40</CustomText>
+            <View style={twrnc`mt-2`}>
+              <CustomText style={twrnc`text-xs text-gray-500`}>
+                • At least 8 characters {password.length >= 8 && "✓"}
+              </CustomText>
+              <CustomText style={twrnc`text-xs text-gray-500`}>
+                • Uppercase & lowercase {/[a-z]/.test(password) && /[A-Z]/.test(password) && "✓"}
+              </CustomText>
+              <CustomText style={twrnc`text-xs text-gray-500`}>
+                • Number & special character {/[0-9]/.test(password) && /[^A-Za-z0-9]/.test(password) && "✓"}
+              </CustomText>
             </View>
           </View>
         )}
-      </Animated.View>
+      </View>
+
+      {/* Confirm Password Input */}
+      <View style={twrnc`mb-4`}>
+        <CustomText style={twrnc`text-sm font-semibold text-gray-300 mb-2.5`}>Confirm Password</CustomText>
+        <View
+          style={[
+            twrnc`flex-row items-center bg-[#0f172a] rounded-xl px-4`,
+            isConfirmPasswordFocused && twrnc`border-2 border-indigo-500`,
+            errors.confirmPassword && twrnc`border-2 border-red-500`,
+            !isConfirmPasswordFocused && !errors.confirmPassword && twrnc`border border-gray-700`,
+          ]}
+        >
+          <Ionicons name="lock-closed-outline" size={20} color={isConfirmPasswordFocused ? "#6366f1" : "#6b7280"} style={twrnc`mr-3`} />
+          <TextInput
+            ref={confirmPasswordInputRef}
+            style={twrnc`flex-1 text-base text-white py-3.5`}
+            placeholder="Re-enter your password"
+            placeholderTextColor="#6b7280"
+            value={confirmPassword}
+            onChangeText={(text) => {
+              setConfirmPassword(text)
+              if (errors.confirmPassword) setErrors((prev) => ({ ...prev, confirmPassword: "" }))
+            }}
+            secureTextEntry={!isConfirmPasswordVisible}
+            onFocus={() => {
+              setIsConfirmPasswordFocused(true)
+              setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100)
+            }}
+            onBlur={() => setIsConfirmPasswordFocused(false)}
+            returnKeyType="done"
+            onSubmitEditing={handleNextStep}
+          />
+          <TouchableOpacity
+            onPress={() => setIsConfirmPasswordVisible(!isConfirmPasswordVisible)}
+            style={twrnc`p-2`}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Ionicons name={isConfirmPasswordVisible ? "eye-off-outline" : "eye-outline"} size={22} color="#9ca3af" />
+          </TouchableOpacity>
+        </View>
+        {errors.confirmPassword && <CustomText style={twrnc`text-red-400 text-xs mt-1.5 ml-1`}>{errors.confirmPassword}</CustomText>}
+        {confirmPassword && password === confirmPassword && (
+          <View style={twrnc`flex-row items-center mt-1.5 ml-1`}>
+            <Ionicons name="checkmark-circle" size={14} color="#06D6A0" style={twrnc`mr-1`} />
+            <CustomText style={twrnc`text-xs text-green-400`}>Passwords match</CustomText>
+          </View>
+        )}
+      </View>
     </Animated.View>
   )
 
-  // Render Step 3 - Fitness Goals
+  const renderStep2 = () => (
+    <Animated.View
+      style={[
+        {
+          opacity: fadeAnim,
+          transform: [{ translateY: slideAnim }, { translateX: inputShakeAnim }],
+        },
+      ]}
+    >
+      <View style={twrnc`mb-6`}>
+        <CustomText style={twrnc`text-2xl font-bold text-white mb-2`}>Body Metrics</CustomText>
+        <CustomText style={twrnc`text-sm text-gray-400`}>Help us personalize your fitness journey</CustomText>
+      </View>
+
+      {/* Height Input */}
+      <View style={twrnc`mb-5`}>
+        <CustomText style={twrnc`text-sm font-semibold text-gray-300 mb-2.5`}>Height (cm)</CustomText>
+        <View
+          style={[
+            twrnc`flex-row items-center bg-[#0f172a] rounded-xl px-4`,
+            isHeightFocused && twrnc`border-2 border-indigo-500`,
+            errors.height && twrnc`border-2 border-red-500`,
+            !isHeightFocused && !errors.height && twrnc`border border-gray-700`,
+          ]}
+        >
+          <Ionicons name="resize-outline" size={20} color={isHeightFocused ? "#6366f1" : "#6b7280"} style={twrnc`mr-3`} />
+          <TextInput
+            style={twrnc`flex-1 text-base text-white py-3.5`}
+            placeholder="Enter your height"
+            placeholderTextColor="#6b7280"
+            value={height}
+            onChangeText={(text) => {
+              setHeight(text)
+              if (errors.height) setErrors((prev) => ({ ...prev, height: "" }))
+            }}
+            onFocus={() => setIsHeightFocused(true)}
+            onBlur={() => setIsHeightFocused(false)}
+            keyboardType="numeric"
+            returnKeyType="next"
+            onSubmitEditing={() => weightInputRef.current?.focus()}
+            blurOnSubmit={false}
+          />
+        </View>
+        {errors.height && <CustomText style={twrnc`text-red-400 text-xs mt-1.5 ml-1`}>{errors.height}</CustomText>}
+      </View>
+
+      {/* Weight Input */}
+      <View style={twrnc`mb-5`}>
+        <CustomText style={twrnc`text-sm font-semibold text-gray-300 mb-2.5`}>Weight (kg)</CustomText>
+        <View
+          style={[
+            twrnc`flex-row items-center bg-[#0f172a] rounded-xl px-4`,
+            isWeightFocused && twrnc`border-2 border-indigo-500`,
+            errors.weight && twrnc`border-2 border-red-500`,
+            !isWeightFocused && !errors.weight && twrnc`border border-gray-700`,
+          ]}
+        >
+          <Ionicons name="fitness-outline" size={20} color={isWeightFocused ? "#6366f1" : "#6b7280"} style={twrnc`mr-3`} />
+          <TextInput
+            ref={weightInputRef}
+            style={twrnc`flex-1 text-base text-white py-3.5`}
+            placeholder="Enter your weight"
+            placeholderTextColor="#6b7280"
+            value={weight}
+            onChangeText={(text) => {
+              setWeight(text)
+              if (errors.weight) setErrors((prev) => ({ ...prev, weight: "" }))
+            }}
+            onFocus={() => {
+              setIsWeightFocused(true)
+              setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100)
+            }}
+            onBlur={() => setIsWeightFocused(false)}
+            keyboardType="numeric"
+            returnKeyType="done"
+            onSubmitEditing={handleNextStep}
+          />
+        </View>
+        {errors.weight && <CustomText style={twrnc`text-red-400 text-xs mt-1.5 ml-1`}>{errors.weight}</CustomText>}
+      </View>
+
+      {/* BMI Display */}
+      {bmi && (
+        <View style={twrnc`bg-[#0f172a] rounded-xl p-4 border border-gray-700`}>
+          <CustomText style={twrnc`text-sm text-gray-400 mb-2`}>Your BMI</CustomText>
+          <View style={twrnc`flex-row items-center justify-between mb-3`}>
+            <CustomText style={twrnc`text-3xl font-bold text-white`}>{bmi}</CustomText>
+            <View style={[twrnc`px-3 py-1.5 rounded-full`, { backgroundColor: getBmiCategory(bmi).color + "20" }]}>
+              <CustomText style={[twrnc`text-sm font-semibold`, { color: getBmiCategory(bmi).color }]}>
+                {getBmiCategory(bmi).category}
+              </CustomText>
+            </View>
+          </View>
+          
+          {/* BMI Bar */}
+          <View style={twrnc`h-2 bg-gray-700 rounded-full overflow-hidden mb-2`}>
+            <View style={twrnc`flex-row h-full`}>
+              <View style={[twrnc`flex-1`, { backgroundColor: "#FFD166" }]} />
+              <View style={[twrnc`flex-1`, { backgroundColor: "#06D6A0" }]} />
+              <View style={[twrnc`flex-1`, { backgroundColor: "#FFC107" }]} />
+              <View style={[twrnc`flex-1`, { backgroundColor: "#EF476F" }]} />
+            </View>
+          </View>
+          
+          {/* BMI Scale Labels */}
+          <View style={twrnc`flex-row justify-between`}>
+            <CustomText style={twrnc`text-xs text-gray-500`}>18.5</CustomText>
+            <CustomText style={twrnc`text-xs text-gray-500`}>25</CustomText>
+            <CustomText style={twrnc`text-xs text-gray-500`}>30</CustomText>
+            <CustomText style={twrnc`text-xs text-gray-500`}>40</CustomText>
+          </View>
+        </View>
+      )}
+    </Animated.View>
+  )
+
   const renderStep3 = () => (
-    <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}>
-      <View style={twrnc`mb-8`}>
-        <CustomText weight="bold" style={twrnc`text-white ${isSmallDevice ? "text-3xl" : "text-4xl"} mb-2`}>
-          Fitness Goals
-        </CustomText>
-        <CustomText style={twrnc`text-[#8E8E93] ${isSmallDevice ? "text-sm" : "text-base"}`}>
-          Select your primary fitness goal
-        </CustomText>
+    <Animated.View
+      style={[
+        {
+          opacity: fadeAnim,
+          transform: [{ translateY: slideAnim }],
+        },
+      ]}
+    >
+      <View style={twrnc`mb-6`}>
+        <CustomText style={twrnc`text-2xl font-bold text-white mb-2`}>Fitness Goals</CustomText>
+        <CustomText style={twrnc`text-sm text-gray-400`}>Select your primary fitness goal</CustomText>
       </View>
 
       {/* Goals List */}
-      <View style={twrnc`mb-6`}>
-        {fitnessGoals.map((goal) => (
-          <TouchableOpacity
-            key={goal.id}
-            style={twrnc`flex-row items-center p-4 rounded-xl mb-3 border ${
-              fitnessGoal === goal.id ? "bg-[#4361EE] border-[#4361EE]" : "bg-[#1E2538] border-gray-600"
-            }`}
-            onPress={() => setFitnessGoal(goal.id)}
-            activeOpacity={0.8}
-          >
-            <View
-              style={[
-                twrnc`w-12 h-12 rounded-full items-center justify-center mr-4`,
-                { backgroundColor: fitnessGoal === goal.id ? "rgba(255,255,255,0.2)" : goal.color },
-              ]}
-            >
-              <FontAwesome name={goal.icon} size={20} color="#FFFFFF" />
-            </View>
-            <View style={twrnc`flex-1`}>
-              <CustomText weight="semibold" style={twrnc`text-white ${isSmallDevice ? "text-base" : "text-lg"} mb-1`}>
-                {goal.label}
-              </CustomText>
-              <CustomText style={twrnc`text-gray-400 ${isSmallDevice ? "text-xs" : "text-sm"}`}>
-                {goal.id === "weight_loss" && "Focus on burning calories and losing weight"}
-                {goal.id === "muscle_gain" && "Build strength and increase muscle mass"}
-                {goal.id === "endurance" && "Improve cardiovascular fitness and stamina"}
-                {goal.id === "general_fitness" && "Overall health and wellness improvement"}
-              </CustomText>
-            </View>
-            {/* Selection Indicator */}
-            <View
-              style={twrnc`w-6 h-6 rounded-full border-2 ${
-                fitnessGoal === goal.id ? "border-white" : "border-gray-400"
-              } items-center justify-center`}
-            >
-              {fitnessGoal === goal.id && <View style={twrnc`w-3 h-3 rounded-full bg-white`} />}
-            </View>
-          </TouchableOpacity>
-        ))}
-      </View>
-
-      {/* Info Box */}
-      <View style={twrnc`bg-[#1E2538] p-4 rounded-xl border border-gray-600 mb-6`}>
-        <View style={twrnc`flex-row items-start`}>
-          <View style={twrnc`bg-[#4361EE] p-2 rounded-full mr-3`}>
-            <FontAwesome name="info" size={14} color="#FFFFFF" />
+      {fitnessGoals.map((goal) => (
+        <TouchableOpacity
+          key={goal.id}
+          onPress={() => setFitnessGoal(goal.id)}
+          activeOpacity={0.8}
+          style={[
+            twrnc`bg-[#0f172a] rounded-xl p-4 mb-4 flex-row items-center border-2`,
+            fitnessGoal === goal.id ? { borderColor: goal.color } : twrnc`border-gray-700`,
+          ]}
+        >
+          <View style={[twrnc`w-12 h-12 rounded-full items-center justify-center mr-4`, { backgroundColor: goal.color + "20" }]}>
+            <Ionicons name={goal.icon} size={24} color={goal.color} />
           </View>
           <View style={twrnc`flex-1`}>
-            <CustomText weight="medium" style={twrnc`text-white mb-1 ${isSmallDevice ? "text-sm" : "text-base"}`}>
-              Personalized Experience
-            </CustomText>
-            <CustomText style={twrnc`text-gray-400 ${isSmallDevice ? "text-xs" : "text-sm"}`}>
-              Your fitness goal helps us tailor workout recommendations, challenges, and progress tracking to your
-              specific needs.
+            <CustomText style={twrnc`text-base font-bold text-white mb-1`}>{goal.label}</CustomText>
+            <CustomText style={twrnc`text-xs text-gray-400`}>
+              {goal.id === "weight_loss" && "Focus on burning calories and losing weight"}
+              {goal.id === "muscle_gain" && "Build strength and increase muscle mass"}
+              {goal.id === "endurance" && "Improve cardiovascular fitness and stamina"}
+              {goal.id === "general_fitness" && "Overall health and wellness improvement"}
             </CustomText>
           </View>
+          {fitnessGoal === goal.id && <Ionicons name="checkmark-circle" size={28} color={goal.color} />}
+        </TouchableOpacity>
+      ))}
+
+      {/* Info Box */}
+      <View style={twrnc`bg-indigo-900 bg-opacity-30 rounded-xl p-4 border border-indigo-700 mt-2`}>
+        <View style={twrnc`flex-row items-center mb-2`}>
+          <Ionicons name="information-circle" size={20} color="#818cf8" style={twrnc`mr-2`} />
+          <CustomText style={twrnc`text-sm font-bold text-indigo-300`}>Personalized Experience</CustomText>
         </View>
+        <CustomText style={twrnc`text-xs text-indigo-200`}>
+          Your fitness goal helps us tailor workout recommendations, challenges, and progress tracking to your specific needs.
+        </CustomText>
       </View>
     </Animated.View>
   )
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === "android" ? "padding" : "height"}
-      style={twrnc`flex-1 bg-[#121826] p-5`}
-    >
-      <ScrollView contentContainerStyle={twrnc`flex-grow`} keyboardShouldPersistTaps="handled">
-        {/* Header */}
-        <Animated.View
-          style={[
-            twrnc`flex-row items-center mb-6`,
-            { transform: [{ translateY: headerSlideAnim }], opacity: fadeAnim },
+    <View style={twrnc`flex-1 bg-[#0f172a]`}>
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+        <ScrollView
+          ref={scrollViewRef}
+          contentContainerStyle={[
+            twrnc`flex-grow px-6 py-8`,
+            { paddingBottom: keyboardHeight > 0 ? keyboardHeight + 20 : 40 }
           ]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          bounces={false}
         >
-          <TouchableOpacity
-            style={twrnc`p-2`}
-            onPress={handlePrevStep}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          {/* Header */}
+          <Animated.View
+            style={[
+              twrnc`mb-6`,
+              { opacity: fadeAnim, transform: [{ translateY: headerSlideAnim }] },
+            ]}
           >
-            <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
-          </TouchableOpacity>
-          <View style={twrnc`flex-1 items-center`}>
-            <CustomText weight="medium" style={twrnc`text-white ${isSmallDevice ? "text-lg" : "text-xl"}`}>
-              {currentStep === 1 ? "Account Details" : currentStep === 2 ? "Body Metrics" : "Fitness Goals"}
-            </CustomText>
+            <View style={twrnc`flex-row items-center justify-between mb-4`}>
+              <TouchableOpacity onPress={handlePrevStep} style={twrnc`p-2`}>
+                <Ionicons name="arrow-back" size={24} color="white" />
+              </TouchableOpacity>
+              <CustomText style={twrnc`text-lg font-bold text-white`}>
+                {currentStep === 1 ? "Account Details" : currentStep === 2 ? "Body Metrics" : "Fitness Goals"}
+              </CustomText>
+              <View style={twrnc`w-10`} />
+            </View>
+
+            {/* Step Indicator */}
+            {renderStepIndicator()}
+          </Animated.View>
+
+          {/* Form Card */}
+          <View style={twrnc`bg-[#1e293b] rounded-3xl p-6 shadow-2xl mb-6`}>
+            {currentStep === 1 && renderStep1()}
+            {currentStep === 2 && renderStep2()}
+            {currentStep === 3 && renderStep3()}
           </View>
-          <View style={twrnc`w-10`} />
-        </Animated.View>
 
-        {/* Step Indicator */}
-        <Animated.View style={[{ opacity: fadeAnim }]}>{renderStepIndicator()}</Animated.View>
-
-        {/* Step Content */}
-        {currentStep === 1 && renderStep1()}
-        {currentStep === 2 && renderStep2()}
-        {currentStep === 3 && renderStep3()}
-
-        {/* Buttons */}
-        <Animated.View style={[twrnc`mt-8`, { opacity: fadeAnim }]}>
-          {currentStep < 3 ? (
-            <Animated.View style={{ transform: [{ scale: buttonScaleAnim }] }}>
+          {/* Buttons */}
+          <Animated.View style={{ transform: [{ scale: buttonScaleAnim }] }}>
+            {currentStep < 3 ? (
               <TouchableOpacity
-                style={twrnc`bg-[#4361EE] py-4 rounded-xl items-center flex-row justify-center`}
                 onPress={handleNextStep}
+                style={twrnc`bg-indigo-600 rounded-xl py-4 items-center shadow-xl`}
                 activeOpacity={0.8}
               >
-                <CustomText weight="bold" style={twrnc`text-white ${isSmallDevice ? "text-base" : "text-lg"} mr-2`}>
-                  Next Step
-                </CustomText>
-                <FontAwesome name="arrow-right" size={16} color="white" />
+                <CustomText style={twrnc`text-white text-base font-bold`}>Next Step</CustomText>
               </TouchableOpacity>
-            </Animated.View>
-          ) : (
-            <Animated.View style={{ transform: [{ scale: buttonScaleAnim }] }}>
+            ) : (
               <TouchableOpacity
-                style={twrnc`bg-[#4361EE] py-4 rounded-xl items-center flex-row justify-center ${
-                  isLoading ? "opacity-70" : ""
-                }`}
                 onPress={validateAndSignUp}
                 disabled={isLoading}
+                style={[twrnc`bg-indigo-600 rounded-xl py-4 items-center shadow-xl flex-row justify-center`, isLoading && twrnc`opacity-70`]}
                 activeOpacity={0.8}
               >
-                {isLoading ? (
-                  <ActivityIndicator color="#fff" size="small" style={twrnc`mr-2`} />
-                ) : (
-                  <FontAwesome name="user-plus" size={18} color="white" style={twrnc`mr-2`} />
-                )}
-                <CustomText weight="bold" style={twrnc`text-white ${isSmallDevice ? "text-base" : "text-lg"}`}>
+                {isLoading && <ActivityIndicator size="small" color="white" style={twrnc`mr-2`} />}
+                <CustomText style={twrnc`text-white text-base font-bold`}>
                   {isLoading ? "Creating Account..." : "Create Account"}
                 </CustomText>
               </TouchableOpacity>
-            </Animated.View>
-          )}
+            )}
+          </Animated.View>
 
           {/* Sign In Link */}
           {currentStep === 1 && (
-            <View style={twrnc`bg-[#1E2538] p-4 rounded-xl border border-gray-700 mt-4`}>
-              <View style={twrnc`flex-row justify-center items-center`}>
-                <CustomText style={twrnc`text-[#8E8E93] ${isSmallDevice ? "text-sm" : "text-base"}`}>
-                  Already have an account?
-                </CustomText>
-                <TouchableOpacity onPress={() => navigateToSignIn()} style={twrnc`ml-1`} activeOpacity={0.7}>
-                  <CustomText weight="bold" style={twrnc`text-[#FFC107] ${isSmallDevice ? "text-sm" : "text-base"}`}>
-                    Sign In
-                  </CustomText>
-                </TouchableOpacity>
-              </View>
+            <View style={twrnc`flex-row items-center justify-center mt-6`}>
+              <CustomText style={twrnc`text-gray-400 text-sm`}>Already have an account? </CustomText>
+              <TouchableOpacity onPress={() => navigateToSignIn()} activeOpacity={0.7}>
+                <CustomText style={twrnc`text-sm font-bold text-[#FFC107]`}>Sign In</CustomText>
+              </TouchableOpacity>
             </View>
           )}
-        </Animated.View>
+        </ScrollView>
+      </TouchableWithoutFeedback>
 
-        {/* Modal */}
-        <CustomModal
-          visible={modalVisible}
-          title={modalTitle}
-          message={modalMessage}
-          onClose={handleModalClose}
-          icon={
-            modalType === "success"
-              ? "check-circle"
-              : modalType === "warning"
-              ? "exclamation-triangle"
-              : "exclamation-circle"
-          }
-          type={modalType}
-        />
-      </ScrollView>
-    </KeyboardAvoidingView>
+      {/* Modal */}
+      <CustomModal
+        visible={modalVisible}
+        title={modalTitle}
+        message={modalMessage}
+        type={modalType}
+        onClose={handleModalClose}
+      />
+    </View>
   )
 }
 

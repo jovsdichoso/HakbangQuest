@@ -6,6 +6,7 @@ import CustomText from "../CustomText"
 import Ionicons from "react-native-vector-icons/Ionicons"
 import { doc, getDoc } from "firebase/firestore"
 import { db } from "../../firebaseConfig"
+import { finalizeTimeChallenge, checkAllParticipantsSubmitted  } from "../../utils/CommunityBackend" // Import finalization function
 
 const DEFAULT_AVATAR = "https://res.cloudinary.com/dljywnlvh/image/upload/v1747077348/default-avatar_jkbpwv.jpg"
 
@@ -24,6 +25,7 @@ const DuoVsModal = ({
     const [actualPlayer1, setActualPlayer1] = useState(player1 || {})
     const [actualPlayer2, setActualPlayer2] = useState(player2 || {})
     const [isLoading, setIsLoading] = useState(false)
+    const [finalizationResult, setFinalizationResult] = useState(null) // State to store finalization result
 
     // Animation refs
     const fadeAnim = useRef(new Animated.Value(0)).current
@@ -88,82 +90,79 @@ const DuoVsModal = ({
                         setActualPrizePool(challengeData.stakeXP)
                     }
 
-                    const needPlayer1 = !actualPlayer1?.displayName && !actualPlayer1?.username
-                    const needPlayer2 = !actualPlayer2?.displayName && !actualPlayer2?.username
+                    const participants = challengeData.participants || []
+                    const creatorId = challengeData.createdBy
+                    const opponentId = participants.find((p) => p !== creatorId)
 
-                    if (needPlayer1 || needPlayer2) {
-                        const participants = challengeData.participants || []
-                        const creatorId = challengeData.createdBy
-                        const opponentId = participants.find((p) => p !== creatorId)
+                    // Determine which player is which based on the actual fetched data vs props
+                    const propPlayer1Id = player1.id || player1.uid || player1.createdBy;
+                    const propPlayer2Id = player2.id || player2.uid;
+                    
+                    const p1Id = participants[0];
+                    const p2Id = participants[1];
 
-                        console.log('DuoVsModal: Creator ID:', creatorId, 'Opponent ID:', opponentId)
+                    const fetchPromises = [];
 
-                        const fetchPromises = []
+                    const needPlayer1Fetch = !actualPlayer1?.displayName && !actualPlayer1?.username && p1Id;
+                    const needPlayer2Fetch = !actualPlayer2?.displayName && !actualPlayer2?.username && p2Id;
 
-                        if (needPlayer1 && creatorId) {
-                            fetchPromises.push(
-                                getDoc(doc(db, "users", creatorId)).then(snap => {
-                                    if (snap.exists()) {
-                                        const userData = snap.data()
-                                        console.log('DuoVsModal: Player1 data fetched:', userData)
-                                        return {
-                                            type: 'player1',
-                                            data: {
-                                                id: creatorId,
-                                                displayName: userData.displayName || userData.username || userData.name || 'Player 1',
-                                                avatar: userData.avatar || userData.photoURL || DEFAULT_AVATAR,
-                                                challengeId: challengeId,
-                                                ...userData
-                                            }
-                                        }
-                                    }
-                                    return { type: 'player1', data: null }
-                                }).catch(error => {
-                                    console.error('Error fetching player1:', error)
-                                    return { type: 'player1', data: null }
-                                })
-                            )
-                        }
-
-                        if (needPlayer2 && opponentId) {
-                            fetchPromises.push(
-                                getDoc(doc(db, "users", opponentId)).then(snap => {
-                                    if (snap.exists()) {
-                                        const userData = snap.data()
-                                        console.log('DuoVsModal: Player2 data fetched:', userData)
-                                        return {
-                                            type: 'player2',
-                                            data: {
-                                                id: opponentId,
-                                                displayName: userData.displayName || userData.username || userData.name || 'Player 2',
-                                                avatar: userData.avatar || userData.photoURL || DEFAULT_AVATAR,
-                                                challengeId: challengeId,
-                                                ...userData
-                                            }
-                                        }
-                                    }
-                                    return { type: 'player2', data: null }
-                                }).catch(error => {
-                                    console.error('Error fetching player2:', error)
-                                    return { type: 'player2', data: null }
-                                })
-                            )
-                        }
-
-                        if (fetchPromises.length > 0) {
-                            const results = await Promise.all(fetchPromises)
-
-                            results.forEach(result => {
-                                if (result.data) {
-                                    if (result.type === 'player1') {
-                                        setActualPlayer1(result.data)
-                                    } else if (result.type === 'player2') {
-                                        setActualPlayer2(result.data)
+                    const fetchUser = async (userId, playerType) => {
+                        try {
+                            const snap = await getDoc(doc(db, "users", userId));
+                            if (snap.exists()) {
+                                const userData = snap.data();
+                                return {
+                                    type: playerType,
+                                    data: {
+                                        id: userId,
+                                        displayName: userData.displayName || userData.username || userData.name || `Player ${playerType === 'player1' ? '1' : '2'}`,
+                                        avatar: userData.avatar || userData.photoURL || DEFAULT_AVATAR,
+                                        ...userData
                                     }
                                 }
-                            })
+                            }
+                        } catch (error) {
+                            console.error(`Error fetching user ${userId}:`, error)
+                        }
+                        return null;
+                    }
+
+                    if (needPlayer1Fetch) {
+                        fetchPromises.push(fetchUser(p1Id, 'player1'));
+                    }
+                    if (needPlayer2Fetch) {
+                        fetchPromises.push(fetchUser(p2Id, 'player2'));
+                    }
+
+                    if (fetchPromises.length > 0) {
+                        const results = await Promise.all(fetchPromises);
+
+                        results.forEach(result => {
+                            if (result?.data) {
+                                if (result.type === 'player1') {
+                                    setActualPlayer1(result.data)
+                                } else if (result.type === 'player2') {
+                                    setActualPlayer2(result.data)
+                                }
+                            }
+                        })
+                    }
+
+                    // Check for immediate finalization criteria
+                    if (challengeData.status?.global === 'active' && checkAllParticipantsSubmitted(challengeData)) {
+                        console.log('DuoVsModal: Finalization criteria met! Triggering transaction.');
+                        
+                        // CRITICAL FIX: Finalize the challenge here to determine the winner and award XP before navigation
+                        try {
+                            const result = await finalizeTimeChallenge(challengeId);
+                            setFinalizationResult(result);
+                            console.log('DuoVsModal: Finalization result:', result);
+                        } catch (error) {
+                            console.error('DuoVsModal: Finalization failed during check:', error);
+                            setFinalizationResult({ success: false, message: `Finalization failed: ${error.message}` });
                         }
                     }
+
                 } else {
                     console.warn('DuoVsModal: Challenge document not found:', challengeId)
                 }
@@ -171,31 +170,17 @@ const DuoVsModal = ({
                 console.error("DuoVsModal: Error fetching challenge data:", error)
             } finally {
                 setIsLoading(false)
+                // Start animation regardless of loading result
+                startAnimationSequence();
             }
         }
 
         if (visible) {
-            const needsFetch =
-                !actualPrizePool ||
-                (!actualPlayer1?.displayName && !actualPlayer1?.username) ||
-                (!actualPlayer2?.displayName && !actualPlayer2?.username)
-
-            console.log('DuoVsModal: Needs fetch?', needsFetch, {
-                challengeId,
-                actualPrizePool,
-                player1HasName: !!(actualPlayer1?.displayName || actualPlayer1?.username),
-                player2HasName: !!(actualPlayer2?.displayName || actualPlayer2?.username)
-            })
-
-            if (needsFetch && challengeId) {
-                fetchChallengeData()
-            } else {
-                startAnimationSequence()
-            }
+            fetchChallengeData()
         } else {
             resetAnimations()
         }
-    }, [visible, challengeId, actualPrizePool, actualPlayer1?.displayName, actualPlayer1?.username, actualPlayer2?.displayName, actualPlayer2?.username])
+    }, [visible, challengeId, stakeXP])
 
     const resetAnimations = () => {
         setAnimationStage(0)
@@ -365,29 +350,20 @@ const DuoVsModal = ({
             ]).start()
         }, 3000)
 
-        // Stage 5: Final message (3800ms)
+        // Stage 5: Final message and navigation (3800ms)
         setTimeout(() => {
             setAnimationStage(5);
 
             setTimeout(() => {
                 if (onClose) onClose();
 
-                if (typeof navigateToActivityWithChallenge === "function") {
-                    (async () => {
-                        try {
-                            const challengeRef = doc(db, "challenges", challengeId);
-                            const snap = await getDoc(challengeRef);
-                            if (snap.exists()) {
-                                const fullChallenge = { id: snap.id, ...snap.data() };
-                                console.log("Navigating to ActivityScreen with challenge:", fullChallenge);
-                                navigateToActivityWithChallenge(fullChallenge, true);
-                            } else {
-                                console.warn("DuoVsModal: Challenge not found for ID", challengeId);
-                            }
-                        } catch (error) {
-                            console.error("DuoVsModal navigation error:", error);
-                        }
-                    })();
+                if (finalizationResult?.success === false && finalizationResult?.message) {
+                    alert(finalizationResult.message);
+                    return;
+                }
+
+                if (typeof navigateToActivityWithChallenge === "function" && fullChallenge) {
+                    navigateToActivityWithChallenge(fullChallenge, true); // Navigate to the activity screen
                 }
             }, 1500);
         }, 3800);
@@ -671,10 +647,12 @@ const DuoVsModal = ({
                                 <Ionicons name="shield-checkmark" size={24} color="#10B981" />
                             </View>
                             <CustomText weight="bold" style={styles.successText}>
-                                Challenge Activated!
+                                {finalizationResult?.success === false ? "ERROR OCCURRED" : "Challenge Activated!"}
                             </CustomText>
                             <CustomText style={styles.successSubtext}>
-                                Stakes have been locked. May the best player win! 🏆
+                                {finalizationResult?.success === false 
+                                    ? finalizationResult.message 
+                                    : "Stakes have been locked. May the best player win! 🏆"}
                             </CustomText>
                         </View>
                     )}

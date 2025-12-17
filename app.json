@@ -2,7 +2,6 @@
   "expo": {
     "name": "HakbangQuest",
     "slug": "HakbangQuest",
-    "owner": "sdi23",
     "version": "1.0.0",
     "icon": "./assets/image/icon.png",
     "assetBundlePatterns": [
@@ -51,7 +50,7 @@
     },
     "extra": {
       "eas": {
-        "projectId": "015c9cba-ad36-4cba-af79-9131e8c73ba2"
+        "projectId": "a74f26e2-cc0c-4544-b860-af2692a8c3f8"
       }
     }
   }

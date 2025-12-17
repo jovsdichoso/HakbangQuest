@@ -184,20 +184,25 @@ export const BADGE_COLORS = {
 // Calculate user stats for badge evaluation
 export const calculateBadgeStats = (activitiesData, questHistory = []) => {
   const stats = {
-    // Quest stats
-    totalQuestsCompleted: questHistory.filter((q) => q.completed).length,
-    strengthQuestsCompleted: questHistory.filter((q) => q.completed && q.category === "strength").length,
-    enduranceQuestsCompleted: questHistory.filter((q) => q.completed && q.category === "endurance").length,
-    fitnessQuestsCompleted: questHistory.filter((q) => q.completed && q.category === "fitness").length,
+    // FIX 1: Rely on questHistory length for total completed quests
+    totalQuestsCompleted: questHistory.length,
+
+    // FIX 2: Filter quest history directly by category field
+    strengthQuestsCompleted: questHistory.filter((q) => q.category === "strength").length,
+    enduranceQuestsCompleted: questHistory.filter((q) => q.category === "endurance").length,
+    fitnessQuestsCompleted: questHistory.filter((q) => q.category === "fitness").length,
 
     // Activity stats
     totalSteps: activitiesData.reduce((sum, act) => sum + (act.steps || 0), 0),
-    totalDistance: activitiesData.reduce((sum, act) => sum + (act.distance || 0), 0),
+    // NOTE: We assume act.distance is in meters in activityData, but badge conditions
+    // assume km (e.g., 10km). We must unify the unit here or adjust badge conditions.
+    // Assuming badge conditions are in KM, we must convert. (act.distance / 1000)
+    totalDistance: activitiesData.reduce((sum, act) => sum + (act.distance || 0) / 1000, 0),
     totalReps: activitiesData.reduce((sum, act) => sum + (act.reps || 0), 0),
 
-    // Daily maximums
+    // Daily maximums (must also be converted to KM if act.distance is in meters)
     maxDailySteps: Math.max(...activitiesData.map((act) => act.steps || 0), 0),
-    maxDailyDistance: Math.max(...activitiesData.map((act) => act.distance || 0), 0),
+    maxDailyDistance: Math.max(...activitiesData.map((act) => (act.distance || 0) / 1000), 0),
     maxDailyReps: Math.max(...activitiesData.map((act) => act.reps || 0), 0),
 
     // Streak calculation
@@ -217,7 +222,9 @@ const calculateLongestStreak = (questHistory) => {
   // Group by date and check if any quest was completed each day
   const dailyCompletions = {}
   questHistory.forEach((quest) => {
-    if (quest.completed && quest.completedAt) {
+    // FIX 3: Simplify streak check to rely only on the presence of completedAt,
+    // as the query should ensure it's a completed quest document.
+    if (quest.completedAt) {
       const date = quest.completedAt.toDate
         ? quest.completedAt.toDate().toDateString()
         : new Date(quest.completedAt).toDateString()
@@ -225,23 +232,37 @@ const calculateLongestStreak = (questHistory) => {
     }
   })
 
-  const dates = Object.keys(dailyCompletions).sort()
+  const dates = Object.keys(dailyCompletions).map(d => new Date(d)).sort((a, b) => a - b)
   let currentStreak = 0
   let maxStreak = 0
+
+  // Note: The previous sorting method `Object.keys(dailyCompletions).sort()` sorts lexicographically.
+  // We must parse to Date objects to sort temporally. (This is a subtle fix for streak calculation)
 
   for (let i = 0; i < dates.length; i++) {
     if (i === 0) {
       currentStreak = 1
     } else {
-      const prevDate = new Date(dates[i - 1])
-      const currentDate = new Date(dates[i])
-      const dayDiff = (currentDate - prevDate) / (1000 * 60 * 60 * 24)
+      const prevDate = dates[i - 1]
+      const currentDate = dates[i]
 
-      if (dayDiff === 1) {
-        currentStreak++
-      } else {
-        currentStreak = 1
+      // Calculate day difference by normalizing to midnight (using toDateString for comparison)
+      const prevDateString = prevDate.toDateString()
+      const currentDateString = currentDate.toDateString()
+
+      if (prevDateString !== currentDateString) {
+        // Calculate day difference accurately for streak (ignoring time)
+        const dayDiff = Math.round((currentDate.getTime() - prevDate.getTime()) / (1000 * 60 * 60 * 24))
+
+        if (dayDiff === 1) {
+          currentStreak++
+        } else {
+          // Reset streak if gap is > 1 day
+          currentStreak = 1
+        }
       }
+      // If dates are the same (shouldn't happen with the dailyCompletions map, but harmless if so), 
+      // the streak count doesn't change.
     }
     maxStreak = Math.max(maxStreak, currentStreak)
   }
@@ -343,7 +364,8 @@ export const completeQuest = async (questId, questData, activityData) => {
       userId: user.uid,
       completed: true,
       completedAt: new Date(),
-      category: questData.category,
+      // FIX 4: Ensure category is explicitly saved with a fallback
+      category: questData.category || "unknown",
       type: questData.activityType,
       xpEarned: questData.xpReward,
       goalAchieved: activityData.value >= questData.goal,

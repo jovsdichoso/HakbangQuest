@@ -1,6 +1,4 @@
-// Enhanced utility functions for activity calculations
 
-// Calculate distance between two coordinates using the Haversine formula
 export const calculateDistance = (lat1, lon1, lat2, lon2) => {
   if (
     lat1 == null || lon1 == null || lat2 == null || lon2 == null ||
@@ -23,7 +21,6 @@ export const calculateDistance = (lat1, lon1, lat2, lon2) => {
   return Number.parseFloat((R * c).toFixed(2));
 };[2]
 
-// Calculate pace in minutes per kilometer
 export const calculatePace = (distance, duration) => {
   if (!distance || !duration || distance <= 0 || duration <= 0) return 0;
   const distanceInKm = distance / 1000;

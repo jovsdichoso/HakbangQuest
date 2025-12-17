@@ -6,7 +6,6 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
-  Modal,
   RefreshControl,
   TextInput,
   FlatList,
@@ -16,26 +15,26 @@ import twrnc from "twrnc"
 import CustomText from "../components/CustomText"
 import { Ionicons } from "@expo/vector-icons"
 import { db, auth } from "../firebaseConfig"
-import { getDoc } from "firebase/firestore"
 import CustomModal from "../components/CustomModal"
 import NotificationService from "../services/NotificationService"
 import AnimatedButton from "../components/buttons/AnimatedButton"
 import ChallengeDetailsModal from "../components/modals/ChallengeDetailsModal"
 import CreateChallengeModal from "../components/modals/CreateChallengeModal"
 import DuoVsModal from "../components/modals/DuoVsModal"
-import XPManager from "../utils/xpManager" // Import XPManager
+import AddFriendModal from "../components/modals/AddFriendModal"
+import FriendProfileModal from "../components/modals/FriendProfileModal"
+import EditChallengeModal from "../components/modals/EditChallengeModal"
 
-// Import icons
+// Icon imports
 import WalkingIcon from "../components/icons/walking.png"
 import RunningIcon from "../components/icons/running.png"
 import CyclingIcon from "../components/icons/cycling.png"
 import JoggingIcon from "../components/icons/jogging.png"
 import PushupIcon from "../components/icons/pushup.png"
 
-// Import backend functions
+// Backend function imports
 import {
-  DIFFICULTY_LEVELS,
-  CHALLENGE_GROUP_TYPES, // Import the new constant
+  CHALLENGE_GROUP_TYPES,
   loadUserProfile,
   loadInitialFriends,
   loadFriendsPage,
@@ -46,27 +45,26 @@ import {
   searchUsers,
   loadChallenges,
   createChallenge,
-  createCustomChallenge,
   joinChallenge,
   startChallenge,
   loadLeaderboardData,
   setUserOnlineStatus,
   setUserOfflineStatus,
+  formatTime,
   formatLastActive,
   formatActivityDescription,
   deleteChallenge,
-  getUserChallenges,
+  acceptChallengeInvite,
+  loadPastChallenges,
 } from "../utils/CommunityBackend"
 
 import { getActivityDisplayInfo } from "../utils/activityDisplayMapper"
 
-// Import firebase functions
-import { doc, updateDoc, serverTimestamp } from "firebase/firestore"
+// Firebase imports
+import { doc, updateDoc, serverTimestamp, getDoc } from 'firebase/firestore';
 
-// Default avatar image to use when user has no avatar
-const DEFAULT_AVATAR = "https://res.cloudinary.com/dljywnlvh/image/upload/v1747077348/default-avatar_jkbpwv.jpg"
+const DEFAULT_AVATAR = "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y"
 
-// Debounce function
 const useDebounce = (value, delay) => {
   const [debouncedValue, setDebouncedValue] = useState(value)
   useEffect(() => {
@@ -80,7 +78,8 @@ const useDebounce = (value, delay) => {
   return debouncedValue
 }
 
-const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} }) => {
+const CommunityScreen = ({ navigateToDashboard, navigateToActivity, navigateToProfile, params = {} }) => {
+  // --- STATE HOOKS (Must be unconditional) ---
   const [activeTab, setActiveTab] = useState("friends")
   const [searchQuery, setSearchQuery] = useState("")
   const [friends, setFriends] = useState([])
@@ -98,8 +97,7 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
   const [isFriendProfileVisible, setIsFriendProfileVisible] = useState(false)
   const [isCreateChallengeModalVisible, setIsCreateChallengeModalVisible] = useState(false)
   const [isEditChallengeModalVisible, setIsEditChallengeModalVisible] = useState(false)
-  const [onlineUsers, setOnlineUsers] = useState({})
-  const [participantsData, setParticipantsData] = useState({})
+  const [participantsData, setParticipantsData] = useState({}) // User data for challenge participants
   const [showVsModal, setShowVsModal] = useState(false)
   const [startingChallenge, setStartingChallenge] = useState(false)
   const [vsModalData, setVsModalData] = useState({ visible: false })
@@ -113,58 +111,38 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     durationHours: 0,
     durationMinutes: 0,
     durationSeconds: 0,
-    endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // default: 7 days later
-    groupType: "duo", // ✅ start with duo instead of public
+    endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    groupType: "duo",
     selectedFriendsForGroupChallenge: [],
-    stakeXP: 100, // 💰 stake per participant
+    stakeXP: 100,
   })
 
   const [friendsPage, setFriendsPage] = useState(1)
   const [hasMoreFriends, setHasMoreFriends] = useState(true)
   const [loadingMoreFriends, setLoadingMoreFriends] = useState(false)
-  const [friendActivitiesCache, setFriendActivitiesCache] = useState({})
-  const [offlineMode, setOfflineMode] = useState(false)
-  const [lastOnlineSync, setLastOnlineSync] = useState(null)
+  const [pastChallenges, setPastChallenges] = useState([]) // History tab data
 
-  // Custom challenge states
-  const [isCustomChallengeModalVisible, setIsCustomChallengeModalVisible] = useState(false)
-  const [customChallenge, setCustomChallenge] = useState({
-    activityType: "walking",
-    goal: 5,
-    difficulty: "medium",
-    duration: 0, // days
-    title: "",
-    description: "",
-  })
-  const [challengeTargetFriend, setChallengeTargetFriend] = useState(null)
-
-  // Loading states
-  const [sendingFriendRequests, setSendingFriendRequests] = useState({})
-  const [processingRequests, setProcessingRequests] = useState({})
-  const [joiningChallenges, setJoiningChallenges] = useState({})
+  const [sendingFriendRequests, setSendingFriendRequests] = useState({}) // Loading state for requests
+  const [processingRequests, setProcessingRequests] = useState({}) // Loading state for requests
+  const [joiningChallenges, setJoiningChallenges] = useState({}) // Loading state for challenges
   const [initialLoadComplete, setInitialLoadComplete] = useState(false)
   const [creatingChallenge, setCreatingChallenge] = useState(false)
-  const [sendingMessage, setSendingMessage] = useState(false)
-  const [sendingChallenge, setSendingChallenge] = useState(false)
-  // const [openingChat, setOpeningChat] = useState(false) // Removed
-  const [sendingQuickMessage, setSendingQuickMessage] = useState(false) // Declared sendingQuickMessage
 
   const [modalVisible, setModalVisible] = useState(false)
   const [modalProps, setModalProps] = useState({
-    title: "",
+    title: "Notice",
     message: "",
-    type: "success",
+    type: "info",
     confirmText: "OK",
     showCancelButton: false,
     onConfirm: () => setModalVisible(false),
     onCancel: () => setModalVisible(false),
   })
 
-  // New state for selected challenge and modal visibility
   const [selectedChallenge, setSelectedChallenge] = useState(null)
   const [isChallengeDetailsVisible, setIsChallengeDetailsVisible] = useState(false)
 
-  // QuickChat states
+  // --- MEMOIZED VALUES (Must be unconditional) ---
 
   const activities = useMemo(
     () => [
@@ -232,7 +210,13 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     [],
   )
 
-  // Helper to show modal
+  const currentUserLeaderboard = useMemo(
+    () => leaderboard.find((user) => user.isCurrentUser),
+    [leaderboard]
+  );
+
+  // --- UTILITY FUNCTIONS ---
+
   const showModal = ({
     title = "Notice",
     message = "",
@@ -254,17 +238,12 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     setModalVisible(true)
   }
 
-  // Debounced search query
   const debouncedSearchQuery = useDebounce(searchQuery, 500)
 
-  // Refs for unsubscribing from listeners
   const unsubscribersRef = useRef([])
-  // const chatScrollRef = useRef(null) // Removed
-  const { width } = Dimensions.get("window")
   const lastOnlineUpdateRef = useRef(0)
   const friendsPerPage = 5
 
-  // Enhanced tab configuration
   const tabs = [
     {
       id: "friends",
@@ -298,25 +277,42 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
       bgColor: "#FF6B3520",
       count: leaderboard.length,
     },
+    {
+      id: "history",
+      label: "History",
+      icon: "time-outline",
+      color: "#9B5DE5",
+      bgColor: "#9B5DE520",
+      count: pastChallenges.length || 0,
+    },
   ]
 
-  // Initialize NotificationService when component mounts
+  // --- USE EFFECTS ---
+
+  useEffect(() => {
+    if (userProfile?.id) {
+      loadPastChallenges(userProfile.id)
+        .then((challenges) => {
+          setPastChallenges(challenges || [])
+        })
+        .catch((error) => {
+          console.error("Failed to load past challenges:", error)
+          setPastChallenges([])
+        })
+    } else {
+      setPastChallenges([])
+    }
+  }, [userProfile?.id])
+
   useEffect(() => {
     const initializeNotifications = async () => {
       try {
-        console.log("🔔 Initializing NotificationService in CommunityScreen...")
-        const success = await NotificationService.initialize()
-        if (success) {
-          console.log("✅ NotificationService initialized successfully")
-        } else {
-          console.warn("⚠️ NotificationService initialization failed")
-        }
+        await NotificationService.initialize()
       } catch (error) {
-        console.error("❌ Error initializing NotificationService:", error)
+        console.error("Error initializing NotificationService:", error)
       }
     }
     initializeNotifications()
-    // Cleanup on unmount
     return () => {
       const user = auth.currentUser
       if (user) {
@@ -325,13 +321,13 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     }
   }, [])
 
-  // Online status management
   useEffect(() => {
     const user = auth.currentUser
     if (!user) return
     const updateOnlineStatus = async () => {
       try {
         const now = Date.now()
+        // Update online status every 15 minutes
         if (now - lastOnlineUpdateRef.current > 15 * 60 * 1000) {
           await setUserOnlineStatus()
           lastOnlineUpdateRef.current = now
@@ -348,39 +344,62 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     }
   }, [])
 
-  // Declare fetchParticipantsData here
   const fetchParticipantsData = useCallback(async () => {
-    if (
-      selectedChallenge &&
-      Array.isArray(selectedChallenge.participants) &&
-      selectedChallenge.participants.length > 0
-    ) {
-      const users = {}
+    if (!selectedChallenge) {
+      setParticipantsData({});
+      return;
+    }
+
+    if (Array.isArray(selectedChallenge.participants) && selectedChallenge.participants.length > 0) {
+      const users = {};
       for (const uid of selectedChallenge.participants) {
         try {
-          // Fetch user data from Firestore
-          const userDoc = await db.collection("users").doc(uid).get()
+          const userDoc = await db.collection("users").doc(uid).get();
           if (userDoc.exists) {
-            users[uid] = userDoc.data()
+            users[uid] = userDoc.data();
           } else {
-            users[uid] = { displayName: "Player", avatar: DEFAULT_AVATAR, xp: 0 }
+            users[uid] = { displayName: "Player", avatar: DEFAULT_AVATAR, xp: 0 };
           }
         } catch (e) {
-          users[uid] = { displayName: "Player", avatar: DEFAULT_AVATAR, xp: 0 }
+          users[uid] = { displayName: "Player", avatar: DEFAULT_AVATAR, xp: 0 };
         }
       }
-      setParticipantsData(users)
+      setParticipantsData(users);
     } else {
-      setParticipantsData({})
+      setParticipantsData({});
     }
-  }, [selectedChallenge])
+  }, [selectedChallenge]);
 
-  // Call fetchParticipantsData in useEffect
+  const fetchParticipantsDataForChallenge = async (challenge) => {
+    if (!challenge || !Array.isArray(challenge.participants) || challenge.participants.length === 0) {
+      setParticipantsData({});
+      return;
+    }
+
+    const users = {};
+    for (const uid of challenge.participants) {
+      try {
+        const userDocRef = doc(db, "users", uid);
+        const userDoc = await getDoc(userDocRef);
+
+        if (userDoc.exists()) {
+          users[uid] = userDoc.data();
+        } else {
+          users[uid] = { displayName: "Player", avatar: DEFAULT_AVATAR, xp: 0 };
+        }
+      } catch (e) {
+        console.error("Error fetching user:", uid, e);
+        users[uid] = { displayName: "Player", avatar: DEFAULT_AVATAR, xp: 0 };
+      }
+    }
+    setParticipantsData(users);
+  };
+
+
   useEffect(() => {
     fetchParticipantsData()
   }, [fetchParticipantsData])
 
-  // Load user profile and initial data
   useEffect(() => {
     const callbacks = {
       setUserProfile,
@@ -425,7 +444,6 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     }
   }, [])
 
-  // Handle refresh
   const onRefresh = useCallback(async () => {
     setRefreshing(true)
     try {
@@ -440,15 +458,24 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
           setFriendsPage,
           setLoadingMoreFriends,
         })
+      } else if (activeTab === "history") {
+        if (userProfile?.id) {
+          try {
+            const updatedChallenges = await loadPastChallenges(userProfile.id)
+            setPastChallenges(updatedChallenges || [])
+          } catch (error) {
+            console.error("Failed to refresh past challenges:", error)
+            setPastChallenges([])
+          }
+        }
       }
     } catch (err) {
       console.error("Error refreshing data:", err)
     } finally {
       setRefreshing(false)
     }
-  }, [activeTab, userProfile?.friends])
+  }, [activeTab, userProfile?.friends, userProfile?.id])
 
-  // Load more friends
   const loadMoreFriends = () => {
     if (loadingMoreFriends || !hasMoreFriends || !userProfile?.friends) return
     loadFriendsPage(userProfile.friends, friendsPage + 1, false, {
@@ -467,16 +494,14 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     if (timestamp instanceof Date) {
       return timestamp
     }
-    // If timestamp is a string or number, try to parse it
     const parsedDate = new Date(timestamp)
     if (!isNaN(parsedDate)) return parsedDate
     return null
   }
 
-  // In your existing useEffect that handles cleanup
   useEffect(() => {
     return () => {
-      // Cleanup all modal states
+      // Cleanup modal states on unmount
       setIsChallengeDetailsVisible(false)
       setIsEditChallengeModalVisible(false)
       setSelectedChallenge(null)
@@ -484,7 +509,6 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     }
   }, [])
 
-  // Search users
   useEffect(() => {
     const performSearch = async () => {
       if (debouncedSearchQuery) {
@@ -493,7 +517,6 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
           const results = await searchUsers(debouncedSearchQuery)
           setSearchResults(results)
         } catch (err) {
-          console.error("Error searching users:", err)
           showModal({
             title: "Search Error",
             message: "There was a problem searching for users. Please try again.",
@@ -509,54 +532,38 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     performSearch()
   }, [debouncedSearchQuery])
 
-  const checkChallengesAfterActivity = async (activityData) => {
+  const handleAcceptChallenge = async (challengeId) => {
     try {
-      const user = auth.currentUser
-      if (!user) {
-        console.log("No user logged in")
-        return
-      }
+      setJoiningChallenges((prev) => ({ ...prev, [challengeId]: true }))
+      const result = await acceptChallengeInvite(challengeId)
+      const userId = auth.currentUser?.uid
 
-      console.log("Checking challenges after activity:", activityData)
+      // Manually update the local 'challenges' state after accepting invite
+      setChallenges((prevChallenges) =>
+        prevChallenges.map((challenge) => {
+          if (challenge.id === challengeId) {
+            const newParticipants = (challenge.participants || []).includes(userId)
+              ? challenge.participants
+              : [...(challenge.participants || []), userId]
+            const newInvitedUsers = (challenge.invitedUsers || []).filter((id) => id !== userId)
 
-      // Get user's active challenges
-      const userChallenges = await getUserChallenges(user.uid)
-      console.log(`User has ${userChallenges.length} active challenges`)
-
-      for (const challenge of userChallenges) {
-        console.log(`Checking challenge: ${challenge.title}, Type: ${challenge.activityType}`)
-
-        if (challenge.activityType === activityData.activityType) {
-          console.log(`Challenge matches activity type: ${activityData.activityType}`)
-
-          // Use XP Manager to handle challenge progress
-          const activityId = XPManager.generateActivityId(user.uid, Date.now(), activityData.activityType)
-
-          const xpResult = await XPManager.awardXPForActivity({
-            userId: user.uid,
-            activityId: activityId,
-            activityData: activityData,
-            stats: activityData,
-            activityParams: { activityType: activityData.activityType },
-            challengeData: challenge,
-            isStrengthActivity: !activityData.distance, // Simple check for strength activities
-          })
-
-          if (xpResult.challengeCompleted) {
-            showModal({
-              title: "Challenge Completed!",
-              message: `You earned bonus XP for completing "${challenge.title}"!`,
-              type: "success",
-            })
+            return {
+              ...challenge,
+              participants: newParticipants,
+              invitedUsers: newInvitedUsers,
+            }
           }
-        }
-      }
+          return challenge
+        }),
+      )
+      showModal({ title: "Success", message: result.message, type: "success" })
     } catch (err) {
-      console.error("Error checking challenges after activity:", err)
+      showModal({ title: "Error", message: err.message, type: "error" })
+    } finally {
+      setJoiningChallenges((prev) => ({ ...prev, [challengeId]: false }))
     }
   }
 
-  // Friend request handlers
   const handleSendFriendRequest = async (userId) => {
     try {
       setSendingFriendRequests((prev) => ({ ...prev, [userId]: true }))
@@ -581,20 +588,44 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
   }
 
   const handleAcceptFriendRequest = async (requestId, fromUserId) => {
+    // Mark request as processing
+    setProcessingRequests(prev => ({
+      ...prev,
+      [requestId]: "accepting",
+    }))
+
     try {
-      setProcessingRequests((prev) => ({ ...prev, [requestId]: "accepting" }))
-      const result = await acceptFriendRequest(requestId, fromUserId, {
+      // Accept request
+      const { message } = await acceptFriendRequest(requestId, fromUserId, {
         setFriendRequests,
         setUserProfile,
         setFriends,
       })
-      showModal({ title: "Success", message: result.message, type: "success" })
+
+      // Show success modal
+      showModal({
+        title: "Success",
+        message,
+        type: "success",
+      })
+
     } catch (err) {
-      showModal({ title: "Error", message: err.message, type: "error" })
+      // Error handling
+      showModal({
+        title: "Error",
+        message: err?.message || "Something went wrong.",
+        type: "error",
+      })
+
     } finally {
-      setProcessingRequests((prev) => ({ ...prev, [requestId]: null }))
+      // Always clear processing state
+      setProcessingRequests(prev => ({
+        ...prev,
+        [requestId]: null,
+      }))
     }
   }
+
 
   const handleRejectFriendRequest = async (requestId) => {
     try {
@@ -614,7 +645,7 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
 
       await startChallenge(challengeId)
 
-      // Update local state
+      // Update local state to active
       setChallenges((prev) =>
         prev.map((challenge) =>
           challenge.id === challengeId
@@ -663,7 +694,6 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
       await fetchParticipantsData()
     }
 
-    // ✅ Only show challenge details — do not trigger VS modal here
     setIsChallengeDetailsVisible(true)
   }
 
@@ -672,7 +702,6 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     setShowVsModal(true)
   }
 
-  // Challenge handlers
   const handleCreateChallenge = async () => {
     try {
       if (!newChallenge.title.trim()) {
@@ -680,86 +709,60 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
           title: "Error",
           message: "Please enter a challenge title",
           type: "error",
-        });
-        return;
+        })
+        return
       }
 
-      // ✅ Validate participants only
-      const selectedFriendsCount = newChallenge.selectedFriendsForGroupChallenge?.length || 0;
+      const selectedFriendsCount = newChallenge.selectedFriendsForGroupChallenge?.length || 0
       if (newChallenge.groupType === "duo" && selectedFriendsCount !== 1) {
         showModal({
           title: "Error",
           message: "Duo challenges require exactly one friend.",
           type: "error",
-        });
-        return;
+        })
+        return
       }
 
-      setCreatingChallenge(true);
+      // Validation for Race Challenges (Duo/Lobby)
+      if (newChallenge.groupType === 'duo' || newChallenge.groupType === 'lobby') {
+        if (!newChallenge.durationMinutes || newChallenge.durationMinutes < 1) {
+          showModal({
+            title: 'Error',
+            message: 'Race challenges need at least 1 minute duration',
+            type: 'error',
+          });
+          return;
+        }
+      }
 
-      // 🧠 Just pass newChallenge as-is
+      setCreatingChallenge(true)
+
       const result = await createChallenge(
         newChallenge,
         newChallenge.selectedFriendsForGroupChallenge?.map((f) => f.id) || [],
-        newChallenge.groupType
-      );
+        newChallenge.groupType,
+      )
 
-      setChallenges((prev) => [result.challenge, ...prev]);
-      setIsCreateChallengeModalVisible(false);
+      setIsCreateChallengeModalVisible(false)
 
       showModal({
         title: "Success",
         message: result.message,
         type: "success",
-      });
+      })
 
+      // Reset newChallenge state
       setNewChallenge({
         title: "",
         description: "",
         type: "walking",
-        goal: null,
+        goal: 5,
         unit: "km",
-        endDate: new Date(Date.now() + 30 * 60 * 1000),
+        endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         durationMinutes: 30,
         groupType: "duo",
         selectedFriendsForGroupChallenge: [],
         stakeXP: 100,
-      });
-    } catch (err) {
-      showModal({
-        title: "Error",
-        message: err.message,
-        type: "error",
-      });
-    } finally {
-      setCreatingChallenge(false);
-    }
-  };
-
-
-  const handleCreateCustomChallenge = async () => {
-    try {
-      setCreatingChallenge(true)
-      const result = await createCustomChallenge(customChallenge, challengeTargetFriend)
-      setCustomChallenge({
-        activityType: "walking",
-        goal: 5,
-        difficulty: "medium",
-        duration: 0,
-        title: "",
-        description: "",
-      })
-      setChallengeTargetFriend(null)
-      setIsCustomChallengeModalVisible(false)
-      // Add new challenge to state
-      setChallenges((prev) => [result.challenge, ...prev])
-      showModal({
-        title: "Challenge Created! 🏆",
-        message: result.message,
-        type: "success",
-        onConfirm: () => {
-          setActiveTab("challenges")
-        },
       })
     } catch (err) {
       showModal({
@@ -771,6 +774,7 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
       setCreatingChallenge(false)
     }
   }
+
 
   const handleJoinChallenge = async (challengeId) => {
     try {
@@ -792,90 +796,16 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     }
   }
 
-  // QuickChat handlers
-  const handleOpenQuickChat = async (friend) => {
-    // Placeholder for actual quick chat navigation/logic
-    // For now, just show a modal indicating the action
-    setSendingQuickMessage(true)
-    console.log("Opening quick chat with:", friend.displayName)
-    // In a real app, you would navigate to a chat screen or open a chat modal
-    // For demonstration, we'll simulate a brief loading and then close it.
-    setTimeout(() => {
-      setSendingQuickMessage(false)
-      showModal({
-        title: "Quick Chat",
-        message: `Opening chat with ${friend.displayName}... (Feature not fully implemented)`,
-        type: "info",
-      })
-    }, 1000) // Simulate network delay
-  }
-
-  // Custom challenge helpers
-  const openCustomChallengeModal = (friend) => {
-    setChallengeTargetFriend(friend)
-    // Set default challenge based on friend's recent activity or default to walking
-    const defaultActivity = friend.lastActivity?.activityType || "walking"
-    const activityConfig = activities.find((a) => a.id === defaultActivity) || activities[0]
-    setCustomChallenge({
-      activityType: activityConfig.id,
-      goal: activityConfig.defaultGoal,
-      difficulty: "medium",
-      duration: 0,
-      title: `${activityConfig.name} Challenge`,
-      description: `Complete ${activityConfig.defaultGoal} ${activityConfig.unit} of ${activityConfig.name.toLowerCase()} in 7 days!`,
-    })
-    setIsCustomChallengeModalVisible(true)
-    setIsFriendProfileVisible(false)
-  }
-
-  const updateChallengeActivity = (activityType) => {
-    const activityConfig = activities.find((a) => a.id === activityType)
-    if (activityConfig) {
-      setCustomChallenge((prev) => ({
-        ...prev,
-        activityType,
-        goal: activityConfig.defaultGoal,
-        title: `${activityConfig.name} Challenge`,
-        description: `Complete ${activityConfig.defaultGoal} ${activityConfig.unit} of ${activityConfig.name.toLowerCase()} in ${prev.duration} days!`,
-      }))
-    }
-  }
-
-  const updateChallengeDescription = (goal, duration) => {
-    const activityConfig = activities.find((a) => a.id === customChallenge.activityType)
-    if (activityConfig) {
-      setCustomChallenge((prev) => ({
-        ...prev,
-        goal,
-        duration,
-        description: `Complete ${goal} ${activityConfig.unit} of ${activityConfig.name.toLowerCase()} in ${duration} days!`,
-      }))
-    }
-  }
-
-  const sendChallengeToFriend = async () => {
-    try {
-      setSendingChallenge(true)
-      openCustomChallengeModal(selectedFriend)
-    } catch (err) {
-      console.error("Error opening challenge modal:", err)
-      showModal({ title: "Error", message: "Failed to open challenge creator. Please try again.", type: "error" })
-      setSendingChallenge(false)
-    }
-  }
-
   const viewFriendProfile = (friend) => {
     setSelectedFriend(friend)
     setIsFriendProfileVisible(true)
   }
 
-  // Function to view challenge details
   const viewChallengeDetails = (challenge) => {
     setSelectedChallenge(challenge)
     setIsChallengeDetailsVisible(true)
   }
 
-  // ChallengeDetailsModal.js - Ensure proper challenge data passing
   const navigateToActivityWithChallenge = (challenge, skipAnimation = false) => {
     const userId = auth.currentUser?.uid
     const userProgressAbsolute = challenge.progress?.[userId] || 0
@@ -902,16 +832,15 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
       groupType: challenge.groupType,
     }
 
-    // ✅ Skip showing the DuoVsModal again if already shown
+    // Trigger VS modal for duo challenges if necessary
     if (!skipAnimation && challenge.groupType === "duo" && challenge.participants?.length === 2) {
       setSelectedChallenge(challenge)
-      // Pass fullChallenge to DuoVsModal data when triggering
       handleShowDuoVs({
         challengeId: challenge.id,
-        player1: challenge.participants[0], // Assuming participants are ordered
+        player1: challenge.participants[0],
         player2: challenge.participants[1],
         stakeXP: challenge.stakeXP,
-        fullChallenge: challenge, // Pass the whole challenge object
+        fullChallenge: challenge,
       })
     } else {
       navigateToActivity({ questData: challengeData })
@@ -920,15 +849,12 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     }
   }
 
-  // Add this useEffect to manage modal transitions
   useEffect(() => {
     if (isEditChallengeModalVisible) {
-      // If edit modal is opening, ensure details modal is closed
       setIsChallengeDetailsVisible(false)
     }
   }, [isEditChallengeModalVisible])
 
-  // Then update handleEditChallenge to be simpler:
   const handleEditChallenge = (challenge) => {
     if (challenge.createdBy !== auth.currentUser?.uid) {
       showModal({
@@ -951,13 +877,10 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
       difficulty: challenge.difficulty || "medium",
       xpReward: challenge.xpReward || 50,
       selectedFriendsForGroupChallenge: [],
-      durationMinutes: challenge.durationMinutes, // Ensure durationMinutes is pre-filled
+      durationMinutes: challenge.durationMinutes,
     })
 
-    // Store which challenge is being edited
     setSelectedChallenge(challenge)
-
-    // Close details modal and open edit modal
     setIsChallengeDetailsVisible(false)
     setTimeout(() => setIsEditChallengeModalVisible(true), 100)
   }
@@ -965,20 +888,15 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
   const handleSaveChallenge = async () => {
     try {
       if (selectedChallenge) {
-        setCreatingChallenge(true)
+        setCreatingChallenge(true);
 
-        // Update existing challenge - only allow editing specific fields
-        const challengeRef = doc(db, "challenges", selectedChallenge.id)
+        // Update existing challenge fields (ONLY title and description allowed by Firestore rules)
+        const challengeRef = doc(db, 'challenges', selectedChallenge.id);
         await updateDoc(challengeRef, {
           title: newChallenge.title,
           description: newChallenge.description,
-          goal: newChallenge.goal,
-          unit: newChallenge.unit,
-          difficulty: newChallenge.difficulty,
-          xpReward: newChallenge.xpReward,
-          durationMinutes: newChallenge.durationMinutes, // Save durationMinutes
           updatedAt: serverTimestamp(),
-        })
+        });
 
         // Update local state
         setChallenges((prev) =>
@@ -988,36 +906,31 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                 ...c,
                 title: newChallenge.title,
                 description: newChallenge.description,
-                goal: newChallenge.goal,
-                unit: newChallenge.unit,
-                difficulty: newChallenge.difficulty,
-                xpReward: newChallenge.xpReward,
-                durationMinutes: newChallenge.durationMinutes, // Update durationMinutes in local state
               }
-              : c,
-          ),
-        )
+              : c
+          )
+        );
 
         showModal({
-          title: "Success",
-          message: "Challenge updated successfully!",
-          type: "success",
-        })
+          title: 'Success',
+          message: 'Challenge updated successfully!',
+          type: 'success',
+        });
       }
     } catch (err) {
-      console.error("Error saving challenge:", err)
+      console.error('Error saving challenge:', err);
       showModal({
-        title: "Error",
-        message: err.message || "Failed to update challenge.",
-        type: "error",
-      })
+        title: 'Error',
+        message: err.message || 'Failed to update challenge.',
+        type: 'error',
+      });
     } finally {
-      // Always reset these states, even on error
-      setCreatingChallenge(false)
-      setSelectedChallenge(null)
-      setIsEditChallengeModalVisible(false)
+      setCreatingChallenge(false);
+      setSelectedChallenge(null);
+      setIsEditChallengeModalVisible(false);
     }
-  }
+  };
+
 
   const handleDeleteChallenge = async (challengeId) => {
     showModal({
@@ -1051,7 +964,6 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         }
       },
       onCancel: () => {
-        // ✅ Explicitly close
         setModalVisible(false)
       },
     })
@@ -1060,60 +972,204 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
   // Render functions
   const renderFriendItem = ({ item }) => (
     <TouchableOpacity
-      style={twrnc`bg-[#2A2E3A] rounded-2xl p-5 mb-4 shadow-lg`}
+      style={[
+        twrnc`bg-[#1F2937] rounded-3xl p-4 mb-3 overflow-hidden`,
+        {
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.3,
+          shadowRadius: 8,
+          elevation: 6
+        }
+      ]}
       onPress={() => viewFriendProfile(item)}
-      activeOpacity={0.8}
+      activeOpacity={0.85}
     >
+      {/* Decorative Background Element */}
+      <View style={[
+        twrnc`absolute -right-8 -top-8 w-32 h-32 rounded-full opacity-5`,
+        { backgroundColor: item.isOnline ? '#06D6A0' : '#6B7280' }
+      ]} />
+
       <View style={twrnc`flex-row items-center`}>
+        {/* Avatar Section with Enhanced Status */}
         <View style={twrnc`relative mr-4`}>
+          {/* Glow effect for online users */}
+          {item.isOnline && (
+            <View
+              style={[
+                twrnc`absolute inset-0 rounded-2xl`,
+                {
+                  backgroundColor: '#06D6A0',
+                  opacity: 0.2,
+                  transform: [{ scale: 1.15 }]
+                }
+              ]}
+            />
+          )}
+
           <Image
             source={{ uri: item.avatar || DEFAULT_AVATAR }}
-            style={twrnc`w-14 h-14 rounded-2xl border-2 border-[#4361EE]`}
+            style={[
+              twrnc`w-16 h-16 rounded-2xl`,
+              {
+                borderWidth: 3,
+                borderColor: item.isOnline ? '#06D6A0' : '#374151'
+              }
+            ]}
           />
+
+          {/* Enhanced Status Indicator */}
           <View
-            style={twrnc`absolute -bottom-1 -right-1 w-5 h-5 rounded-full border-2 border-[#2A2E3A] ${item.isOnline ? "bg-green-500" : "bg-gray-500"
-              }`}
-          />
-        </View>
-        <View style={twrnc`flex-1`}>
-          <View style={twrnc`flex-row items-center justify-between mb-2`}>
-            <CustomText weight="bold" style={twrnc`text-white text-lg`}>
-              {item.displayName || item.username || "User"}
-            </CustomText>
-            <View style={twrnc`flex-row items-center bg-[#FFC10720] px-3 py-1 rounded-xl`}>
-              <Ionicons name="flame" size={16} color="#FFC107" />
-              <CustomText weight="bold" style={twrnc`text-[#FFC107] ml-1`}>
-                {item.streak || 0}
-              </CustomText>
-            </View>
+            style={[
+              twrnc`absolute -bottom-1 -right-1 w-6 h-6 rounded-full border-3 border-[#1F2937] items-center justify-center`,
+              { backgroundColor: item.isOnline ? '#06D6A0' : '#6B7280' }
+            ]}
+          >
+            <Ionicons
+              name={item.isOnline ? "checkmark" : "moon"}
+              size={12}
+              color="#FFFFFF"
+            />
           </View>
-          <CustomText style={twrnc`text-gray-400 text-sm mb-3`}>
-            {formatActivityDescription(item.lastActivity)}
-          </CustomText>
+        </View>
+
+        {/* Content Section */}
+        <View style={twrnc`flex-1`}>
+          {/* Name and Streak Row */}
+          <View style={twrnc`flex-row items-center justify-between mb-2`}>
+            <View style={twrnc`flex-1 mr-2`}>
+              <CustomText weight="bold" style={twrnc`text-white text-base mb-0.5`} numberOfLines={1}>
+                {item.displayName || item.username || "User"}
+              </CustomText>
+              <CustomText style={twrnc`text-gray-400 text-xs`}>
+                {item.isOnline ? "🟢 Active now" : formatLastActive(item.lastSeen)}
+              </CustomText>
+            </View>
+
+            {/* Streak Badge */}
+            {item.streak > 0 && (
+              <View
+                style={[
+                  twrnc`px-3 py-1.5 rounded-xl flex-row items-center`,
+                  {
+                    backgroundColor: '#FFC10720',
+                    borderWidth: 1,
+                    borderColor: '#FFC10740'
+                  }
+                ]}
+              >
+                <Ionicons name="flame" size={14} color="#FFC107" />
+                <CustomText weight="bold" style={twrnc`text-[#FFC107] ml-1 text-sm`}>
+                  {item.streak}
+                </CustomText>
+              </View>
+            )}
+          </View>
+
+          {/* Last Activity Info */}
+          <View
+            style={[
+              twrnc`flex-row items-center mb-3 px-2.5 py-1.5 rounded-lg`,
+              { backgroundColor: '#111827' }
+            ]}
+          >
+            <Ionicons name="time-outline" size={12} color="#9CA3AF" style={twrnc`mr-1.5`} />
+            <CustomText style={twrnc`text-gray-400 text-xs flex-1`} numberOfLines={1}>
+              {formatActivityDescription(item.lastActivity)}
+            </CustomText>
+          </View>
+
+          {/* Stats Row with Icons */}
           <View style={twrnc`flex-row justify-between`}>
-            <View style={twrnc`items-center`}>
-              <CustomText weight="semibold" style={twrnc`text-[#4361EE] text-sm`}>
-                {item.totalDistance ? item.totalDistance.toFixed(1) : "0"} km
-              </CustomText>
-              <CustomText style={twrnc`text-gray-500 text-xs`}>Distance</CustomText>
+            {/* Distance */}
+            <View style={twrnc`flex-1 items-center`}>
+              <View
+                style={[
+                  twrnc`w-full py-2 rounded-xl items-center`,
+                  { backgroundColor: '#4361EE15' }
+                ]}
+              >
+                <View style={twrnc`flex-row items-center mb-0.5`}>
+                  <Ionicons name="navigate" size={12} color="#4361EE" style={twrnc`mr-1`} />
+                  <CustomText weight="bold" style={twrnc`text-[#4361EE] text-sm`}>
+                    {item.totalDistance ? item.totalDistance.toFixed(1) : "0"}
+                  </CustomText>
+                </View>
+                <CustomText style={twrnc`text-gray-500 text-[10px] uppercase`}>
+                  KM
+                </CustomText>
+              </View>
             </View>
-            <View style={twrnc`items-center`}>
-              <CustomText weight="semibold" style={twrnc`text-[#06D6A0] text-sm`}>
-                {item.totalActivities || 0}
-              </CustomText>
-              <CustomText style={twrnc`text-gray-500 text-xs`}>Activities</CustomText>
+
+            <View style={twrnc`w-2`} />
+
+            {/* Activities */}
+            <View style={twrnc`flex-1 items-center`}>
+              <View
+                style={[
+                  twrnc`w-full py-2 rounded-xl items-center`,
+                  { backgroundColor: '#06D6A015' }
+                ]}
+              >
+                <View style={twrnc`flex-row items-center mb-0.5`}>
+                  <Ionicons name="fitness" size={12} color="#06D6A0" style={twrnc`mr-1`} />
+                  <CustomText weight="bold" style={twrnc`text-[#06D6A0] text-sm`}>
+                    {item.totalActivities || 0}
+                  </CustomText>
+                </View>
+                <CustomText style={twrnc`text-gray-500 text-[10px] uppercase`}>
+                  Activities
+                </CustomText>
+              </View>
             </View>
-            <View style={twrnc`items-center`}>
-              <CustomText weight="semibold" style={twrnc`text-gray-400 text-sm`}>
-                {item.isOnline ? "Online" : "Offline"}
-              </CustomText>
-              <CustomText style={twrnc`text-gray-500 text-xs`}>Status</CustomText>
+
+            <View style={twrnc`w-2`} />
+
+            {/* Level or XP */}
+            <View style={twrnc`flex-1 items-center`}>
+              <View
+                style={[
+                  twrnc`w-full py-2 rounded-xl items-center`,
+                  { backgroundColor: '#9B5DE515' }
+                ]}
+              >
+                <View style={twrnc`flex-row items-center mb-0.5`}>
+                  <Ionicons name="trophy" size={12} color="#9B5DE5" style={twrnc`mr-1`} />
+                  <CustomText weight="bold" style={twrnc`text-[#9B5DE5] text-sm`}>
+                    {item.level || 1}
+                  </CustomText>
+                </View>
+                <CustomText style={twrnc`text-gray-500 text-[10px] uppercase`}>
+                  Level
+                </CustomText>
+              </View>
             </View>
           </View>
         </View>
       </View>
+
+      {/* Decorative Bottom Accent */}
+      <View style={twrnc`absolute bottom-0 left-0 right-0 h-1 rounded-b-3xl overflow-hidden`}>
+        <View style={twrnc`flex-row h-full`}>
+          {[0, 1, 2, 3, 4].map((i) => (
+            <View
+              key={i}
+              style={[
+                twrnc`flex-1 h-full`,
+                {
+                  backgroundColor: item.isOnline ? '#06D6A0' : '#374151',
+                  opacity: 0.3 - (i * 0.05)
+                }
+              ]}
+            />
+          ))}
+        </View>
+      </View>
     </TouchableOpacity>
-  )
+  );
+
+
 
   const renderRequestItem = ({ item }) => (
     <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-5 mb-4 shadow-lg`}>
@@ -1183,42 +1239,39 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
   const renderChallengeItem = ({ item }) => {
     const userId = auth.currentUser?.uid
 
-    // Handle participants
     const isFull = item.maxParticipants && item.participants?.length >= item.maxParticipants
     const isJoined = Array.isArray(item.participants) && item.participants.includes(userId)
 
-    // ✅ Check if user is invited to private challenges - handle both field names
     const isPublicChallenge = item.groupType === "public"
 
-    // Check both invitedUsers and invited fields for backward compatibility
+    // Handle invited users for private challenges
     const invitedUsersList = Array.isArray(item.invitedUsers)
       ? item.invitedUsers
       : Array.isArray(item.invited)
         ? item.invited
         : []
 
-    // ✅ FIX: Creator should always be considered invited to their own challenges
     const isCreator = item.createdBy === userId
-    const isInvited = isPublicChallenge || invitedUsersList.includes(userId) || isCreator
 
-    // ✅ Hide private challenges that user is not invited to
-    if (!isPublicChallenge && !isInvited) {
-      return null // This will hide the challenge from the list
+    const userIsInvited = invitedUsersList.includes(userId)
+    const canSeePrivateChallenge = isCreator || userIsInvited || isJoined
+    if (!isPublicChallenge && !canSeePrivateChallenge) {
+      return null
     }
 
-    const canJoin = !isJoined && !isFull && isInvited
+    const canJoin = !isJoined && !isFull && isPublicChallenge
+    const canAccept = !isJoined && !isFull && userIsInvited && !isPublicChallenge
 
     // Safely access progress and status
-    const userProgress = item.progress?.[userId] ?? 0
+    const userProgress = item.progress?.[userId] ?? 0;
+
     const userStatus = item.status?.[userId] ?? "not_started"
 
-    // Find the activity configuration to get the correct unit and color
     const activityConfig = activities.find((act) => act.id === item.activityType)
     const unitDisplay = activityConfig ? activityConfig.unit : item.unit || ""
     const activityColor = activityConfig?.color || "#FFC107"
     const activityIcon = activityConfig?.icon
 
-    // Calculate remaining time function
     const getRemainingTime = () => {
       const endDate = getDateFromTimestamp(item.endDate)
       if (!endDate) return "N/A"
@@ -1237,151 +1290,397 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
       return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`
     }
 
+    const remainingTime = getRemainingTime()
+
+    const formatProgress = (progress, unit) => {
+      if (unit === "reps" || unit === "sets") return Math.round(progress);
+
+      if (progress < 1) {
+        return progress.toFixed(2);
+      }
+
+      return progress.toFixed(1);
+    };
+
+    const isChallengeCompleted = item.status?.global === "completed" || remainingTime === "Ended"
+    let displayStatus = userStatus.replace(/_/g, " ");
+
+    if (isChallengeCompleted) {
+      if (item.status?.global === "completed" && item.winnerId) {
+        displayStatus = item.winnerId === userId ? "You Won" : "Lost";
+      } else {
+        displayStatus = "Challenge Ended";
+      }
+    }
+
+    const winnerData = participantsData[item.winnerId] || {};
+    const winnerName = winnerData.displayName || winnerData.username || "Unknown Player";
+    const winnerAvatar = winnerData.avatar || DEFAULT_AVATAR;
+
+    // Enhanced status logic
+    const progressPercentage = item.goal
+      ? Math.min(100, (userProgress / item.goal) * 100)
+      : 0;
+
+    let statusColor = "#9BA3AF";
+    let statusIcon = "information-circle";
+    let statusBg = "#374151";
+
+    if (displayStatus.toLowerCase().includes("won")) {
+      statusColor = "#FCD34D";
+      statusIcon = "trophy";
+      statusBg = "#FCD34D";
+    } else if (displayStatus.toLowerCase().includes("lost")) {
+      statusColor = "#F87171";
+      statusIcon = "close-circle";
+      statusBg = "#F87171";
+    } else if (userStatus === "in_progress") {
+      statusColor = "#60A5FA";
+      statusIcon = "bar-chart";
+      statusBg = "#60A5FA";
+    } else if (userStatus === "completed") {
+      statusColor = "#34D399";
+      statusIcon = "checkmark-circle";
+      statusBg = "#34D399";
+    } else if (displayStatus.toLowerCase().includes("ended")) {
+      statusColor = "#9BA3AF";
+      statusIcon = "flag";
+      statusBg = "#374151";
+    }
+
     return (
       <TouchableOpacity
-        style={twrnc`bg-[#2A2E3A] rounded-2xl p-5 mb-4 shadow-lg`}
+        style={[
+          twrnc`bg-[#1F2937] rounded-3xl mb-5 overflow-hidden`,
+          {
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 8 },
+            shadowOpacity: 0.3,
+            shadowRadius: 16,
+            elevation: 10,
+          }
+        ]}
         onPress={() => handleViewChallenge(item)}
-        activeOpacity={0.8}
+        activeOpacity={0.9}
       >
-        {/* Header */}
-        <View style={twrnc`flex-row items-center mb-4`}>
-          {/* Activity Icon with colored background */}
-          <View
-            style={[
-              twrnc`w-16 h-16 rounded-2xl items-center justify-center mr-4`,
-              { backgroundColor: `${activityColor}` }, // 20% opacity of activity color
-            ]}
-          >
-            {activityIcon ? (
-              <Image
-                source={activityIcon}
-                style={twrnc`w-10 h-10`}
-                resizeMode="contain"
-                tintColor="#FFFFFF" // Changed to white for activity icons
-              />
-            ) : (
-              <Ionicons
-                name="fitness"
-                size={32}
-                color={activityColor} // Keep colored for fallback icon
-              />
-            )}
-          </View>
-
-          <View style={twrnc`flex-1`}>
-            <CustomText weight="bold" style={twrnc`text-white text-lg mb-1`}>
-              {item.title}
-            </CustomText>
-
-            {/* Challenge tags */}
-            <View style={twrnc`flex-row items-center mb-2`}>
+        {/* Colorful Top Strip with Pattern */}
+        <View style={[twrnc`h-2`, { backgroundColor: activityColor }]}>
+          <View style={[twrnc`h-full flex-row`]}>
+            {[...Array(20)].map((_, i) => (
               <View
+                key={i}
                 style={[
-                  twrnc`px-3 py-1 rounded-xl mr-2`,
-                  { backgroundColor: `${activityColor}20` }, // Use activity color for tag
+                  twrnc`flex-1`,
+                  { backgroundColor: i % 2 === 0 ? activityColor : `${activityColor}CC` }
                 ]}
-              >
-                <CustomText style={[twrnc`text-xs font-medium`, { color: activityColor }]}>
-                  {activityConfig?.name || "Challenge"}
-                </CustomText>
-              </View>
-
-              <View style={twrnc`bg-[#06D6A020] px-3 py-1 rounded-xl`}>
-                <CustomText style={twrnc`text-[#06D6A0] text-xs font-medium`}>
-                  {String(item.participants?.length || 0)} / {String(item.maxParticipants || "∞")} joined
-                </CustomText>
-              </View>
-
-              {item.groupType && item.groupType !== "public" && (
-                <View style={twrnc`bg-[#9B5DE520] px-3 py-1 rounded-xl ml-2`}>
-                  <CustomText style={twrnc`text-[#9B5DE5] text-xs font-medium capitalize`}>{item.groupType}</CustomText>
-                </View>
-              )}
-            </View>
-
-            {/* Remaining time, goal, difficulty */}
-            <View style={twrnc`flex-row items-center flex-wrap`}>
-              <View style={twrnc`flex-row items-center mr-3 mb-1`}>
-                <Ionicons name="time-outline" size={14} color="#FFC107" />
-                <CustomText style={twrnc`text-[#FFC107] text-xs ml-1`}>{getRemainingTime()} remaining</CustomText>
-              </View>
-
-              {item.goal && item.unit && (
-                <View style={twrnc`flex-row items-center mr-3 mb-1`}>
-                  <Ionicons name="flag-outline" size={14} color="#06D6A0" />
-                  <CustomText style={twrnc`text-[#06D6A0] text-xs ml-1`}>
-                    Goal: {String(item.goal)} {unitDisplay}
-                  </CustomText>
-                </View>
-              )}
-
-              {item.difficulty && (
-                <View style={twrnc`flex-row items-center mb-1`}>
-                  <Ionicons name="flash-outline" size={14} color="#EF476F" />
-                  <CustomText style={twrnc`text-[#EF476F] text-xs ml-1 capitalize`}>{item.difficulty}</CustomText>
-                </View>
-              )}
-            </View>
+              />
+            ))}
           </View>
         </View>
 
-        {/* Description */}
-        {item.description && <CustomText style={twrnc`text-gray-400 text-sm mb-4`}>{item.description}</CustomText>}
-
-        {/* User progress & status */}
-        {isJoined && userProgress > 0 && (
+        <View style={twrnc`p-5`}>
+          {/* Header Section with Bold Design */}
           <View style={twrnc`mb-4`}>
-            <CustomText style={twrnc`text-gray-300 text-sm`}>
-              Your Progress: {userProgress.toFixed(1)} {unitDisplay}
-            </CustomText>
-            <CustomText style={twrnc`text-gray-300 text-sm`}>Status: {userStatus.replace(/_/g, " ")}</CustomText>
-          </View>
-        )}
+            <View style={twrnc`flex-row items-start mb-3`}>
+              {/* Large Activity Icon */}
+              <View
+                style={[
+                  twrnc`w-16 h-16 rounded-2xl items-center justify-center mr-3`,
+                  {
+                    backgroundColor: activityColor,
+                    transform: [{ rotate: '5deg' }]
+                  },
+                ]}
+              >
+                {activityIcon ? (
+                  <Image
+                    source={activityIcon}
+                    style={twrnc`w-10 h-10`}
+                    resizeMode="contain"
+                    tintColor="#FFFFFF"
+                  />
+                ) : (
+                  <Ionicons name="fitness" size={28} color="#FFFFFF" />
+                )}
 
-        {/* Join button - Only show if user can join */}
-        {canJoin && (
-          <TouchableOpacity
-            style={twrnc`${joiningChallenges[item.id] ? "bg-[#3251DD]" : "bg-[#4361EE]"} py-3 rounded-xl items-center`}
-            onPress={() => handleJoinChallenge(item.id)}
-            disabled={joiningChallenges[item.id]}
-            activeOpacity={0.8}
-          >
-            {joiningChallenges[item.id] ? (
-              <ActivityIndicator size="small" color="white" />
-            ) : (
-              <View style={twrnc`flex-row items-center`}>
-                <Ionicons name="add-circle-outline" size={18} color="white" />
-                <CustomText weight="semibold" style={twrnc`text-white ml-2`}>
-                  Join Challenge
-                </CustomText>
+                {/* Corner Badge */}
+                {!isChallengeCompleted && isJoined && (
+                  <View
+                    style={[
+                      twrnc`absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full`,
+                      { backgroundColor: '#10B981', borderWidth: 2, borderColor: '#1F2937' }
+                    ]}
+                  />
+                )}
               </View>
-            )}
-          </TouchableOpacity>
-        )}
 
-        {/* Show joined status if already joined */}
-        {isJoined && (
-          <View style={twrnc`bg-[#06D6A0] py-3 rounded-xl items-center`}>
-            <View style={twrnc`flex-row items-center`}>
-              <Ionicons name="checkmark-circle" size={18} color="white" />
-              <CustomText weight="semibold" style={twrnc`text-white ml-2`}>
-                Joined
-              </CustomText>
+              {/* Title and Quick Info */}
+              <View style={twrnc`flex-1`}>
+                <CustomText weight="bold" style={twrnc`text-white text-lg mb-2 leading-tight`}>
+                  {item.title}
+                </CustomText>
+
+                {/* Colorful Tags with Opacity */}
+                <View style={twrnc`flex-row items-center flex-wrap mb-2`}>
+                  <View
+                    style={[
+                      twrnc`px-2.5 py-1.5 rounded-lg mr-2 mb-2`,
+                      { backgroundColor: `${activityColor}20` }
+                    ]}
+                  >
+                    <CustomText weight="bold" style={[twrnc`text-[10px] uppercase tracking-wide`, { color: activityColor }]}>
+                      {activityConfig?.name || "Challenge"}
+                    </CustomText>
+                  </View>
+
+                  <View style={twrnc`bg-[#10B98120] px-2.5 py-1.5 rounded-lg mr-2 mb-2`}>
+                    <CustomText weight="bold" style={twrnc`text-[#10B981] text-[10px]`}>
+                      {String(item.participants?.length || 0)}/{String(item.maxParticipants || "∞")}
+                    </CustomText>
+                  </View>
+
+                  {item.groupType && item.groupType !== "public" && (
+                    <View style={twrnc`bg-[#A855F720] px-2.5 py-1.5 rounded-lg mb-2`}>
+                      <CustomText weight="bold" style={twrnc`text-[#A855F7] text-[10px] uppercase`}>
+                        {item.groupType}
+                      </CustomText>
+                    </View>
+                  )}
+                </View>
+              </View>
+            </View>
+
+            {/* Stats Cards Row with Opacity */}
+            <View style={twrnc`flex-row flex-wrap -mx-1`}>
+              {/* Time Card */}
+              <View style={twrnc`w-1/3 px-1 mb-2`}>
+                <View style={twrnc`bg-[#FBBF2420] rounded-xl p-2.5`}>
+                  <CustomText style={twrnc`text-[#FBBF24] text-[9px] uppercase mb-0.5`}>
+                    Time
+                  </CustomText>
+                  <CustomText weight="bold" style={twrnc`text-[#FBBF24] text-[11px]`}>
+                    {isChallengeCompleted ? "DONE" : remainingTime}
+                  </CustomText>
+                </View>
+              </View>
+
+              {/* Goal Card */}
+              {item.goal && (
+                <View style={twrnc`w-1/3 px-1 mb-2`}>
+                  <View style={twrnc`bg-[#34D39920] rounded-xl p-2.5`}>
+                    <CustomText style={twrnc`text-[#34D399] text-[9px] uppercase mb-0.5`}>
+                      Goal
+                    </CustomText>
+                    <CustomText weight="bold" style={twrnc`text-[#34D399] text-[11px]`}>
+                      {String(item.goal)} {unitDisplay}
+                    </CustomText>
+                  </View>
+                </View>
+              )}
+
+              {/* Difficulty Card */}
+              {item.difficulty && (
+                <View style={twrnc`w-1/3 px-1 mb-2`}>
+                  <View style={twrnc`bg-[#F8717120] rounded-xl p-2.5`}>
+                    <CustomText style={twrnc`text-[#F87171] text-[9px] uppercase mb-0.5`}>
+                      Level
+                    </CustomText>
+                    <CustomText weight="bold" style={twrnc`text-[#F87171] text-[11px] uppercase`}>
+                      {item.difficulty}
+                    </CustomText>
+                  </View>
+                </View>
+              )}
             </View>
           </View>
-        )}
 
-        {/* Show full status if challenge is full */}
-        {isFull && !isJoined && (
-          <View style={twrnc`bg-gray-500 py-3 rounded-xl items-center`}>
-            <View style={twrnc`flex-row items-center`}>
-              <Ionicons name="people" size={18} color="white" />
-              <CustomText weight="semibold" style={twrnc`text-white ml-2`}>
-                Full
+          {/* Description with Border */}
+          {item.description && (
+            <View style={[
+              twrnc`mb-4 p-3 rounded-xl bg-[#111827] border-l-4`,
+              { borderLeftColor: activityColor }
+            ]}>
+              <CustomText style={twrnc`text-gray-300 text-xs leading-5`}>
+                {item.description}
               </CustomText>
             </View>
-          </View>
-        )}
+          )}
+
+          {/* Bold Progress Section */}
+          {isJoined && (
+            <View
+              style={[
+                twrnc`mb-4 p-4 rounded-xl bg-[#111827]`,
+                { borderWidth: 2, borderColor: statusBg }
+              ]}
+            >
+              {/* Header with Large Status */}
+              <View style={twrnc`flex-row justify-between items-center mb-3`}>
+                <View>
+                  <CustomText style={twrnc`text-gray-400 text-[9px] uppercase tracking-widest mb-1`}>
+                    YOUR STATUS
+                  </CustomText>
+                  <CustomText weight="bold" style={twrnc`text-white text-sm`}>
+                    Performance
+                  </CustomText>
+                </View>
+
+                <View
+                  style={[
+                    twrnc`px-3 py-2 rounded-xl`,
+                    { backgroundColor: statusBg }
+                  ]}
+                >
+                  <CustomText weight="bold" style={twrnc`text-white text-[10px] uppercase`}>
+                    {displayStatus}
+                  </CustomText>
+                </View>
+              </View>
+
+              {/* Large Progress Display */}
+              <View style={twrnc`mb-3`}>
+                <View style={twrnc`flex-row items-end justify-between mb-2`}>
+                  <View>
+                    <CustomText style={twrnc`text-gray-500 text-[9px] uppercase tracking-widest mb-1`}>
+                      CURRENT
+                    </CustomText>
+                    <View style={twrnc`flex-row items-baseline`}>
+                      <CustomText
+                        weight="bold"
+                        style={[twrnc`text-3xl`, { color: statusColor }]}
+                      >
+                        {formatProgress(userProgress, unitDisplay)}
+                      </CustomText>
+                      <CustomText weight="bold" style={twrnc`text-gray-400 text-sm ml-1`}>
+                        {unitDisplay}
+                      </CustomText>
+                    </View>
+                  </View>
+
+                  {item.goal && (
+                    <View style={twrnc`items-end`}>
+                      <CustomText style={twrnc`text-gray-500 text-[9px] uppercase tracking-widest mb-1`}>
+                        TARGET
+                      </CustomText>
+                      <CustomText weight="bold" style={twrnc`text-white text-lg`}>
+                        {String(item.goal)}
+                      </CustomText>
+                    </View>
+                  )}
+                </View>
+
+                {/* Chunky Progress Bar */}
+                {item.goal && userProgress > 0 && (
+                  <View>
+                    <View style={twrnc`h-3 bg-[#1F2937] rounded-full overflow-hidden mb-2`}>
+                      <View
+                        style={[
+                          twrnc`h-full`,
+                          {
+                            width: `${progressPercentage}%`,
+                            backgroundColor: statusColor
+                          }
+                        ]}
+                      />
+                    </View>
+
+                    <View style={twrnc`flex-row justify-between items-center`}>
+                      <CustomText weight="bold" style={[twrnc`text-xs`, { color: statusColor }]}>
+                        {progressPercentage.toFixed(0)}% COMPLETE
+                      </CustomText>
+
+                      {progressPercentage >= 100 && (
+                        <View style={twrnc`bg-[#FBBF24] px-2.5 py-1 rounded-full`}>
+                          <CustomText weight="bold" style={twrnc`text-[#78350F] text-[9px]`}>
+                            GOAL REACHED
+                          </CustomText>
+                        </View>
+                      )}
+                    </View>
+                  </View>
+                )}
+              </View>
+            </View>
+          )}
+
+          {/* Bold Action Buttons */}
+          {isChallengeCompleted ? (
+            <View
+              style={twrnc`bg-[#374151] py-4 rounded-xl items-center`}
+            >
+              <CustomText weight="bold" style={twrnc`text-[#9BA3AF] text-sm uppercase tracking-wide`}>
+                Challenge Ended
+              </CustomText>
+            </View>
+          ) : isJoined ? (
+            <View
+              style={twrnc`bg-[#10B981] py-4 rounded-xl items-center`}
+            >
+              <CustomText weight="bold" style={twrnc`text-white text-sm uppercase tracking-wide`}>
+                You're In
+              </CustomText>
+            </View>
+          ) : canAccept ? (
+            <TouchableOpacity
+              style={[
+                twrnc`py-4 rounded-xl items-center`,
+                {
+                  backgroundColor: joiningChallenges[item.id] ? '#2563EB' : '#3B82F6',
+                }
+              ]}
+              onPress={() => handleAcceptChallenge(item.id)}
+              disabled={joiningChallenges[item.id]}
+              activeOpacity={0.8}
+            >
+              {joiningChallenges[item.id] ? (
+                <ActivityIndicator size="small" color="white" />
+              ) : (
+                <CustomText weight="bold" style={twrnc`text-white text-sm uppercase tracking-wide`}>
+                  Accept Challenge
+                </CustomText>
+              )}
+            </TouchableOpacity>
+          ) : canJoin ? (
+            <TouchableOpacity
+              style={[
+                twrnc`py-4 rounded-xl items-center`,
+                {
+                  backgroundColor: joiningChallenges[item.id] ? '#2563EB' : '#3B82F6',
+                }
+              ]}
+              onPress={() => handleJoinChallenge(item.id)}
+              disabled={joiningChallenges[item.id]}
+              activeOpacity={0.8}
+            >
+              {joiningChallenges[item.id] ? (
+                <ActivityIndicator size="small" color="white" />
+              ) : (
+                <CustomText weight="bold" style={twrnc`text-white text-sm uppercase tracking-wide`}>
+                  Join Now
+                </CustomText>
+              )}
+            </TouchableOpacity>
+          ) : (
+            <View
+              style={twrnc`bg-[#374151] py-4 rounded-xl items-center`}
+            >
+              <CustomText weight="bold" style={twrnc`text-[#9BA3AF] text-sm uppercase tracking-wide`}>
+                Invite Only
+              </CustomText>
+            </View>
+          )}
+
+          {/* Full Badge */}
+          {isFull && !isJoined && !isChallengeCompleted && (
+            <View
+              style={twrnc`bg-[#EF4444] py-3 rounded-xl items-center mt-3`}
+            >
+              <CustomText weight="bold" style={twrnc`text-white text-xs uppercase tracking-wide`}>
+                Full Capacity
+              </CustomText>
+            </View>
+          )}
+        </View>
       </TouchableOpacity>
     )
   }
@@ -1426,8 +1725,7 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
             </View>
           ) : (
             <TouchableOpacity
-              style={twrnc`${sendingFriendRequests[item.id] ? "bg-[#3251DD]" : "bg-[#4361EE]"
-                } py-2 px-4 rounded-xl items-center`}
+              style={twrnc`${sendingFriendRequests[item.id] ? "bg-[#3251DD]" : "bg-[#4361EE]"} py-2 px-4 rounded-xl items-center`}
               onPress={() => handleSendFriendRequest(item.id)}
               disabled={sendingFriendRequests[item.id]}
               activeOpacity={0.8}
@@ -1480,39 +1778,288 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     return (
       <AnimatedButton
         key={tab.id}
-        style={twrnc`flex-1 items-center py-4`}
+        style={twrnc`flex-1 items-center justify-center py-2`}
         onPress={() => setActiveTab(tab.id)}
         activeOpacity={0.8}
       >
-        <View
-          style={[
-            twrnc`w-12 h-12 rounded-2xl items-center justify-center mb-2`,
-            { backgroundColor: isActive ? tab.bgColor : "#2A2E3A" },
-          ]}
-        >
-          <Ionicons name={tab.icon} size={24} color={isActive ? tab.color : "#6B7280"} />
+        <View style={twrnc`items-center justify-center`}>
+          <View
+            style={[
+              twrnc`w-10 h-10 rounded-xl items-center justify-center mb-1.5`,
+              { backgroundColor: isActive ? tab.bgColor : "#2A2E3A" },
+            ]}
+          >
+            <Ionicons name={tab.icon} size={20} color={isActive ? tab.color : "#6B7280"} />
 
-          {tab.count > 0 && (
-            <View
-              style={[
-                twrnc`absolute -top-1 -right-1 w-5 h-5 rounded-full items-center justify-center`,
-                { backgroundColor: tab.color },
-              ]}
-            >
-              <CustomText weight="bold" style={twrnc`text-white text-xs`}>
-                {tab.count > 99 ? "99+" : tab.count}
-              </CustomText>
+            {tab.count > 0 && (
+              <View
+                style={[
+                  twrnc`absolute -top-1 -right-1 w-4 h-4 rounded-full items-center justify-center`,
+                  { backgroundColor: tab.color },
+                ]}
+              >
+                <CustomText weight="bold" style={twrnc`text-white text-[9px]`}>
+                  {tab.count > 9 ? "9+" : tab.count}
+                </CustomText>
+              </View>
+            )}
+          </View>
+
+          <CustomText
+            weight={isActive ? "bold" : "medium"}
+            style={twrnc`text-[10px] text-center ${isActive ? "text-white" : "text-gray-400"}`}
+            numberOfLines={1}
+          >
+            {tab.label}
+          </CustomText>
+        </View>
+      </AnimatedButton>
+    )
+  }
+
+  useEffect(() => {
+    if (selectedChallenge) {
+      fetchParticipantsData();
+    }
+  }, [selectedChallenge?.id]);
+
+
+  const renderPastChallengeItem = ({ item }) => {
+    const activityConfig = activities.find((act) => act.id === item.activityType)
+    const activityColor = activityConfig?.color || "#FFC107"
+    const activityIcon = activityConfig?.icon
+    const userId = auth.currentUser?.uid
+
+    const formatDuration = (minutes) => {
+      if (minutes < 60) return `${minutes} min`
+      const hours = Math.floor(minutes / 60)
+      const remainingMinutes = minutes % 60
+      return `${hours}h ${remainingMinutes}m`
+    }
+
+    const getWinnerInfo = () => {
+      if (item.winnerId) {
+        const isCurrentUserWinner = item.winnerId === userId
+        const winnerName = participantsData[item.winnerId]?.displayName || participantsData[item.winnerId]?.username || "Player"
+
+        return {
+          isCurrentUser: isCurrentUserWinner,
+          name: winnerName,
+          avatar: participantsData[item.winnerId]?.avatar || DEFAULT_AVATAR,
+          winnerId: item.winnerId,
+        }
+      }
+
+      if (!item.progress || !item.participants || item.participants.length === 0) {
+        return null
+      }
+
+      let maxProgress = -1
+      let winnerId = null
+
+      item.participants.forEach((participantId) => {
+        const progress = item.progress[participantId] || 0
+        if (progress > maxProgress) {
+          maxProgress = progress
+          winnerId = participantId
+        }
+      })
+
+      if (!winnerId || maxProgress === 0 || item.participants.filter(id => item.progress[id] === maxProgress).length > 1) {
+        return null
+      }
+
+      const isCurrentUserWinner = winnerId === userId
+      const winnerName = isCurrentUserWinner ? "You" : participantsData[winnerId]?.displayName || "Player"
+
+      return {
+        isCurrentUser: isCurrentUserWinner,
+        name: winnerName,
+        avatar: participantsData[winnerId]?.avatar || DEFAULT_AVATAR,
+        winnerId: winnerId,
+      }
+    }
+
+    const winnerInfo = getWinnerInfo()
+
+    const getResultColor = () => {
+      switch (item.result) {
+        case "won":
+          return "#06D6A0"
+        case "lost":
+          return "#EF4444"
+        case "completed":
+          return "#4361EE"
+        case "expired":
+        default:
+          return "#6B7280"
+      }
+    }
+
+    const getResultLabel = () => {
+      switch (item.result) {
+        case "won":
+          return "Victory"
+        case "lost":
+          return "Defeat"
+        case "completed":
+          return "Completed"
+        case "expired":
+        default:
+          if (winnerInfo) {
+            return winnerInfo.isCurrentUser ? "Victory" : "Defeat"
+          }
+          return "Expired"
+      }
+    }
+
+    const formatDate = (date) => {
+      if (!date) return "N/A"
+      try {
+        let dateObj = date
+        if (!(date instanceof Date)) {
+          if (date?.toDate && typeof date.toDate === "function") {
+            dateObj = date.toDate()
+          } else {
+            dateObj = new Date(date)
+          }
+        }
+        if (isNaN(dateObj.getTime())) {
+          return "N/A"
+        }
+        return dateObj.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+      } catch (e) {
+        console.warn("[v0] Date formatting error:", e)
+        return "N/A"
+      }
+    }
+
+    const safeGoal = item.goal ?? 1
+    const safeParticipants = item.participants ?? []
+
+    const hasGoal = item.goal !== null && item.goal > 0
+
+    const displayDuration = item.mode === 'time' ? item.durationMinutes : item.durationMinutes ?? 0
+    const showDuration = displayDuration > 0
+
+
+    return (
+      <TouchableOpacity
+        style={twrnc`bg-[#2A2E3A] rounded-2xl p-5 mb-4 shadow-lg`}
+        onPress={async () => {
+          // Close modal first if it's open to force a fresh load
+          if (isChallengeDetailsVisible) {
+            setIsChallengeDetailsVisible(false);
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+
+          // Set the selected challenge with fresh data
+          setSelectedChallenge(item);
+
+          // Fetch participants for THIS specific item directly
+          await fetchParticipantsDataForChallenge(item);  // ✅ Pass item directly!
+
+          // Open modal
+          setIsChallengeDetailsVisible(true);
+        }}
+
+        activeOpacity={0.8}
+      >
+        <View style={twrnc`flex-row items-center mb-4`}>
+          <View
+            style={[
+              twrnc`w-16 h-16 rounded-2xl items-center justify-center mr-4`,
+              { backgroundColor: `${activityColor}` },
+            ]}
+          >
+            {activityIcon ? (
+              <Image source={activityIcon} style={twrnc`w-10 h-10`} resizeMode="contain" tintColor="#FFFFFF" />
+            ) : (
+              <Ionicons name="fitness" size={32} color="#FFFFFF" />
+            )}
+          </View>
+
+          <View style={twrnc`flex-1`}>
+            <CustomText weight="bold" style={twrnc`text-white text-lg mb-1`}>
+              {item.title || "Untitled Challenge"}
+            </CustomText>
+
+            <View style={twrnc`flex-row items-center mb-2`}>
+              <View style={[twrnc`px-3 py-1 rounded-xl mr-2`, { backgroundColor: `${activityColor}20` }]}>
+                <CustomText style={[twrnc`text-xs font-medium`, { color: activityColor }]}>
+                  {activityConfig?.name || "Challenge"}
+                </CustomText>
+              </View>
+
+              <View style={[twrnc`px-3 py-1 rounded-xl`, { backgroundColor: `${getResultColor()}20` }]}>
+                <CustomText style={[twrnc`text-xs font-medium`, { color: getResultColor() }]}>
+                  {getResultLabel()}
+                </CustomText>
+              </View>
             </View>
-          )}
+
+            <View style={twrnc`flex-row items-center flex-wrap`}>
+              <View style={twrnc`flex-row items-center mr-3 mb-1`}>
+                <Ionicons name="calendar-outline" size={14} color="#FFC107" />
+                <CustomText style={twrnc`text-[#FFC107] text-xs ml-1`}>{formatDate(item.endDate)}</CustomText>
+              </View>
+
+              {/* Show duration */}
+              {showDuration && (
+                <View style={twrnc`flex-row items-center mr-3 mb-1`}>
+                  <Ionicons name="time-outline" size={14} color="#06D6A0" />
+                  <CustomText style={twrnc`text-[#06D6A0] text-xs ml-1`}>{formatDuration(displayDuration)}</CustomText>
+                </View>
+              )}
+            </View>
+          </View>
         </View>
 
-        <CustomText
-          weight={isActive ? "bold" : "medium"}
-          style={twrnc`text-xs ${isActive ? "text-white" : "text-gray-400"}`}
-        >
-          {tab.label}
-        </CustomText>
-      </AnimatedButton>
+        {winnerInfo && (
+          <View style={twrnc`bg-[#06D6A020] rounded-xl p-3 mb-4 flex-row items-center`}>
+            <Image
+              source={{ uri: winnerInfo.avatar }}
+              style={twrnc`w-10 h-10 rounded-full mr-3 border-2 border-[#06D6A0]`}
+            />
+            <View style={twrnc`flex-1`}>
+              <CustomText weight="bold" style={twrnc`text-[#06D6A0] text-sm`}>
+                🏆 Winner
+              </CustomText>
+              <CustomText weight="semibold" style={twrnc`text-white text-base`}>
+                {winnerInfo.name}
+              </CustomText>
+            </View>
+            {winnerInfo.isCurrentUser && (
+              <View style={twrnc`bg-[#06D6A0] px-3 py-1 rounded-full`}>
+                <CustomText weight="bold" style={twrnc`text-white text-xs`}>
+                  YOU
+                </CustomText>
+              </View>
+            )}
+          </View>
+        )}
+
+        <View style={twrnc`flex-row justify-between items-center pt-4 border-t border-[#3A3F4B]`}>
+          <View style={twrnc`items-center flex-1`}>
+            <CustomText weight="semibold" style={twrnc`text-[#9B5DE5] text-sm`}>
+              {item.stakeXP} XP
+            </CustomText>
+            <CustomText style={twrnc`text-gray-400 text-xs`}>Stake</CustomText>
+          </View>
+          <View style={twrnc`items-center flex-1`}>
+            <CustomText weight="semibold" style={twrnc`text-[#FFC107] text-sm`}>
+              {safeParticipants.length} / {item.maxParticipants || "∞"}
+            </CustomText>
+            <CustomText style={twrnc`text-gray-400 text-xs`}>Players</CustomText>
+          </View>
+          <View style={twrnc`items-center flex-1`}>
+            <CustomText weight="semibold" style={[twrnc`text-sm`, { color: getResultColor() }]}>
+              {item.result === "won" ? "✓" : item.result === "lost" ? "✗" : "∼"}
+            </CustomText>
+            <CustomText style={twrnc`text-gray-400 text-xs`}>Result</CustomText>
+          </View>
+        </View>
+      </TouchableOpacity>
     )
   }
 
@@ -1555,71 +2102,46 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
     )
   }
 
-  // Helper function to format time in HH:MM:SS
-  const formatTime = (seconds) => {
-    if (typeof seconds !== "number" || isNaN(seconds)) {
-      return "00:00"
-    }
-
-    const hours = Math.floor(seconds / 3600)
-    const minutes = Math.floor((seconds % 3600) / 60)
-    const remainingSeconds = seconds % 60
-
-    const formattedHours = String(hours).padStart(2, "0")
-    const formattedMinutes = String(minutes).padStart(2, "0")
-    const formattedSeconds = String(remainingSeconds).padStart(2, "0")
-
-    return `${formattedHours}:${formattedMinutes}:${formattedSeconds}`
-  }
-
   return (
     <View style={twrnc`flex-1 bg-[#121826]`}>
-      {/* CustomModal integration */}
       <CustomModal visible={modalVisible} onClose={() => setModalVisible(false)} {...modalProps} />
 
       {/* Enhanced Header */}
-      <View style={twrnc`bg-[#1A1F2E] px-4 py-4 flex-row items-center justify-between shadow-lg`}>
-        <TouchableOpacity onPress={navigateToDashboard} style={twrnc`p-2 rounded-xl bg-[#2A2E3A]`} activeOpacity={0.7}>
-          <Ionicons name="chevron-back" size={20} color="#FFFFFF" />
-        </TouchableOpacity>
-        <View style={twrnc`items-center`}>
-          <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-            Community
-          </CustomText>
-          <CustomText style={twrnc`text-gray-400 text-sm`}>
-            {friends.length} friends • {challenges.length} challenges
-          </CustomText>
+      <View style={[twrnc`px-5 pt-14`, { backgroundColor: "#1e293b" }]}>
+        <View style={twrnc`flex-row justify-between items-center mb-3`}>
+          {/* Back Button */}
+          <TouchableOpacity
+            onPress={navigateToDashboard}
+            style={twrnc`bg-[#0f172a] p-2.5 rounded-xl`}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="chevron-back" size={22} color="#FFFFFF" />
+          </TouchableOpacity>
+
+          {/* Title Section */}
+          <View style={twrnc`flex-1 mx-4`}>
+            <CustomText weight="bold" style={twrnc`text-white text-xl text-center`}>
+              Community
+            </CustomText>
+            <CustomText style={twrnc`text-gray-400 text-xs text-center mt-0.5`}>
+              {friends.length} friends • {challenges.length} challenges
+            </CustomText>
+          </View>
+
+          {/* Add Friend Button */}
+          <TouchableOpacity
+            style={twrnc`bg-[#0f172a] p-2.5 rounded-xl`}
+            onPress={() => setIsAddFriendModalVisible(true)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="person-add-outline" size={22} color="#FFFFFF" />
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity
-          style={twrnc`p-2 rounded-xl bg-[#2A2E3A]`}
-          onPress={() => setIsAddFriendModalVisible(true)}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="person-add-outline" size={20} color="#FFFFFF" />
-        </TouchableOpacity>
       </View>
 
-      {/* Enhanced Search Bar */}
-      <View style={twrnc`px-5 py-4`}>
-        <View style={twrnc`flex-row items-center bg-[#2A2E3A] rounded-2xl px-4 py-3`}>
-          <Ionicons name="search-outline" size={20} color="#6B7280" />
-          <TextInput
-            style={twrnc`flex-1 text-white ml-3 text-base`}
-            placeholder="Search friends, challenges..."
-            placeholderTextColor="#6B7280"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-          />
-          {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery("")} activeOpacity={0.7}>
-              <Ionicons name="close-circle" size={20} color="#6B7280" />
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
 
       {/* Enhanced Tabs */}
-      <View style={twrnc`px-5 mb-4`}>
+      <View style={twrnc`px-5 mb-4 mt-4`}>
         <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-2 flex-row`}>{tabs.map((tab) => renderTabButton(tab))}</View>
       </View>
 
@@ -1639,20 +2161,62 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
       >
         {activeTab === "friends" && (
           <>
-            <View style={twrnc`flex-row justify-between items-center mb-6`}>
-              <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                Your Friends
-              </CustomText>
-              <TouchableOpacity
-                onPress={() => setIsAddFriendModalVisible(true)}
-                style={twrnc`bg-[#4361EE20] px-4 py-2 rounded-xl`}
-                activeOpacity={0.8}
+            {/* Enhanced Header with Gradient Background - Compact & Uniform */}
+            <View style={twrnc`mb-6`}>
+              <View
+                style={[
+                  twrnc`rounded-2xl p-3.5 overflow-hidden`,
+                  { backgroundColor: '#1F2937' }
+                ]}
               >
-                <CustomText weight="semibold" style={twrnc`text-[#4361EE]`}>
-                  Add New
-                </CustomText>
-              </TouchableOpacity>
+                {/* Decorative Background Pattern */}
+                <View style={twrnc`absolute top-0 right-0 w-28 h-28 opacity-5`}>
+                  <View style={twrnc`absolute inset-0 flex-row flex-wrap`}>
+                    {[...Array(16)].map((_, i) => (
+                      <View
+                        key={i}
+                        style={[
+                          twrnc`w-1/4 h-1/4 border border-[#4361EE]`,
+                          { transform: [{ rotate: '45deg' }] }
+                        ]}
+                      />
+                    ))}
+                  </View>
+                </View>
+
+                <View style={twrnc`flex-row justify-between items-center z-10`}>
+                  <View style={twrnc`flex-1`}>
+                    <View style={twrnc`flex-row items-center mb-0.5`}>
+                      <View style={twrnc`w-1 h-5 bg-[#4361EE] rounded-full mr-2.5`} />
+                      <CustomText weight="bold" style={twrnc`text-white text-lg`}>
+                        Friends
+                      </CustomText>
+                    </View>
+                    <CustomText style={twrnc`text-gray-400 text-xs ml-3.5`}>
+                      {friends.length > 0
+                        ? `${friends.length} ${friends.length === 1 ? 'friend' : 'friends'} connected`
+                        : 'No friends yet'
+                      }
+                    </CustomText>
+                  </View>
+
+                  <TouchableOpacity
+                    onPress={() => setIsAddFriendModalVisible(true)}
+                    style={[
+                      twrnc`px-3.5 py-2 rounded-xl flex-row items-center shadow-lg`,
+                      { backgroundColor: '#4361EE' }
+                    ]}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="person-add" size={14} color="#FFFFFF" style={twrnc`mr-1.5`} />
+                    <CustomText weight="bold" style={twrnc`text-white text-xs`}>
+                      Add
+                    </CustomText>
+                  </TouchableOpacity>
+                </View>
+              </View>
             </View>
+
             {friends.length > 0 ? (
               <>
                 <FlatList
@@ -1664,44 +2228,181 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                 />
               </>
             ) : (
-              <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-8 items-center`}>
-                <View style={twrnc`w-20 h-20 rounded-3xl bg-[#4361EE20] items-center justify-center mb-4`}>
-                  <Ionicons name="people-outline" size={40} color="#4361EE" />
+              /* Enhanced Empty State - Compact & Uniform */
+              <View style={twrnc`bg-[#1F2937] rounded-3xl p-6 items-center overflow-hidden relative`}>
+                {/* Decorative Circles Background - FIXED */}
+                <View style={[
+                  twrnc`absolute -top-10 -right-10 w-32 h-32 rounded-full opacity-5`,
+                  { backgroundColor: '#4361EE' }
+                ]} />
+                <View style={[
+                  twrnc`absolute -bottom-10 -left-10 w-32 h-32 rounded-full opacity-5`,
+                  { backgroundColor: '#4361EE' }
+                ]} />
+
+                {/* Icon Container with Pulse Effect - Compact */}
+                <View style={twrnc`relative mb-4`}>
+                  {/* Outer pulse ring */}
+                  <View
+                    style={[
+                      twrnc`absolute inset-0 rounded-full`,
+                      {
+                        backgroundColor: '#4361EE',
+                        opacity: 0.1,
+                        transform: [{ scale: 1.3 }]
+                      }
+                    ]}
+                  />
+                  <View
+                    style={[
+                      twrnc`absolute inset-0 rounded-full`,
+                      {
+                        backgroundColor: '#4361EE',
+                        opacity: 0.15,
+                        transform: [{ scale: 1.15 }]
+                      }
+                    ]}
+                  />
+
+                  {/* Main icon container - Compact */}
+                  <View
+                    style={[
+                      twrnc`w-20 h-20 rounded-2xl items-center justify-center`,
+                      {
+                        backgroundColor: '#4361EE20',
+                        borderWidth: 2,
+                        borderColor: '#4361EE40'
+                      }
+                    ]}
+                  >
+                    <Ionicons name="people" size={36} color="#4361EE" />
+                  </View>
                 </View>
-                <CustomText weight="bold" style={twrnc`text-white text-xl mb-2`}>
+
+                {/* Text Content - Compact */}
+                <CustomText weight="bold" style={twrnc`text-white text-xl mb-2 text-center`}>
                   No Friends Yet
                 </CustomText>
-                <CustomText style={twrnc`text-gray-400 text-center mb-6 leading-6`}>
-                  Add friends to see their activities, compete in challenges, and stay motivated together
+
+                <CustomText style={twrnc`text-gray-400 text-center text-sm mb-5 leading-5 px-2`}>
+                  Connect with friends to share activities and compete
                 </CustomText>
+
+                {/* Feature Pills - Compact */}
+                <View style={twrnc`flex-row flex-wrap justify-center mb-6 -mx-1`}>
+                  {[
+                    { icon: 'trophy', label: 'Compete', color: '#FFC107' },
+                    { icon: 'fitness', label: 'Track', color: '#06D6A0' },
+                    { icon: 'flame', label: 'Motivate', color: '#EF476F' }
+                  ].map((feature, idx) => (
+                    <View
+                      key={idx}
+                      style={[
+                        twrnc`mx-1 mb-2 px-2.5 py-1.5 rounded-full flex-row items-center`,
+                        { backgroundColor: `${feature.color}20` }
+                      ]}
+                    >
+                      <Ionicons name={feature.icon} size={12} color={feature.color} style={twrnc`mr-1`} />
+                      <CustomText weight="semibold" style={[twrnc`text-[10px]`, { color: feature.color }]}>
+                        {feature.label}
+                      </CustomText>
+                    </View>
+                  ))}
+                </View>
+
+                {/* CTA Button - Compact */}
                 <TouchableOpacity
-                  style={twrnc`bg-[#4361EE] py-3 px-6 rounded-xl`}
+                  style={[
+                    twrnc`py-3 px-6 rounded-xl shadow-lg flex-row items-center`,
+                    {
+                      backgroundColor: '#4361EE',
+                      elevation: 8
+                    }
+                  ]}
                   onPress={() => setIsAddFriendModalVisible(true)}
                   activeOpacity={0.8}
                 >
-                  <CustomText weight="semibold" style={twrnc`text-white`}>
+                  <Ionicons name="search" size={18} color="#FFFFFF" style={twrnc`mr-2`} />
+                  <CustomText weight="bold" style={twrnc`text-white text-sm`}>
                     Find Friends
                   </CustomText>
                 </TouchableOpacity>
+
+                {/* Bottom accent line */}
+                <View style={twrnc`absolute bottom-0 left-0 right-0 h-1 flex-row`}>
+                  {[...Array(20)].map((_, i) => (
+                    <View
+                      key={i}
+                      style={[
+                        twrnc`flex-1 h-full`,
+                        { backgroundColor: i % 2 === 0 ? '#4361EE40' : '#4361EE20' }
+                      ]}
+                    />
+                  ))}
+                </View>
               </View>
             )}
           </>
         )}
 
+
         {activeTab === "requests" && (
           <>
-            <View style={twrnc`flex-row justify-between items-center mb-6`}>
-              <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                Friend Requests
-              </CustomText>
-              {friendRequests.length > 0 && (
-                <View style={twrnc`bg-[#06D6A020] px-3 py-1 rounded-xl`}>
-                  <CustomText weight="semibold" style={twrnc`text-[#06D6A0] text-sm`}>
-                    {friendRequests.length} pending
-                  </CustomText>
+            {/* Enhanced Header with Gradient Background - Compact & Uniform */}
+            <View style={twrnc`mb-6`}>
+              <View
+                style={[
+                  twrnc`rounded-2xl p-3.5 overflow-hidden`,
+                  { backgroundColor: '#1F2937' }
+                ]}
+              >
+                {/* Decorative Background Pattern */}
+                <View style={twrnc`absolute top-0 right-0 w-28 h-28 opacity-5`}>
+                  <View style={twrnc`absolute inset-0 flex-row flex-wrap`}>
+                    {[...Array(16)].map((_, i) => (
+                      <View
+                        key={i}
+                        style={[
+                          twrnc`w-1/4 h-1/4 border border-[#06D6A0]`,
+                          { transform: [{ rotate: '45deg' }] }
+                        ]}
+                      />
+                    ))}
+                  </View>
                 </View>
-              )}
+
+                <View style={twrnc`flex-row justify-between items-center z-10`}>
+                  <View style={twrnc`flex-1`}>
+                    <View style={twrnc`flex-row items-center mb-0.5`}>
+                      <View style={twrnc`w-1 h-5 bg-[#06D6A0] rounded-full mr-2.5`} />
+                      <CustomText weight="bold" style={twrnc`text-white text-lg`}>
+                        Requests
+                      </CustomText>
+                    </View>
+                    <CustomText style={twrnc`text-gray-400 text-xs ml-3.5`}>
+                      {friendRequests.length > 0
+                        ? `${friendRequests.length} pending ${friendRequests.length === 1 ? 'request' : 'requests'}`
+                        : 'No pending requests'
+                      }
+                    </CustomText>
+                  </View>
+
+                  {friendRequests.length > 0 && (
+                    <View
+                      style={[
+                        twrnc`px-3 py-1.5 rounded-xl`,
+                        { backgroundColor: '#06D6A020' }
+                      ]}
+                    >
+                      <CustomText weight="bold" style={twrnc`text-[#06D6A0] text-xs`}>
+                        {friendRequests.length}
+                      </CustomText>
+                    </View>
+                  )}
+                </View>
+              </View>
             </View>
+
             {friendRequests.length > 0 ? (
               <FlatList
                 data={friendRequests}
@@ -1710,37 +2411,175 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                 scrollEnabled={false}
               />
             ) : (
-              <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-8 items-center`}>
-                <View style={twrnc`w-20 h-20 rounded-3xl bg-[#06D6A020] items-center justify-center mb-4`}>
-                  <Ionicons name="person-add-outline" size={40} color="#06D6A0" />
+              /* Enhanced Empty State - Compact & Uniform */
+              <View style={twrnc`bg-[#1F2937] rounded-3xl p-6 items-center overflow-hidden relative`}>
+                {/* Decorative Circles Background - FIXED */}
+                <View style={[
+                  twrnc`absolute -top-10 -right-10 w-32 h-32 rounded-full opacity-5`,
+                  { backgroundColor: '#06D6A0' }
+                ]} />
+                <View style={[
+                  twrnc`absolute -bottom-10 -left-10 w-32 h-32 rounded-full opacity-5`,
+                  { backgroundColor: '#06D6A0' }
+                ]} />
+
+                {/* Icon Container with Pulse Effect - Compact */}
+                <View style={twrnc`relative mb-4`}>
+                  {/* Outer pulse rings */}
+                  <View
+                    style={[
+                      twrnc`absolute inset-0 rounded-full`,
+                      {
+                        backgroundColor: '#06D6A0',
+                        opacity: 0.1,
+                        transform: [{ scale: 1.3 }]
+                      }
+                    ]}
+                  />
+                  <View
+                    style={[
+                      twrnc`absolute inset-0 rounded-full`,
+                      {
+                        backgroundColor: '#06D6A0',
+                        opacity: 0.15,
+                        transform: [{ scale: 1.15 }]
+                      }
+                    ]}
+                  />
+
+                  {/* Main icon container - Compact */}
+                  <View
+                    style={[
+                      twrnc`w-20 h-20 rounded-2xl items-center justify-center`,
+                      {
+                        backgroundColor: '#06D6A020',
+                        borderWidth: 2,
+                        borderColor: '#06D6A040'
+                      }
+                    ]}
+                  >
+                    <Ionicons name="person-add" size={36} color="#06D6A0" />
+                  </View>
                 </View>
-                <CustomText weight="bold" style={twrnc`text-white text-xl mb-2`}>
+
+                {/* Text Content - Compact */}
+                <CustomText weight="bold" style={twrnc`text-white text-xl mb-2 text-center`}>
                   No Friend Requests
                 </CustomText>
-                <CustomText style={twrnc`text-gray-400 text-center leading-6`}>
-                  When someone sends you a friend request, it will appear here
+
+                <CustomText style={twrnc`text-gray-400 text-center text-sm mb-5 leading-5 px-2`}>
+                  Friend requests will appear here when received
                 </CustomText>
+
+                {/* Feature Pills - Compact */}
+                <View style={twrnc`flex-row flex-wrap justify-center mb-6 -mx-1`}>
+                  {[
+                    { icon: 'notifications', label: 'Alerts', color: '#06D6A0' },
+                    { icon: 'checkmark-circle', label: 'Accept', color: '#10B981' },
+                    { icon: 'close-circle', label: 'Decline', color: '#EF4444' }
+                  ].map((feature, idx) => (
+                    <View
+                      key={idx}
+                      style={[
+                        twrnc`mx-1 mb-2 px-2.5 py-1.5 rounded-full flex-row items-center`,
+                        { backgroundColor: `${feature.color}20` }
+                      ]}
+                    >
+                      <Ionicons name={feature.icon} size={12} color={feature.color} style={twrnc`mr-1`} />
+                      <CustomText weight="semibold" style={[twrnc`text-[10px]`, { color: feature.color }]}>
+                        {feature.label}
+                      </CustomText>
+                    </View>
+                  ))}
+                </View>
+
+                {/* Info Card */}
+                <View
+                  style={[
+                    twrnc`p-3 rounded-xl w-full`,
+                    { backgroundColor: '#06D6A010' }
+                  ]}
+                >
+                  <View style={twrnc`flex-row items-start`}>
+                    <Ionicons name="information-circle" size={16} color="#06D6A0" style={twrnc`mr-2 mt-0.5`} />
+                    <CustomText style={twrnc`text-gray-400 text-xs leading-5 flex-1`}>
+                      You'll be notified when someone sends you a friend request
+                    </CustomText>
+                  </View>
+                </View>
+
+                {/* Bottom accent line */}
+                <View style={twrnc`absolute bottom-0 left-0 right-0 h-1 flex-row`}>
+                  {[...Array(20)].map((_, i) => (
+                    <View
+                      key={i}
+                      style={[
+                        twrnc`flex-1 h-full`,
+                        { backgroundColor: i % 2 === 0 ? '#06D6A040' : '#06D6A020' }
+                      ]}
+                    />
+                  ))}
+                </View>
               </View>
             )}
           </>
         )}
 
+
         {activeTab === "challenges" && (
           <>
-            <View style={twrnc`flex-row justify-between items-center mb-6`}>
-              <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                Community Challenges
-              </CustomText>
-              <TouchableOpacity
-                onPress={() => setIsCreateChallengeModalVisible(true)}
-                style={twrnc`bg-[#FFC10720] px-4 py-2 rounded-xl`}
-                activeOpacity={0.8}
+            <View style={twrnc`mb-6`}>
+              <View
+                style={[
+                  twrnc`rounded-2xl p-3.5 overflow-hidden`,
+                  { backgroundColor: '#1F2937' }
+                ]}
               >
-                <CustomText weight="semibold" style={twrnc`text-[#FFC107]`}>
-                  Create New
-                </CustomText>
-              </TouchableOpacity>
+                {/* Decorative Background Pattern */}
+                <View style={twrnc`absolute top-0 right-0 w-28 h-28 opacity-5`}>
+                  <View style={twrnc`absolute inset-0 flex-row flex-wrap`}>
+                    {[...Array(16)].map((_, i) => (
+                      <View
+                        key={i}
+                        style={[
+                          twrnc`w-1/4 h-1/4 border border-[#FFC107]`,
+                          { transform: [{ rotate: '45deg' }] }
+                        ]}
+                      />
+                    ))}
+                  </View>
+                </View>
+
+                <View style={twrnc`flex-row justify-between items-center z-10`}>
+                  <View style={twrnc`flex-1`}>
+                    <View style={twrnc`flex-row items-center mb-0.5`}>
+                      <View style={twrnc`w-1 h-5 bg-[#FFC107] rounded-full mr-2.5`} />
+                      <CustomText weight="bold" style={twrnc`text-white text-lg`}>
+                        Challenges
+                      </CustomText>
+                    </View>
+                    <CustomText style={twrnc`text-gray-400 text-xs ml-3.5`}>
+                      {challenges.length} active {challenges.length === 1 ? 'challenge' : 'challenges'}
+                    </CustomText>
+                  </View>
+
+                  <TouchableOpacity
+                    onPress={() => setIsCreateChallengeModalVisible(true)}
+                    style={[
+                      twrnc`px-3.5 py-2 rounded-xl flex-row items-center shadow-lg`,
+                      { backgroundColor: '#FFC107' }
+                    ]}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="add-circle" size={14} color="#121826" style={twrnc`mr-1.5`} />
+                    <CustomText weight="bold" style={twrnc`text-[#121826] text-xs`}>
+                      Create
+                    </CustomText>
+                  </TouchableOpacity>
+                </View>
+              </View>
             </View>
+
             {challenges.length > 0 ? (
               <FlatList
                 data={challenges}
@@ -1749,268 +2588,581 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
                 scrollEnabled={false}
               />
             ) : (
-              <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-8 items-center`}>
-                <View style={twrnc`w-20 h-20 rounded-3xl bg-[#FFC10720] items-center justify-center mb-4`}>
-                  <Ionicons name="trophy-outline" size={40} color="#FFC107" />
+              /* Enhanced Empty State - Compact */
+              <View style={twrnc`bg-[#1F2937] rounded-3xl p-6 items-center overflow-hidden relative`}>
+                {/* Decorative Circles Background - FIXED */}
+                <View style={[
+                  twrnc`absolute -top-10 -right-10 w-32 h-32 rounded-full opacity-5`,
+                  { backgroundColor: '#FFC107' }
+                ]} />
+                <View style={[
+                  twrnc`absolute -bottom-10 -left-10 w-32 h-32 rounded-full opacity-5`,
+                  { backgroundColor: '#FFC107' }
+                ]} />
+
+                {/* Icon Container with Pulse Effect - Smaller */}
+                <View style={twrnc`relative mb-4`}>
+                  {/* Outer pulse ring */}
+                  <View
+                    style={[
+                      twrnc`absolute inset-0 rounded-full`,
+                      {
+                        backgroundColor: '#FFC107',
+                        opacity: 0.1,
+                        transform: [{ scale: 1.3 }]
+                      }
+                    ]}
+                  />
+                  <View
+                    style={[
+                      twrnc`absolute inset-0 rounded-full`,
+                      {
+                        backgroundColor: '#FFC107',
+                        opacity: 0.15,
+                        transform: [{ scale: 1.15 }]
+                      }
+                    ]}
+                  />
+
+                  {/* Main icon container - Compact */}
+                  <View
+                    style={[
+                      twrnc`w-20 h-20 rounded-2xl items-center justify-center`,
+                      {
+                        backgroundColor: '#FFC10720',
+                        borderWidth: 2,
+                        borderColor: '#FFC10740'
+                      }
+                    ]}
+                  >
+                    <Ionicons name="trophy" size={36} color="#FFC107" />
+                  </View>
                 </View>
-                <CustomText weight="bold" style={twrnc`text-white text-xl mb-2`}>
+
+                {/* Text Content - Compact */}
+                <CustomText weight="bold" style={twrnc`text-white text-xl mb-2 text-center`}>
                   No Active Challenges
                 </CustomText>
-                <CustomText style={twrnc`text-gray-400 text-center mb-6 leading-6`}>
-                  Create a challenge and invite your friends to join the competition
+
+                <CustomText style={twrnc`text-gray-400 text-center text-sm mb-5 leading-5 px-2`}>
+                  Create a challenge and invite friends to compete
                 </CustomText>
+
+                {/* Feature Pills - Compact */}
+                <View style={twrnc`flex-row flex-wrap justify-center mb-6 -mx-1`}>
+                  {[
+                    { icon: 'people', label: 'Duo', color: '#4361EE' },
+                    { icon: 'trophy', label: 'Compete', color: '#FFC107' },
+                    { icon: 'flash', label: 'Win XP', color: '#EF476F' }
+                  ].map((feature, idx) => (
+                    <View
+                      key={idx}
+                      style={[
+                        twrnc`mx-1 mb-2 px-2.5 py-1.5 rounded-full flex-row items-center`,
+                        { backgroundColor: `${feature.color}20` }
+                      ]}
+                    >
+                      <Ionicons name={feature.icon} size={12} color={feature.color} style={twrnc`mr-1`} />
+                      <CustomText weight="semibold" style={[twrnc`text-[10px]`, { color: feature.color }]}>
+                        {feature.label}
+                      </CustomText>
+                    </View>
+                  ))}
+                </View>
+
+                {/* CTA Button - Compact */}
                 <TouchableOpacity
-                  style={twrnc`bg-[#FFC107] py-3 px-6 rounded-xl`}
+                  style={[
+                    twrnc`py-3 px-6 rounded-xl shadow-lg flex-row items-center`,
+                    {
+                      backgroundColor: '#FFC107',
+                      elevation: 8
+                    }
+                  ]}
                   onPress={() => setIsCreateChallengeModalVisible(true)}
                   activeOpacity={0.8}
                 >
-                  <CustomText weight="semibold" style={twrnc`text-[#121826]`}>
+                  <Ionicons name="add-circle" size={18} color="#121826" style={twrnc`mr-2`} />
+                  <CustomText weight="bold" style={twrnc`text-[#121826] text-sm`}>
                     Create Challenge
                   </CustomText>
                 </TouchableOpacity>
+
+                {/* Bottom accent line */}
+                <View style={twrnc`absolute bottom-0 left-0 right-0 h-1 flex-row`}>
+                  {[...Array(20)].map((_, i) => (
+                    <View
+                      key={i}
+                      style={[
+                        twrnc`flex-1 h-full`,
+                        { backgroundColor: i % 2 === 0 ? '#FFC10740' : '#FFC10720' }
+                      ]}
+                    />
+                  ))}
+                </View>
               </View>
             )}
           </>
         )}
 
+
         {activeTab === "leaderboard" && (
           <>
-            <View style={twrnc`flex-row justify-between items-center mb-6`}>
-              <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                Weekly Leaderboard
-              </CustomText>
-              <TouchableOpacity style={twrnc`bg-[#FF6B3520] px-4 py-2 rounded-xl`} activeOpacity={0.8}>
-                <CustomText weight="semibold" style={twrnc`text-[#FF6B35]`}>
-                  View All
+            {/* Top 3 Podium Section */}
+            {leaderboard.length >= 3 && (
+              <View style={twrnc`mb-6`}>
+                <CustomText weight="bold" style={twrnc`text-white text-xl mb-4`}>
+                  Top Champions
                 </CustomText>
-              </TouchableOpacity>
-            </View>
-            <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-5 mb-6`}>
+                <View style={twrnc`flex-row items-end justify-center mb-6`}>
+                  {/* 2nd Place - Shows Available XP */}
+                  <View style={twrnc`items-center flex-1 mb-8`}>
+                    <View style={twrnc`relative`}>
+                      <Image
+                        source={{ uri: leaderboard[1]?.avatar || DEFAULT_AVATAR }}
+                        style={twrnc`w-16 h-16 rounded-2xl border-3 border-[#C0C0C0]`}
+                      />
+                      <View style={twrnc`absolute -top-2 -right-2 w-7 h-7 rounded-full bg-[#C0C0C0] items-center justify-center border-2 border-[#1F2937]`}>
+                        <CustomText weight="bold" style={twrnc`text-[#1F2937] text-xs`}>2</CustomText>
+                      </View>
+                    </View>
+                    <CustomText weight="bold" style={twrnc`text-white text-sm mt-2`} numberOfLines={1}>
+                      {leaderboard[1]?.name}
+                    </CustomText>
+                    <View style={twrnc`bg-[#C0C0C020] px-3 py-1.5 rounded-lg mt-1`}>
+                      <CustomText weight="bold" style={twrnc`text-[#C0C0C0] text-xs`}>
+                        {leaderboard[1]?.xp?.toLocaleString()} XP
+                      </CustomText>
+                    </View>
+                  </View>
+
+                  {/* 1st Place - Shows Available XP */}
+                  <View style={twrnc`items-center flex-1`}>
+                    <View style={twrnc`absolute -top-3`}>
+                      <Ionicons name="trophy" size={24} color="#FFD700" />
+                    </View>
+                    <View style={twrnc`relative mt-6`}>
+                      <Image
+                        source={{ uri: leaderboard[0]?.avatar || DEFAULT_AVATAR }}
+                        style={twrnc`w-20 h-20 rounded-2xl border-4 border-[#FFD700]`}
+                      />
+                      <View style={twrnc`absolute -top-2 -right-2 w-8 h-8 rounded-full bg-[#FFD700] items-center justify-center border-2 border-[#1F2937]`}>
+                        <CustomText weight="bold" style={twrnc`text-[#1F2937] text-sm`}>1</CustomText>
+                      </View>
+                    </View>
+                    <CustomText weight="bold" style={twrnc`text-white text-base mt-2`} numberOfLines={1}>
+                      {leaderboard[0]?.name}
+                    </CustomText>
+                    <View style={twrnc`bg-[#FFD70020] px-3 py-1.5 rounded-lg mt-1`}>
+                      <CustomText weight="bold" style={twrnc`text-[#FFD700] text-sm`}>
+                        {leaderboard[0]?.xp?.toLocaleString()} XP
+                      </CustomText>
+                    </View>
+                  </View>
+
+                  {/* 3rd Place - Shows Available XP */}
+                  <View style={twrnc`items-center flex-1 mb-8`}>
+                    <View style={twrnc`relative`}>
+                      <Image
+                        source={{ uri: leaderboard[2]?.avatar || DEFAULT_AVATAR }}
+                        style={twrnc`w-16 h-16 rounded-2xl border-3 border-[#CD7F32]`}
+                      />
+                      <View style={twrnc`absolute -top-2 -right-2 w-7 h-7 rounded-full bg-[#CD7F32] items-center justify-center border-2 border-[#1F2937]`}>
+                        <CustomText weight="bold" style={twrnc`text-[#1F2937] text-xs`}>3</CustomText>
+                      </View>
+                    </View>
+                    <CustomText weight="bold" style={twrnc`text-white text-sm mt-2`} numberOfLines={1}>
+                      {leaderboard[2]?.name}
+                    </CustomText>
+                    <View style={twrnc`bg-[#CD7F3220] px-3 py-1.5 rounded-lg mt-1`}>
+                      <CustomText weight="bold" style={twrnc`text-[#CD7F32] text-xs`}>
+                        {leaderboard[2]?.xp?.toLocaleString()} XP
+                      </CustomText>
+                    </View>
+                  </View>
+                </View>
+              </View>
+            )}
+
+            {/* Full Leaderboard - Shows Available XP */}
+            <View style={twrnc`mb-6`}>
+              <CustomText weight="semibold" style={twrnc`text-white text-sm mb-3`}>
+                Full Rankings
+              </CustomText>
               {leaderboard.length > 0 ? (
                 leaderboard.map((user, index) => (
                   <View
                     key={user.id}
-                    style={twrnc`flex-row items-center mb-${index < leaderboard.length - 1 ? "4" : "0"}`}
+                    style={[
+                      twrnc`flex-row items-center justify-between rounded-xl p-3 mb-2`,
+                      { backgroundColor: user.isCurrentUser ? '#4361EE20' : '#111827' }
+                    ]}
                   >
-                    <View
-                      style={[
-                        twrnc`w-10 h-10 rounded-2xl items-center justify-center mr-4`,
-                        {
-                          backgroundColor:
-                            index === 0 ? "#FFD700" : index === 1 ? "#C0C0C0" : index === 2 ? "#CD7F32" : "#2A2E3A",
-                        },
-                      ]}
-                    >
-                      <CustomText
-                        weight="bold"
-                        style={twrnc`${index < 3 ? "text-[#121826]" : "text-gray-400"} text-sm`}
-                      >
-                        {index + 1}
-                      </CustomText>
-                    </View>
-                    <View style={twrnc`relative mr-3`}>
-                      <Image source={{ uri: user.avatar || DEFAULT_AVATAR }} style={twrnc`w-12 h-12 rounded-2xl`} />
+                    <View style={twrnc`flex-row items-center flex-1`}>
+                      {/* Rank Badge */}
                       <View
-                        style={twrnc`absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 border-[#2A2E3A] ${user.isOnline ? "bg-green-500" : "bg-gray-500"
-                          }`}
-                      />
-                    </View>
-                    <View style={twrnc`flex-1`}>
-                      <View style={twrnc`flex-row items-center`}>
-                        <CustomText weight={user.isCurrentUser ? "bold" : "semibold"} style={twrnc`text-white`}>
-                          {user.isCurrentUser ? "You" : user.name}
+                        style={[
+                          twrnc`w-6 h-6 rounded-full items-center justify-center mr-3`,
+                          {
+                            backgroundColor:
+                              index === 0 ? "#FBBF24" : index === 1 ? "#C0C0C0" : index === 2 ? "#CD7F32" : "#374151",
+                          },
+                        ]}
+                      >
+                        <CustomText
+                          weight="bold"
+                          style={[
+                            twrnc`text-xs`,
+                            { color: index < 3 ? "#78350F" : "#9BA3AF" }
+                          ]}
+                        >
+                          {index + 1}
                         </CustomText>
-                        {user.isCurrentUser && (
-                          <View style={twrnc`ml-2 bg-[#4361EE] rounded-full px-2 py-0.5`}>
-                            <CustomText weight="bold" style={twrnc`text-white text-xs`}>
-                              You
-                            </CustomText>
-                          </View>
-                        )}
                       </View>
-                      <View style={twrnc`flex-row items-center mt-1`}>
-                        <Ionicons name="trophy" size={12} color="#FFC107" />
-                        <CustomText style={twrnc`text-[#FFC107] text-xs ml-1`}>Lvl {user.level || 1}</CustomText>
+
+                      {/* Avatar */}
+                      <Image
+                        source={{ uri: user.avatar || DEFAULT_AVATAR }}
+                        style={twrnc`w-9 h-9 rounded-full mr-2.5`}
+                      />
+
+                      {/* User Info */}
+                      <View style={twrnc`flex-1`}>
+                        <View style={twrnc`flex-row items-center`}>
+                          <CustomText weight="semibold" style={twrnc`text-white text-sm`}>
+                            {user.isCurrentUser ? "You" : user.name}
+                          </CustomText>
+                          {user.isCurrentUser && (
+                            <View style={twrnc`ml-2 bg-[#4361EE] rounded-full px-2 py-0.5`}>
+                              <CustomText weight="bold" style={twrnc`text-white text-9px`}>
+                                YOU
+                              </CustomText>
+                            </View>
+                          )}
+                        </View>
+                        <CustomText style={twrnc`text-gray-400 text-xs`}>
+                          Lvl {user.level || 1} • {user.distance?.toFixed(1) || 0} km
+                        </CustomText>
                       </View>
                     </View>
+
+                    {/* Available XP Display */}
                     <View style={twrnc`items-end`}>
-                      <CustomText weight="bold" style={twrnc`text-[#9B5DE5] text-lg`}>
-                        {user.exp.toLocaleString()}
+                      <CustomText weight="bold" style={twrnc`text-[#9B5DE5] text-sm`}>
+                        {user.xp?.toLocaleString() || 0}
                       </CustomText>
-                      <CustomText style={twrnc`text-gray-400 text-xs`}>EXP</CustomText>
+                      <CustomText style={twrnc`text-gray-400 text-9px uppercase`}>
+                        Available
+                      </CustomText>
                     </View>
+
+                    {/* Winner Badge for #1 */}
+                    {index === 0 && (
+                      <View style={twrnc`absolute -top-1 -right-1 bg-[#FBBF24] px-2.5 py-1 rounded-full`}>
+                        <CustomText weight="bold" style={twrnc`text-[#78350F] text-9px uppercase`}>
+                          Leader
+                        </CustomText>
+                      </View>
+                    )}
                   </View>
                 ))
               ) : (
-                <View style={twrnc`items-center justify-center py-6`}>
-                  <Ionicons name="trophy-outline" size={36} color="#FFC107" />
-                  <CustomText style={twrnc`text-white text-center mt-4`}>No leaderboard data yet</CustomText>
-                  <CustomText style={twrnc`text-gray-400 text-center mt-2`}>
-                    Complete activities to appear on the leaderboard
+                <View style={twrnc`bg-[#111827] rounded-xl p-6 items-center`}>
+                  <Ionicons name="trophy-outline" size={48} color="#374151" />
+                  <CustomText weight="semibold" style={twrnc`text-gray-400 text-sm text-center mt-3`}>
+                    No leaderboard data yet
+                  </CustomText>
+                  <CustomText style={twrnc`text-gray-500 text-xs text-center mt-1`}>
+                    Complete activities to appear here
                   </CustomText>
                 </View>
               )}
             </View>
 
-            {/* Activity Stats */}
-            <View style={twrnc`mb-8`}>
-              <CustomText weight="bold" style={twrnc`text-white text-xl mb-4`}>
-                Your Community Stats
+            {/* Your Stats Card - Shows Total XP */}
+            <View style={twrnc`mb-6`}>
+              <CustomText weight="semibold" style={twrnc`text-white text-sm mb-3`}>
+                Your Performance
               </CustomText>
-              <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-5`}>
-                <View style={twrnc`flex-row justify-between mb-6`}>
-                  <View style={twrnc`items-center flex-1`}>
-                    <View style={twrnc`w-12 h-12 rounded-2xl bg-[#4361EE20] items-center justify-center mb-2`}>
-                      <Ionicons name="people-outline" size={24} color="#4361EE" />
+              <View style={twrnc`bg-[#1F2937] rounded-xl p-4 border-l-4 border-[#4361EE]`}>
+                {/* Stats Grid */}
+                <View style={twrnc`flex-row flex-wrap -mx-1 mb-4`}>
+                  {/* Rank */}
+                  <View style={twrnc`w-1/3 px-1 mb-2`}>
+                    <View style={twrnc`rounded-xl p-3 bg-[#FF6B3520]`}>
+                      <CustomText style={twrnc`text-[#FF6B35] text-9px uppercase mb-1`}>
+                        Rank
+                      </CustomText>
+                      <CustomText weight="bold" style={twrnc`text-[#FF6B35] text-sm`}>
+                        #{leaderboard.findIndex((user) => user.isCurrentUser) + 1 || "-"}
+                      </CustomText>
                     </View>
-                    <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                      {userProfile?.friends?.length || 0}
-                    </CustomText>
-                    <CustomText style={twrnc`text-gray-400 text-xs`}>Friends</CustomText>
                   </View>
-                  <View style={twrnc`items-center flex-1`}>
-                    <View style={twrnc`w-12 h-12 rounded-2xl bg-[#FFC10720] items-center justify-center mb-2`}>
-                      <Ionicons name="trophy-outline" size={24} color="#FFC107" />
+
+                  {/* Friends */}
+                  <View style={twrnc`w-1/3 px-1 mb-2`}>
+                    <View style={twrnc`rounded-xl p-3 bg-[#34D399] bg-opacity-15`}>
+                      <CustomText style={twrnc`text-[#34D399] text-9px uppercase mb-1`}>
+                        Friends
+                      </CustomText>
+                      <CustomText weight="bold" style={twrnc`text-[#34D399] text-sm`}>
+                        {userProfile?.friends?.length || 0}
+                      </CustomText>
                     </View>
-                    <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                      {challenges.length}
-                    </CustomText>
-                    <CustomText style={twrnc`text-gray-400 text-xs`}>Challenges</CustomText>
                   </View>
-                  <View style={twrnc`items-center flex-1`}>
-                    <View style={twrnc`w-12 h-12 rounded-2xl bg-[#FF6B3520] items-center justify-center mb-2`}>
-                      <Ionicons name="podium-outline" size={24} color="#FF6B35" />
+
+                  {/* Challenges */}
+                  <View style={twrnc`w-1/3 px-1 mb-2`}>
+                    <View style={twrnc`rounded-xl p-3 bg-[#FFC10720]`}>
+                      <CustomText style={twrnc`text-[#FFC107] text-9px uppercase mb-1`}>
+                        Active
+                      </CustomText>
+                      <CustomText weight="bold" style={twrnc`text-[#FFC107] text-sm`}>
+                        {challenges.length}
+                      </CustomText>
                     </View>
-                    <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                      {leaderboard.findIndex((user) => user.isCurrentUser) + 1 || "-"}
-                    </CustomText>
-                    <CustomText style={twrnc`text-gray-400 text-xs`}>Rank</CustomText>
+                  </View>
+
+                  {/* Distance */}
+                  <View style={twrnc`w-1/2 px-1`}>
+                    <View style={twrnc`rounded-xl p-3 bg-[#06D6A020]`}>
+                      <CustomText style={twrnc`text-[#06D6A0] text-9px uppercase mb-1`}>
+                        Distance
+                      </CustomText>
+                      <CustomText weight="bold" style={twrnc`text-[#06D6A0] text-sm`}>
+                        {currentUserLeaderboard?.distance?.toFixed(1) || "0"} km
+                      </CustomText>
+                    </View>
+                  </View>
+
+                  {/* Total XP - Shows totalXP from user profile */}
+                  <View style={twrnc`w-1/2 px-1`}>
+                    <View style={twrnc`rounded-xl p-3 bg-[#9B5DE520]`}>
+                      <CustomText style={twrnc`text-[#9B5DE5] text-9px uppercase mb-1`}>
+                        Total XP
+                      </CustomText>
+                      <CustomText weight="bold" style={twrnc`text-[#9B5DE5] text-sm`}>
+                        {currentUserLeaderboard?.totalXP?.toLocaleString() || "0"}
+                      </CustomText>
+                    </View>
                   </View>
                 </View>
 
-                {/* Add EXP display to user stats */}
-                <View style={twrnc`flex-row justify-between mb-4`}>
-                  <View style={twrnc`items-center flex-1`}>
-                    <View style={twrnc`w-12 h-12 rounded-2xl bg-[#06D6A020] items-center justify-center mb-2`}>
-                      <Ionicons name="walk-outline" size={24} color="#06D6A0" />
-                    </View>
-                    <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                      {leaderboard.find((user) => user.isCurrentUser)?.distance?.toFixed(1) || "0"}
-                    </CustomText>
-                    <CustomText style={twrnc`text-gray-400 text-xs`}>Distance (km)</CustomText>
-                  </View>
-                  <View style={twrnc`items-center flex-1`}>
-                    <View style={twrnc`w-12 h-12 rounded-2xl bg-[#9B5DE520] items-center justify-center mb-2`}>
-                      <Ionicons name="star" size={24} color="#9B5DE5" />
-                    </View>
-                    <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                      {leaderboard.find((user) => user.isCurrentUser)?.exp?.toLocaleString() || "0"}
-                    </CustomText>
-                    <CustomText style={twrnc`text-gray-400 text-xs`}>Total EXP</CustomText>
-                  </View>
-                </View>
-
+                {/* View Profile Button */}
                 <TouchableOpacity
-                  style={twrnc`bg-[#4361EE20] rounded-xl p-4 items-center`}
+                  style={twrnc`bg-[#4361EE] rounded-xl py-3 items-center`}
                   onPress={() => {
-                    // Navigation to profile
-                    showModal({ title: "Navigation", message: "Navigating to Profile (placeholder)", type: "info" })
+                    navigateToProfile();
                   }}
-                  activeOpacity={0.8}
+                  activeOpacity={0.7}
                 >
-                  <CustomText weight="semibold" style={twrnc`text-[#4361EE]`}>
-                    View Your Profile
+                  <CustomText weight="bold" style={twrnc`text-white text-sm uppercase tracking-wide`}>
+                    View Full Profile
                   </CustomText>
                 </TouchableOpacity>
               </View>
             </View>
           </>
         )}
-      </ScrollView>
 
-      {/* Add Friend Modal */}
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={isAddFriendModalVisible}
-        onRequestClose={() => setIsAddFriendModalVisible(false)}
-      >
-        <View style={twrnc`flex-1 bg-black bg-opacity-50 justify-end`}>
-          <View style={twrnc`bg-[#121826] rounded-t-3xl p-6 h-3/4`}>
-            <View style={twrnc`flex-row justify-between items-center mb-6`}>
-              <CustomText weight="bold" style={twrnc`text-white text-2xl`}>
-                Find Friends
-              </CustomText>
-              <TouchableOpacity
-                style={twrnc`bg-[#2A2E3A] p-3 rounded-2xl`}
-                onPress={() => setIsAddFriendModalVisible(false)}
-                activeOpacity={0.8}
+
+
+        {activeTab === "history" && (
+          <>
+            {/* Enhanced Header with Gradient Background - Compact */}
+            <View style={twrnc`mb-6`}>
+              <View
+                style={[
+                  twrnc`rounded-2xl p-3.5 overflow-hidden`,
+                  { backgroundColor: '#1F2937' }
+                ]}
               >
-                <Ionicons name="close" size={20} color="#FFFFFF" />
-              </TouchableOpacity>
-            </View>
-            <View style={twrnc`flex-row items-center bg-[#2A2E3A] rounded-2xl px-4 py-3 mb-6`}>
-              <Ionicons name="search-outline" size={20} color="#6B7280" />
-              <TextInput
-                style={twrnc`flex-1 text-white ml-3 text-base`}
-                placeholder="Search by name or username..."
-                placeholderTextColor="#6B7280"
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-                autoFocus={true}
-              />
-              {searchQuery.length > 0 && (
-                <TouchableOpacity
-                  onPress={() => {
-                    setSearchQuery("")
-                    setSearchResults([])
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="close-circle" size={20} color="#6B7280" />
-                </TouchableOpacity>
-              )}
-            </View>
-            {searchLoading ? (
-              <View style={twrnc`items-center justify-center py-12`}>
-                <ActivityIndicator size="large" color="#4361EE" />
-                <CustomText style={twrnc`text-white mt-4`}>Searching...</CustomText>
+                {/* Decorative Background Pattern */}
+                <View style={twrnc`absolute top-0 right-0 w-28 h-28 opacity-5`}>
+                  <View style={twrnc`absolute inset-0 flex-row flex-wrap`}>
+                    {[...Array(16)].map((_, i) => (
+                      <View
+                        key={i}
+                        style={[
+                          twrnc`w-1/4 h-1/4 border border-[#9B5DE5]`,
+                          { transform: [{ rotate: '45deg' }] }
+                        ]}
+                      />
+                    ))}
+                  </View>
+                </View>
+
+                <View style={twrnc`flex-row justify-between items-center z-10`}>
+                  <View style={twrnc`flex-1`}>
+                    <View style={twrnc`flex-row items-center mb-0.5`}>
+                      <View style={twrnc`w-1 h-5 bg-[#9B5DE5] rounded-full mr-2.5`} />
+                      <CustomText weight="bold" style={twrnc`text-white text-lg`}>
+                        History
+                      </CustomText>
+                    </View>
+                    <CustomText style={twrnc`text-gray-400 text-xs ml-3.5`}>
+                      {pastChallenges.length > 0
+                        ? `${pastChallenges.length} completed ${pastChallenges.length === 1 ? 'challenge' : 'challenges'}`
+                        : 'No past challenges yet'
+                      }
+                    </CustomText>
+                  </View>
+
+                  {pastChallenges.length > 0 && (
+                    <View
+                      style={[
+                        twrnc`px-3 py-1.5 rounded-xl`,
+                        { backgroundColor: '#9B5DE520' }
+                      ]}
+                    >
+                      <CustomText weight="bold" style={twrnc`text-[#9B5DE5] text-xs`}>
+                        {pastChallenges.length}
+                      </CustomText>
+                    </View>
+                  )}
+                </View>
               </View>
-            ) : searchResults.length > 0 ? (
+            </View>
+
+            {pastChallenges.length > 0 ? (
               <FlatList
-                data={searchResults}
-                renderItem={renderSearchResultItem}
+                data={pastChallenges}
+                renderItem={renderPastChallengeItem}
                 keyExtractor={(item) => item.id}
-                showsVerticalScrollIndicator={false}
+                scrollEnabled={false}
               />
-            ) : searchQuery.length > 0 ? (
-              <View style={twrnc`items-center justify-center py-12`}>
-                <View style={twrnc`w-20 h-20 rounded-3xl bg-[#6B728020] items-center justify-center mb-4`}>
-                  <Ionicons name="search-outline" size={40} color="#6B7280" />
-                </View>
-                <CustomText weight="bold" style={twrnc`text-white text-xl mb-2`}>
-                  No Results Found
-                </CustomText>
-                <CustomText style={twrnc`text-gray-400 text-center`}>
-                  No users found matching "{searchQuery}"
-                </CustomText>
-              </View>
             ) : (
-              <View style={twrnc`items-center justify-center py-12`}>
-                <View style={twrnc`w-20 h-20 rounded-3xl bg-[#4361EE20] items-center justify-center mb-4`}>
-                  <Ionicons name="people-outline" size={40} color="#4361EE" />
+              /* Enhanced Empty State - Compact */
+              <View style={twrnc`bg-[#1F2937] rounded-3xl p-6 items-center overflow-hidden relative`}>
+                {/* Decorative Circles Background - FIXED */}
+                <View style={[
+                  twrnc`absolute -top-10 -right-10 w-32 h-32 rounded-full opacity-5`,
+                  { backgroundColor: '#9B5DE5' }
+                ]} />
+                <View style={[
+                  twrnc`absolute -bottom-10 -left-10 w-32 h-32 rounded-full opacity-5`,
+                  { backgroundColor: '#9B5DE5' }
+                ]} />
+
+                {/* Icon Container with Pulse Effect - Compact */}
+                <View style={twrnc`relative mb-4`}>
+                  {/* Outer pulse rings */}
+                  <View
+                    style={[
+                      twrnc`absolute inset-0 rounded-full`,
+                      {
+                        backgroundColor: '#9B5DE5',
+                        opacity: 0.1,
+                        transform: [{ scale: 1.3 }]
+                      }
+                    ]}
+                  />
+                  <View
+                    style={[
+                      twrnc`absolute inset-0 rounded-full`,
+                      {
+                        backgroundColor: '#9B5DE5',
+                        opacity: 0.15,
+                        transform: [{ scale: 1.15 }]
+                      }
+                    ]}
+                  />
+
+                  {/* Main icon container - Compact */}
+                  <View
+                    style={[
+                      twrnc`w-20 h-20 rounded-2xl items-center justify-center`,
+                      {
+                        backgroundColor: '#9B5DE520',
+                        borderWidth: 2,
+                        borderColor: '#9B5DE540'
+                      }
+                    ]}
+                  >
+                    <Ionicons name="time" size={36} color="#9B5DE5" />
+                  </View>
                 </View>
-                <CustomText weight="bold" style={twrnc`text-white text-xl mb-2`}>
-                  Search for Friends
+
+                {/* Text Content - Compact */}
+                <CustomText weight="bold" style={twrnc`text-white text-xl mb-2 text-center`}>
+                  No Challenge History
                 </CustomText>
-                <CustomText style={twrnc`text-gray-400 text-center px-6`}>
-                  Find friends by searching their name or username
+
+                <CustomText style={twrnc`text-gray-400 text-center text-sm mb-5 leading-5 px-2`}>
+                  Your completed and expired challenges will appear here
                 </CustomText>
+
+                {/* Feature Pills - Compact */}
+                <View style={twrnc`flex-row flex-wrap justify-center mb-6 -mx-1`}>
+                  {[
+                    { icon: 'trophy', label: 'Wins', color: '#FFC107' },
+                    { icon: 'bar-chart', label: 'Stats', color: '#06D6A0' },
+                    { icon: 'flame', label: 'Streaks', color: '#EF476F' }
+                  ].map((feature, idx) => (
+                    <View
+                      key={idx}
+                      style={[
+                        twrnc`mx-1 mb-2 px-2.5 py-1.5 rounded-full flex-row items-center`,
+                        { backgroundColor: `${feature.color}20` }
+                      ]}
+                    >
+                      <Ionicons name={feature.icon} size={12} color={feature.color} style={twrnc`mr-1`} />
+                      <CustomText weight="semibold" style={[twrnc`text-[10px]`, { color: feature.color }]}>
+                        {feature.label}
+                      </CustomText>
+                    </View>
+                  ))}
+                </View>
+
+                {/* Info Card */}
+                <View
+                  style={[
+                    twrnc`p-3 rounded-xl w-full`,
+                    { backgroundColor: '#9B5DE510' }
+                  ]}
+                >
+                  <View style={twrnc`flex-row items-start`}>
+                    <Ionicons name="information-circle" size={16} color="#9B5DE5" style={twrnc`mr-2 mt-0.5`} />
+                    <CustomText style={twrnc`text-gray-400 text-xs leading-5 flex-1`}>
+                      Complete challenges to build your history and track your progress over time
+                    </CustomText>
+                  </View>
+                </View>
+
+                {/* Bottom accent line */}
+                <View style={twrnc`absolute bottom-0 left-0 right-0 h-1 flex-row`}>
+                  {[...Array(20)].map((_, i) => (
+                    <View
+                      key={i}
+                      style={[
+                        twrnc`flex-1 h-full`,
+                        { backgroundColor: i % 2 === 0 ? '#9B5DE540' : '#9B5DE520' }
+                      ]}
+                    />
+                  ))}
+                </View>
               </View>
             )}
-          </View>
-        </View>
-      </Modal>
+          </>
+        )}
+
+
+      </ScrollView>
+
+      <AddFriendModal
+        isVisible={isAddFriendModalVisible}
+        onClose={() => setIsAddFriendModalVisible(false)}
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
+        searchResults={searchResults}
+        searchLoading={searchLoading}
+        friends={friends}
+        sendingFriendRequests={sendingFriendRequests}
+        onSelectFriend={setSelectedFriend}
+        onShowProfile={() => setIsFriendProfileVisible(true)}
+        handleSendFriendRequest={handleSendFriendRequest}
+        renderSearchResultItem={renderSearchResultItem}
+      />
 
       <CreateChallengeModal
         isVisible={isCreateChallengeModalVisible}
@@ -2024,541 +3176,31 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         creatingChallenge={creatingChallenge}
       />
 
-      {/* Custom Challenge Modal */}
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={isCustomChallengeModalVisible}
-        onRequestClose={() => setIsCustomChallengeModalVisible(false)}
-      >
-        <View style={twrnc`flex-1 bg-black bg-opacity-50 justify-end`}>
-          <View style={twrnc`bg-[#121826] rounded-t-3xl p-6 h-4/5`}>
-            <View style={twrnc`flex-row justify-between items-center mb-6`}>
-              <View style={twrnc`flex-1`}>
-                <CustomText weight="bold" style={twrnc`text-white text-2xl mb-1`}>
-                  Challenge {challengeTargetFriend?.displayName || challengeTargetFriend?.username}
-                </CustomText>
-                <CustomText style={twrnc`text-gray-400 text-sm`}>Create a personalized fitness challenge</CustomText>
-              </View>
-              <TouchableOpacity
-                style={twrnc`bg-[#2A2E3A] p-3 rounded-2xl ml-4`}
-                onPress={() => {
-                  setIsCustomChallengeModalVisible(false)
-                  setChallengeTargetFriend(null)
-                  setSendingChallenge(false)
-                }}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="close" size={20} color="#FFFFFF" />
-              </TouchableOpacity>
-            </View>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              {/* Activity Type Selection */}
-              <View style={twrnc`mb-6`}>
-                <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  Activity Type
-                </CustomText>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={twrnc`-mx-2`}>
-                  {activities.map((activity) => (
-                    <TouchableOpacity
-                      key={activity.id}
-                      style={twrnc`mx-2 p-4 rounded-2xl items-center min-w-[100px] ${customChallenge.activityType === activity.id
-                        ? `border-2 border-[${activity.color}]`
-                        : "bg-[#2A2E3A]"
-                        }`}
-                      onPress={() => updateChallengeActivity(activity.id)}
-                      activeOpacity={0.8}
-                    >
-                      <View
-                        style={[
-                          twrnc`w-12 h-12 rounded-2xl items-center justify-center mb-2`,
-                          {
-                            backgroundColor: customChallenge.activityType === activity.id ? activity.color : "#3A3F4B",
-                          },
-                        ]}
-                      >
-                        <Image
-                          source={activity.icon}
-                          style={{
-                            width: 24,
-                            height: 24,
-                            tintColor: customChallenge.activityType === activity.id ? "#FFFFFF" : "#6B7280",
-                          }}
-                          resizeMode="contain"
-                        />
-                      </View>
-                      <CustomText
-                        weight={customChallenge.activityType === activity.id ? "bold" : "medium"}
-                        style={twrnc`text-white text-center text-sm`}
-                      >
-                        {activity.name}
-                      </CustomText>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </View>
+      <FriendProfileModal
+        isVisible={isFriendProfileVisible}
+        onClose={() => setIsFriendProfileVisible(false)}
+        selectedFriend={selectedFriend}
+        formatLastActive={formatLastActive}
+        formatTime={formatTime}
+        getActivityDisplayInfo={getActivityDisplayInfo}
+      />
 
-              {/* Goal Selection */}
-              <View style={twrnc`mb-6`}>
-                <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  Challenge Goal
-                </CustomText>
-                <View style={twrnc`flex-row items-center bg-[#2A2E3A] rounded-2xl px-4 py-3 mb-3`}>
-                  <TextInput
-                    style={twrnc`flex-1 text-white text-lg font-bold`}
-                    value={String(customChallenge.goal)}
-                    onChangeText={(text) => {
-                      const numValue = Number.parseFloat(text) || 0
-                      updateChallengeDescription(numValue, customChallenge.duration)
-                    }}
-                    keyboardType="numeric"
-                    placeholder="0"
-                    placeholderTextColor="#6B7280"
-                  />
-                  <CustomText style={twrnc`text-gray-400 ml-2`}>
-                    {activities.find((a) => a.id === customChallenge.activityType)?.unit || "units"}
-                  </CustomText>
-                </View>
-                <View style={twrnc`flex-row flex-wrap`}>
-                  {activities
-                    .find((a) => a.id === customChallenge.activityType)
-                    ?.goalOptions?.map((option) => (
-                      <TouchableOpacity
-                        key={option}
-                        style={twrnc`bg-[#3A3F4B] px-4 py-2 rounded-xl mr-2 mb-2 ${customChallenge.goal === option ? "bg-[#4361EE]" : ""
-                          }`}
-                        onPress={() => updateChallengeDescription(option, customChallenge.duration)}
-                        activeOpacity={0.8}
-                      >
-                        <CustomText
-                          weight={customChallenge.goal === option ? "bold" : "medium"}
-                          style={twrnc`text-white text-sm`}
-                        >
-                          {option} {activities.find((a) => a.id === customChallenge.activityType)?.unit}
-                        </CustomText>
-                      </TouchableOpacity>
-                    ))}
-                </View>
-              </View>
+      <EditChallengeModal
+        isVisible={isEditChallengeModalVisible}
+        onClose={() => {
+          setIsEditChallengeModalVisible(false);
+          setSelectedChallenge(null);
+          setCreatingChallenge(false);
+        }}
+        selectedChallenge={selectedChallenge}
+        newChallenge={newChallenge}
+        setNewChallenge={setNewChallenge}
+        CHALLENGE_GROUP_TYPES={CHALLENGE_GROUP_TYPES}
+        activities={activities}
+        creatingChallenge={creatingChallenge}
+        onSaveChanges={handleSaveChallenge}
+      />
 
-              {/* Difficulty Selection */}
-              <View style={twrnc`mb-6`}>
-                <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  Difficulty Level
-                </CustomText>
-                <View style={twrnc`flex-row justify-between`}>
-                  {DIFFICULTY_LEVELS.map((difficulty) => (
-                    <TouchableOpacity
-                      key={difficulty.id}
-                      style={twrnc`flex-1 mx-1 p-4 rounded-2xl items-center ${customChallenge.difficulty === difficulty.id
-                        ? `border-2 border-[${difficulty.color}]`
-                        : "bg-[#2A2E3A]"
-                        }`}
-                      onPress={() => setCustomChallenge((prev) => ({ ...prev, difficulty: difficulty.id }))}
-                      activeOpacity={0.8}
-                    >
-                      <View
-                        style={[
-                          twrnc`w-10 h-10 rounded-2xl items-center justify-center mb-2`,
-                          {
-                            backgroundColor:
-                              customChallenge.difficulty === difficulty.id ? difficulty.color : "#3A3F4B",
-                          },
-                        ]}
-                      >
-                        <Ionicons
-                          name={difficulty.icon}
-                          size={20}
-                          color={customChallenge.difficulty === difficulty.id ? "#FFFFFF" : "#6B7280"}
-                        />
-                      </View>
-                      <CustomText
-                        weight={customChallenge.difficulty === difficulty.id ? "bold" : "medium"}
-                        style={twrnc`text-white text-center text-xs`}
-                      >
-                        {difficulty.name}
-                      </CustomText>
-                      <CustomText style={twrnc`text-gray-400 text-xs mt-1`}>{difficulty.multiplier}x</CustomText>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
-
-              {/* Duration Selection */}
-              <View style={twrnc`mb-6`}>
-                <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  Duration
-                </CustomText>
-                <View style={twrnc`flex-row justify-between`}>
-                  {[3, 7, 14, 30].map((days) => (
-                    <TouchableOpacity
-                      key={days}
-                      style={twrnc`flex-1 mx-1 p-4 rounded-2xl items-center ${customChallenge.duration === days ? "border-2 border-[#4361EE]" : "bg-[#2A2E3A]"
-                        }`}
-                      onPress={() => updateChallengeDescription(customChallenge.goal, days)}
-                      activeOpacity={0.8}
-                    >
-                      <CustomText
-                        weight={customChallenge.duration === days ? "bold" : "medium"}
-                        style={twrnc`text-white text-center`}
-                      >
-                        {days}
-                      </CustomText>
-                      <CustomText style={twrnc`text-gray-400 text-xs mt-1`}>{days === 1 ? "day" : "days"}</CustomText>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
-
-              {/* Challenge Title */}
-              <View style={twrnc`mb-6`}>
-                <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  Challenge Title
-                </CustomText>
-                <TextInput
-                  style={twrnc`bg-[#2A2E3A] text-white p-4 rounded-2xl text-base`}
-                  placeholder="Enter challenge title"
-                  placeholderTextColor="#6B7280"
-                  value={customChallenge.title}
-                  onChangeText={(text) => setCustomChallenge((prev) => ({ ...prev, title: text }))}
-                />
-              </View>
-
-              {/* Challenge Description */}
-              <View style={twrnc`mb-6`}>
-                <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  Description
-                </CustomText>
-                <TextInput
-                  style={twrnc`bg-[#2A2E3A] text-white p-4 rounded-2xl h-20 text-base`}
-                  placeholder="Enter challenge description"
-                  placeholderTextColor="#6B7280"
-                  multiline={true}
-                  textAlignVertical="top"
-                  value={customChallenge.description}
-                  onChangeText={(text) => setCustomChallenge((prev) => ({ ...prev, description: text }))}
-                />
-              </View>
-
-              {/* Challenge Preview */}
-              <View style={twrnc`mb-8 bg-[#2A2E3A] rounded-2xl p-4`}>
-                <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  Challenge Preview
-                </CustomText>
-                <View style={twrnc`flex-row items-center mb-2`}>
-                  <View
-                    style={[
-                      twrnc`w-8 h-8 rounded-xl items-center justify-center mr-3`,
-                      {
-                        backgroundColor:
-                          activities.find((a) => a.id === customChallenge.activityType)?.color || "#4361EE",
-                      },
-                    ]}
-                  >
-                    <Image
-                      source={activities.find((a) => a.id === customChallenge.activityType)?.icon}
-                      style={{ width: 16, height: 16, tintColor: "#FFFFFF" }}
-                      resizeMode="contain"
-                    />
-                  </View>
-                  <CustomText weight="bold" style={twrnc`text-white text-lg`}>
-                    {customChallenge.title}
-                  </CustomText>
-                </View>
-                <CustomText style={twrnc`text-gray-400 text-sm mb-3`}>{customChallenge.description}</CustomText>
-                <View style={twrnc`flex-row justify-between`}>
-                  <View style={twrnc`items-center`}>
-                    <CustomText weight="semibold" style={twrnc`text-[#4361EE] text-lg`}>
-                      {Math.round(
-                        customChallenge.goal *
-                        (DIFFICULTY_LEVELS.find((d) => d.id === customChallenge.difficulty)?.multiplier || 1),
-                      )}
-                    </CustomText>
-                    <CustomText style={twrnc`text-gray-400 text-xs`}>
-                      {activities.find((a) => a.id === customChallenge.activityType)?.unit}
-                    </CustomText>
-                  </View>
-                  <View style={twrnc`items-center`}>
-                    <CustomText weight="semibold" style={twrnc`text-[#FFC107] text-lg`}>
-                      {customChallenge.duration}
-                    </CustomText>
-                    <CustomText style={twrnc`text-gray-400 text-xs`}>days</CustomText>
-                  </View>
-                  <View style={twrnc`items-center`}>
-                    <CustomText weight="semibold" style={twrnc`text-[#EF476F] text-lg capitalize`}>
-                      {customChallenge.difficulty}
-                    </CustomText>
-                    <CustomText style={twrnc`text-gray-400 text-xs`}>difficulty</CustomText>
-                  </View>
-                </View>
-              </View>
-
-              {/* Action Buttons */}
-              <View style={twrnc`flex-row justify-between mb-4`}>
-                <TouchableOpacity
-                  style={twrnc`bg-[#EF476F] py-4 px-6 rounded-2xl flex-1 mr-2 items-center`}
-                  onPress={() => {
-                    setIsCustomChallengeModalVisible(false)
-                    setChallengeTargetFriend(null)
-                    setSendingChallenge(false)
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <CustomText weight="semibold" style={twrnc`text-white`}>
-                    Cancel
-                  </CustomText>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={twrnc`${creatingChallenge ? "bg-[#3251DD]" : "bg-[#4361EE]"
-                    } py-4 px-6 rounded-2xl flex-1 ml-2 items-center ${!customChallenge.title.trim() ? "opacity-50" : ""
-                    }`}
-                  onPress={handleCreateCustomChallenge}
-                  disabled={creatingChallenge || !customChallenge.title.trim()}
-                  activeOpacity={0.8}
-                >
-                  {creatingChallenge ? (
-                    <View style={twrnc`flex-row items-center`}>
-                      <ActivityIndicator size="small" color="white" style={twrnc`mr-2`} />
-                      <CustomText weight="semibold" style={twrnc`text-white`}>
-                        Creating...
-                      </CustomText>
-                    </View>
-                  ) : (
-                    <CustomText weight="semibold" style={twrnc`text-white`}>
-                      Send Challenge
-                    </CustomText>
-                  )}
-                </TouchableOpacity>
-              </View>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Friend Profile Modal */}
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={isFriendProfileVisible}
-        onRequestClose={() => setIsFriendProfileVisible(false)}
-      >
-        {selectedFriend && (
-          <View style={twrnc`flex-1 bg-black bg-opacity-50 justify-end`}>
-            <View style={twrnc`bg-[#121826] rounded-t-3xl p-6 h-3/4`}>
-              <View style={twrnc`flex-row justify-between items-center mb-6`}>
-                <CustomText weight="bold" style={twrnc`text-white text-2xl`}>
-                  Friend Profile
-                </CustomText>
-                <TouchableOpacity
-                  style={twrnc`bg-[#2A2E3A] p-3 rounded-2xl`}
-                  onPress={() => setIsFriendProfileVisible(false)}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="close" size={20} color="#FFFFFF" />
-                </TouchableOpacity>
-              </View>
-              <ScrollView showsVerticalScrollIndicator={false}>
-                <View style={twrnc`items-center mb-8`}>
-                  <View style={twrnc`relative mb-4`}>
-                    <Image
-                      source={{ uri: selectedFriend.avatar || DEFAULT_AVATAR }}
-                      style={twrnc`w-28 h-28 rounded-3xl border-4 border-[#4361EE]`}
-                    />
-                    <View
-                      style={twrnc`absolute -bottom-2 -right-2 w-8 h-8 rounded-full border-4 border-[#121826] ${selectedFriend.isOnline ? "bg-green-500" : "bg-gray-500"
-                        }`}
-                    />
-                  </View>
-                  <CustomText weight="bold" style={twrnc`text-white text-2xl mb-2`}>
-                    {selectedFriend.displayName || selectedFriend.username || "User"}
-                  </CustomText>
-                  <View style={twrnc`flex-row items-center`}>
-                    <View
-                      style={twrnc`w-2 h-2 rounded-full mr-2 ${selectedFriend.isOnline ? "bg-green-500" : "bg-gray-500"}`}
-                    />
-                    <CustomText style={twrnc`text-gray-400`}>
-                      {selectedFriend.isOnline ? "Online now" : "Offline"}
-                    </CustomText>
-                  </View>
-                </View>
-
-                <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-5 mb-6`}>
-                  <View style={twrnc`flex-row justify-between`}>
-                    <View style={twrnc`items-center flex-1`}>
-                      <View style={twrnc`w-12 h-12 rounded-2xl bg-[#FFC10720] items-center justify-center mb-2`}>
-                        <Ionicons name="flame" size={24} color="#FFC107" />
-                      </View>
-                      <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                        {selectedFriend.streak || 0}
-                      </CustomText>
-                      <CustomText style={twrnc`text-gray-400 text-xs`}>Day Streak</CustomText>
-                    </View>
-                    <View style={twrnc`items-center flex-1`}>
-                      <View style={twrnc`w-12 h-12 rounded-2xl bg-[#4361EE20] items-center justify-center mb-2`}>
-                        <Ionicons name="map-outline" size={24} color="#4361EE" />
-                      </View>
-                      <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                        {selectedFriend.totalDistance ? selectedFriend.totalDistance.toFixed(1) : "0"}
-                      </CustomText>
-                      <CustomText style={twrnc`text-gray-400 text-xs`}>Total km</CustomText>
-                    </View>
-                    <View style={twrnc`items-center flex-1`}>
-                      <View style={twrnc`w-12 h-12 rounded-2xl bg-[#06D6A020] items-center justify-center mb-2`}>
-                        <Ionicons name="fitness-outline" size={24} color="#06D6A0" />
-                      </View>
-                      <CustomText weight="bold" style={twrnc`text-white text-xl`}>
-                        {selectedFriend.totalActivities || 0}
-                      </CustomText>
-                      <CustomText style={twrnc`text-gray-400 text-xs`}>Activities</CustomText>
-                    </View>
-                  </View>
-                </View>
-
-                <View style={twrnc`mb-6`}>
-                  <CustomText weight="bold" style={twrnc`text-white text-xl mb-4`}>
-                    Recent Activity
-                  </CustomText>
-                  {selectedFriend.lastActivity ? (
-                    (() => {
-                      const activityInfo = getActivityDisplayInfo(selectedFriend.lastActivity)
-
-                      return (
-                        <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-5`}>
-                          <View style={twrnc`flex-row items-center mb-3`}>
-                            <View style={twrnc`w-10 h-10 rounded-2xl bg-[#FFC10720] items-center justify-center mr-3`}>
-                              <Ionicons
-                                name={activityInfo?.icon || "fitness-outline"}
-                                size={20}
-                                color={activityInfo?.color || "#FFC107"}
-                              />
-                            </View>
-                            <View style={twrnc`flex-1`}>
-                              <CustomText weight="semibold" style={twrnc`text-white text-lg`}>
-                                {activityInfo?.displayName || "Activity"}
-                              </CustomText>
-                              <CustomText style={twrnc`text-gray-400 text-sm`}>
-                                {selectedFriend.lastActivity.createdAt
-                                  ? formatLastActive(selectedFriend.lastActivity.createdAt)
-                                  : ""}
-                              </CustomText>
-                            </View>
-                          </View>
-                          <View style={twrnc`flex-row justify-between pt-3 border-t border-[#3A3F4B]`}>
-                            {activityInfo?.isGpsActivity ? (
-                              <>
-                                <View style={twrnc`items-center`}>
-                                  <CustomText weight="semibold" style={twrnc`text-[#4361EE] text-lg`}>
-                                    {activityInfo.values.distance || "0"}
-                                  </CustomText>
-                                  <CustomText style={twrnc`text-gray-400 text-xs`}>km</CustomText>
-                                </View>
-                                <View style={twrnc`items-center`}>
-                                  <CustomText weight="semibold" style={twrnc`text-[#06D6A0] text-lg`}>
-                                    {formatTime(activityInfo.values.duration)}
-                                  </CustomText>
-                                  <CustomText style={twrnc`text-gray-400 text-xs`}>Duration</CustomText>
-                                </View>
-                                <View style={twrnc`items-center`}>
-                                  <CustomText weight="semibold" style={twrnc`text-[#FFC107] text-lg`}>
-                                    {formatTime(activityInfo.values.pace)}
-                                  </CustomText>
-                                  <CustomText style={twrnc`text-gray-400 text-xs`}>Pace/km</CustomText>
-                                </View>
-                              </>
-                            ) : (
-                              <>
-                                <View style={twrnc`items-center`}>
-                                  <CustomText weight="semibold" style={twrnc`text-[#9B5DE5] text-lg`}>
-                                    {activityInfo.values.reps || "0"}
-                                  </CustomText>
-                                  <CustomText style={twrnc`text-gray-400 text-xs`}>Reps</CustomText>
-                                </View>
-                                <View style={twrnc`items-center`}>
-                                  <CustomText weight="semibold" style={twrnc`text-[#06D6A0] text-lg`}>
-                                    {activityInfo.values.sets || "1"}
-                                  </CustomText>
-                                  <CustomText style={twrnc`text-gray-400 text-xs`}>Sets</CustomText>
-                                </View>
-                                <View style={twrnc`items-center`}>
-                                  <CustomText weight="semibold" style={twrnc`text-[#FFC107] text-lg`}>
-                                    {formatTime(activityInfo.values.duration)}
-                                  </CustomText>
-                                  <CustomText style={twrnc`text-gray-400 text-xs`}>Duration</CustomText>
-                                </View>
-                              </>
-                            )}
-                          </View>
-                        </View>
-                      )
-                    })()
-                  ) : (
-                    <View style={twrnc`bg-[#2A2E3A] rounded-2xl p-8 items-center`}>
-                      <View style={twrnc`w-16 h-16 rounded-3xl bg-[#6B728020] items-center justify-center mb-4`}>
-                        <Ionicons name="fitness-outline" size={32} color="#6B7280" />
-                      </View>
-                      <CustomText weight="semibold" style={twrnc`text-white text-lg mb-2`}>
-                        No Recent Activity
-                      </CustomText>
-                      <CustomText style={twrnc`text-gray-400 text-center`}>
-                        This friend hasn't recorded any activities yet
-                      </CustomText>
-                    </View>
-                  )}
-                </View>
-
-                <View style={twrnc`flex-row justify-between`}>
-                  <TouchableOpacity
-                    style={twrnc`${sendingChallenge ? "bg-[#3251DD]" : "bg-[#4361EE]"
-                      } rounded-2xl py-4 px-6 flex-1 mr-2 items-center`}
-                    onPress={sendChallengeToFriend}
-                    disabled={sendingChallenge}
-                    activeOpacity={0.8}
-                  >
-                    {sendingChallenge ? (
-                      <>
-                        <ActivityIndicator size="small" color="white" style={twrnc`mb-1`} />
-                        <CustomText weight="semibold" style={twrnc`text-white text-sm`}>
-                          Opening...
-                        </CustomText>
-                      </>
-                    ) : (
-                      <>
-                        <Ionicons name="trophy-outline" size={20} color="white" style={twrnc`mb-1`} />
-                        <CustomText weight="semibold" style={twrnc`text-white text-sm`}>
-                          Challenge
-                        </CustomText>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={twrnc`${sendingQuickMessage ? "bg-[#1F2330]" : "bg-[#2A2E3A]"
-                      } rounded-2xl py-4 px-6 flex-1 ml-2 items-center`}
-                    onPress={() => handleOpenQuickChat(selectedFriend)}
-                    disabled={sendingQuickMessage}
-                    activeOpacity={0.8}
-                  >
-                    {sendingQuickMessage ? (
-                      <>
-                        <ActivityIndicator size="small" color="white" style={twrnc`mb-1`} />
-                        <CustomText weight="semibold" style={twrnc`text-white text-sm`}>
-                          Opening...
-                        </CustomText>
-                      </>
-                    ) : (
-                      <>
-                        <Ionicons name="chatbubble-outline" size={20} color="white" style={twrnc`mb-1`} />
-                        <CustomText weight="semibold" style={twrnc`text-white text-sm`}>
-                          Quick Chat
-                        </CustomText>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                </View>
-              </ScrollView>
-            </View>
-          </View>
-        )}
-      </Modal>
 
       <DuoVsModal
         visible={showVsModal}
@@ -2585,283 +3227,14 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, params = {} 
         handleDeleteChallenge={handleDeleteChallenge}
         creatingChallenge={creatingChallenge}
         handleStartChallenge={handleStartChallenge}
+        handleAcceptChallenge={handleAcceptChallenge}
         startingChallenge={startingChallenge}
         onShowDuoVs={({ challengeId, player1, player2, stakeXP, fullChallenge }) => {
           setVsModalData({ visible: true, challengeId, player1, player2, stakeXP, fullChallenge })
           setShowVsModal(true)
         }}
+
       />
-
-      {/* Edit Challenge Modal */}
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={isEditChallengeModalVisible}
-        onRequestClose={() => {
-          setIsEditChallengeModalVisible(false)
-          setSelectedChallenge(null)
-          setCreatingChallenge(false)
-        }}
-      >
-        <View style={twrnc`flex-1 bg-black bg-opacity-50 justify-end`}>
-          {/* Modal Container */}
-          <View style={twrnc`bg-[#121826] rounded-t-3xl h-2/3`}>
-            {/* Header */}
-            <View style={twrnc`flex-row justify-between items-center p-6 border-b border-gray-700`}>
-              <CustomText weight="bold" style={twrnc`text-white text-2xl`}>
-                Edit Challenge
-              </CustomText>
-              <TouchableOpacity
-                style={twrnc`bg-[#2A2E3A] p-3 rounded-2xl`}
-                onPress={() => {
-                  setIsEditChallengeModalVisible(false)
-                  setSelectedChallenge(null)
-                  setCreatingChallenge(false)
-                }}
-                disabled={creatingChallenge}
-              >
-                {creatingChallenge ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <Ionicons name="close" size={20} color="#FFFFFF" />
-                )}
-              </TouchableOpacity>
-            </View>
-
-            {/* ✅ Scrollable Content */}
-            <ScrollView style={twrnc`p-6`} contentContainerStyle={twrnc`pb-10`} showsVerticalScrollIndicator={false}>
-              {/* Challenge Type (Read-only) */}
-              <View style={twrnc`mb-6`}>
-                <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  Challenge Type
-                </CustomText>
-                <View style={twrnc`bg-[#2A2E3A] p-4 rounded-2xl opacity-50`}>
-                  <CustomText style={twrnc`text-white text-center`}>
-                    {CHALLENGE_GROUP_TYPES.find((t) => t.id === newChallenge.groupType)?.name || "Public"}
-                  </CustomText>
-                </View>
-                <CustomText style={twrnc`text-gray-400 text-sm mt-2 text-center`}>
-                  Challenge type cannot be changed after creation
-                </CustomText>
-              </View>
-
-              {/* Participants Info (Read-only) */}
-              {newChallenge.groupType !== "public" && (
-                <View style={twrnc`mb-6`}>
-                  <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                    Participants
-                  </CustomText>
-                  <View style={twrnc`bg-[#2A2E3A] p-4 rounded-2xl opacity-50`}>
-                    <CustomText style={twrnc`text-white text-center`}>
-                      {selectedChallenge?.participants?.length || 1} /{" "}
-                      {newChallenge.groupType === "duo"
-                        ? 2
-                        : CHALLENGE_GROUP_TYPES.find((t) => t.id === "lobby").maxParticipants}{" "}
-                      participants
-                    </CustomText>
-                  </View>
-                  <CustomText style={twrnc`text-gray-400 text-sm mt-2 text-center`}>
-                    Participants cannot be changed after creation
-                  </CustomText>
-                </View>
-              )}
-
-              {/* Challenge Title */}
-              <View style={twrnc`mb-6`}>
-                <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  Challenge Title
-                </CustomText>
-                <TextInput
-                  style={twrnc`bg-[#2A2E3A] text-white p-4 rounded-2xl text-base`}
-                  placeholder="Enter challenge title"
-                  placeholderTextColor="#6B7280"
-                  value={newChallenge.title}
-                  onChangeText={(text) => setNewChallenge({ ...newChallenge, title: text })}
-                  editable={!creatingChallenge}
-                />
-              </View>
-
-              {/* Description */}
-              <View style={twrnc`mb-6`}>
-                <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  Description
-                </CustomText>
-                <TextInput
-                  style={twrnc`bg-[#2A2E3A] text-white p-4 rounded-2xl h-24 text-base`}
-                  placeholder="Enter challenge description"
-                  placeholderTextColor="#6B7280"
-                  multiline={true}
-                  textAlignVertical="top"
-                  value={newChallenge.description}
-                  onChangeText={(text) => setNewChallenge({ ...newChallenge, description: text })}
-                  editable={!creatingChallenge}
-                />
-              </View>
-
-              {/* Activity Type (Read-only) */}
-              <View style={twrnc`mb-6`}>
-                <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  Activity Type
-                </CustomText>
-                <View style={twrnc`bg-[#2A2E3A] p-4 rounded-2xl opacity-50`}>
-                  <CustomText style={twrnc`text-white text-center`}>
-                    {activities.find((a) => a.id === newChallenge.type)?.name || "Walking"}
-                  </CustomText>
-                </View>
-                <CustomText style={twrnc`text-gray-400 text-sm mt-2 text-center`}>
-                  Activity type cannot be changed after creation
-                </CustomText>
-              </View>
-
-              {/* ✅ Duration Selection (Editable for time-based challenges) */}
-              <View style={twrnc`mb-6`}>
-                <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  Duration (minutes)
-                </CustomText>
-                <View style={twrnc`flex-row justify-between`}>
-                  {[15, 30, 60, 120].map((minutes) => (
-                    <TouchableOpacity
-                      key={minutes}
-                      style={twrnc`bg-[#2A2E3A] p-4 rounded-2xl flex-1 mx-1 items-center ${newChallenge.durationMinutes === minutes ? "border-2 border-[#06D6A0]" : ""
-                        } ${creatingChallenge ? "opacity-50" : ""}`}
-                      onPress={() =>
-                        !creatingChallenge && setNewChallenge({ ...newChallenge, durationMinutes: minutes })
-                      }
-                      disabled={creatingChallenge}
-                    >
-                      <CustomText
-                        weight={newChallenge.durationMinutes === minutes ? "bold" : "medium"}
-                        style={twrnc`text-white text-center ${creatingChallenge ? "opacity-50" : ""}`}
-                      >
-                        {minutes}m
-                      </CustomText>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <TextInput
-                  style={twrnc`bg-[#2A2E3A] text-white p-4 rounded-2xl text-base mt-3 ${creatingChallenge ? "opacity-50" : ""
-                    }`}
-                  placeholder="Enter custom duration (minutes)"
-                  placeholderTextColor="#6B7280"
-                  keyboardType="numeric"
-                  value={String(newChallenge.durationMinutes || 30)}
-                  onChangeText={(text) =>
-                    !creatingChallenge && setNewChallenge({ ...newChallenge, durationMinutes: Number(text) || 30 })
-                  }
-                  editable={!creatingChallenge}
-                />
-              </View>
-
-              {/* ✅ Stake XP (Editable) */}
-              <View style={twrnc`mb-6`}>
-                <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  Stake XP
-                </CustomText>
-                <View style={twrnc`flex-row items-center bg-[#2A2E3A] rounded-2xl px-4 py-3`}>
-                  <TextInput
-                    style={twrnc`flex-1 text-white text-lg font-bold ${creatingChallenge ? "opacity-50" : ""}`}
-                    value={String(newChallenge.stakeXP || 100)}
-                    onChangeText={(text) =>
-                      !creatingChallenge &&
-                      setNewChallenge({
-                        ...newChallenge,
-                        stakeXP: Math.max(0, Number(text) || 100),
-                      })
-                    }
-                    keyboardType="numeric"
-                    placeholder="100"
-                    placeholderTextColor="#6B7280"
-                    editable={!creatingChallenge}
-                  />
-                  <CustomText style={twrnc`text-gray-400 ml-2`}>XP</CustomText>
-                </View>
-                <CustomText style={twrnc`text-gray-400 text-sm mt-2`}>
-                  Each participant contributes this amount. Winner takes the total pot.
-                </CustomText>
-              </View>
-
-              {/* End Date (Read-only) */}
-              <View style={twrnc`mb-8`}>
-                <CustomText weight="semibold" style={twrnc`text-white mb-3`}>
-                  End Date
-                </CustomText>
-                <TextInput
-                  style={twrnc`bg-[#2A2E3A] text-white p-4 rounded-2xl text-base opacity-50`}
-                  value={newChallenge.endDate.toLocaleDateString()}
-                  editable={false}
-                />
-                <CustomText style={twrnc`text-gray-400 text-sm mt-2 text-center`}>
-                  End date cannot be changed after creation
-                </CustomText>
-              </View>
-
-              {/* Update Button */}
-              <TouchableOpacity
-                style={twrnc`${creatingChallenge ? "bg-[#3251DD]" : "bg-[#4361EE]"
-                  } p-4 rounded-2xl flex-row justify-center items-center`}
-                onPress={handleSaveChallenge}
-                disabled={creatingChallenge}
-              >
-                {creatingChallenge ? (
-                  <>
-                    <ActivityIndicator size="small" color="white" style={twrnc`mr-2`} />
-                    <CustomText weight="bold" style={twrnc`text-white`}>
-                      Updating...
-                    </CustomText>
-                  </>
-                ) : (
-                  <CustomText weight="bold" style={twrnc`text-white`}>
-                    Update Challenge
-                  </CustomText>
-                )}
-              </TouchableOpacity>
-
-              {/* Cancel Button */}
-              <TouchableOpacity
-                style={twrnc`${creatingChallenge ? "bg-[#7F1D1D80]" : "bg-[#EF476F]"
-                  } p-4 rounded-2xl flex-row justify-center items-center mt-4`}
-                onPress={() => {
-                  if (!creatingChallenge) {
-                    setIsEditChallengeModalVisible(false)
-                    setSelectedChallenge(null)
-                    setCreatingChallenge(false)
-                  }
-                }}
-                disabled={creatingChallenge}
-              >
-                {creatingChallenge ? (
-                  <ActivityIndicator size="small" color="white" />
-                ) : (
-                  <CustomText weight="bold" style={twrnc`text-white`}>
-                    Cancel
-                  </CustomText>
-                )}
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
-      {/* QuickChat Input at the bottom */}
-
-      {/* Offline Mode Indicator */}
-      {offlineMode && (
-        <View
-          style={twrnc`absolute bottom-4 left-4 right-4 bg-[#FFC107] p-4 rounded-2xl flex-row items-center shadow-lg`}
-        >
-          <View style={twrnc`w-10 h-10 rounded-2xl bg-[#121826] items-center justify-center mr-3`}>
-            <Ionicons name="cloud-offline-outline" size={20} color="#FFC107" />
-          </View>
-          <View style={twrnc`flex-1`}>
-            <CustomText weight="bold" style={twrnc`text-[#121826] text-base`}>
-              Offline Mode
-            </CustomText>
-            <CustomText style={twrnc`text-[#121826] text-sm`}>
-              Last synced: {lastOnlineSync ? formatLastActive(lastOnlineSync) : "Never"}
-            </CustomText>
-          </View>
-        </View>
-      )}
     </View>
   )
 }

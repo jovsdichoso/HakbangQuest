@@ -18,6 +18,7 @@ import {
   writeBatch,
   deleteDoc,
   runTransaction,
+  increment,
 } from "firebase/firestore"
 import { db, auth } from "../firebaseConfig"
 import AsyncStorage from "@react-native-async-storage/async-storage"
@@ -76,16 +77,28 @@ export const DIFFICULTY_LEVELS = [
   { id: "extreme", name: "Extreme", multiplier: 2.0, color: "#9B5DE5", icon: "skull-outline" },
 ]
 
-// New: Challenge group types with their configurations
+// FIXED: Challenge group types with solo, duo, and lobby
 export const CHALLENGE_GROUP_TYPES = [
-  { id: "duo", name: "Duo Challenge", maxParticipants: 2, description: "A challenge for you and one friend." },
+  {
+    id: "solo",
+    name: "Solo Challenge",
+    maxParticipants: 1,
+    description: "A challenge for yourself."
+  },
+  {
+    id: "duo",
+    name: "Duo Challenge",
+    maxParticipants: 2,
+    description: "A challenge for you and one friend."
+  },
   {
     id: "lobby",
     name: "Lobby Challenge",
     maxParticipants: 5,
-    description: "A challenge for you and up to 4 friends.",
+    minParticipants: 3, // Add this
+    description: "A challenge for 3-5 players (you and 2-4 friends).",
   },
-]
+];
 
 // Helper function to serialize user objects for Firestore
 export const serializeUserForFirestore = (user) => {
@@ -208,23 +221,17 @@ export const loadInitialFriends = async (friendIds, callbacks) => {
   }
 
   try {
-    // Check cache first
     const cachedFriends = await getCachedData("friends")
     if (cachedFriends) {
-      const validCachedFriends = cachedFriends.filter((friend) => friendIds.includes(friend.id))
-      if (validCachedFriends.length > 0) {
-        setFriends(validCachedFriends)
-        // Load all friends in the background to refresh cache
-        loadAllFriends(friendIds, callbacks, true)
-        return
-      }
+      setFriends(cachedFriends)
+      loadAllFriends(friendIds, callbacks, true)
+      return
     }
 
-    // Load all friends if no valid cache
     await loadAllFriends(friendIds, callbacks, false)
   } catch (err) {
     console.error("Error loading initial friends:", err)
-    throw err // Let the caller handle the error
+    throw err
   }
 }
 
@@ -650,7 +657,7 @@ export const searchUsers = async (searchTerm) => {
     }
 
     const usersRef = collection(db, "users")
-    const usersSnapshot = await getDocs(query(usersRef, limit(20)))
+    const usersSnapshot = await getDocs(usersRef)
 
     const results = []
     const lowerQuery = searchTerm.toLowerCase()
@@ -730,9 +737,19 @@ export const normalizeChallengeForClient = (rawChallenge, id) => {
     activityType: activityTypeId, // Ensure this is always the ID
     type: activityDisplayName, // Ensure this issetNewChallenge always the display name
     endDate: rawChallenge.endDate?.toDate ? rawChallenge.endDate.toDate() : new Date(rawChallenge.endDate),
+    startDate: rawChallenge.startDate?.toDate
+      ? rawChallenge.startDate.toDate()
+      : new Date(rawChallenge.startDate || Date.now()),
     difficulty: rawChallenge.difficulty ? rawChallenge.difficulty.toLowerCase() : "medium", // Normalize difficulty
     goal: rawChallenge.goal ?? null,
     unit: activityConfig.unit, // Fallback to default unit
+    progress: rawChallenge.progress || {},
+    status: rawChallenge.status || { global: "pending" },
+    participants: rawChallenge.participants || [],
+    groupType: rawChallenge.groupType || "public",
+    createdBy: rawChallenge.createdBy || "",
+    stakeXP: rawChallenge.stakeXP || 0,
+    individualStake: rawChallenge.individualStake || 0, // Ensure individual stake is present
   }
 }
 
@@ -747,10 +764,12 @@ export const loadChallenges = async (callbacks) => {
     }
 
     const challengesRef = collection(db, "challenges")
-    const challengesQuery = query(challengesRef, limit(5))
+    // 🔹 Always order by createdAt for consistent query results
+    const challengesQuery = query(challengesRef, orderBy("createdAt", "desc"), limit(10))
     const challengesSnapshot = await getDocs(challengesQuery)
 
     const now = new Date()
+    // CRITICAL FIX: Use the challenge document's 'endDate' for filtering
     const challengesData = challengesSnapshot.docs
       .map((doc) => normalizeChallengeForClient(doc.data(), doc.id))
       .filter((challenge) => challenge.endDate >= now)
@@ -760,12 +779,18 @@ export const loadChallenges = async (callbacks) => {
 
     const lastChallengeTime = challengesData.length > 0 ? challengesData[0].createdAt : Timestamp.fromDate(new Date(0))
 
-    const newChallengesQuery = query(challengesRef, where("createdAt", ">", lastChallengeTime), limit(5))
+    // 🔹 Add orderBy to match Firestore index requirements
+    const newChallengesQuery = query(
+      challengesRef,
+      where("createdAt", ">", lastChallengeTime),
+      orderBy("createdAt", "desc"),
+      limit(10),
+    )
+
     const challengesListener = onSnapshot(
       newChallengesQuery,
       (querySnapshot) => {
         if (querySnapshot.empty) return
-
         try {
           const now = new Date()
           const newChallengesData = querySnapshot.docs
@@ -775,15 +800,13 @@ export const loadChallenges = async (callbacks) => {
           if (newChallengesData.length > 0) {
             setChallenges((prev) => {
               const combined = [...newChallengesData, ...prev]
-              const uniqueChallenges = combined.filter(
-                (challenge, index, self) => index === self.findIndex((c) => c.id === challenge.id),
-              )
-              setCachedData("challenges", uniqueChallenges)
-              return uniqueChallenges
+              const unique = combined.filter((c, i, self) => i === self.findIndex((x) => x.id === c.id))
+              setCachedData("challenges", unique)
+              return unique
             })
           }
         } catch (err) {
-          console.error("Error processing challenges:", err)
+          console.error("Error processing new challenges:", err)
         }
       },
       (error) => {
@@ -798,9 +821,9 @@ export const loadChallenges = async (callbacks) => {
   }
 }
 
+// FIXED: createChallenge: Creator's stake is deducted immediately; enforces 24hr min join time.
 export const createChallenge = async (challengeData, friendIds = [], groupType = "duo") => {
   try {
-    // 🧩 Validate title
     if (!challengeData.title?.trim()) {
       throw new Error("Please enter a challenge title")
     }
@@ -808,11 +831,9 @@ export const createChallenge = async (challengeData, friendIds = [], groupType =
     const user = auth.currentUser
     if (!user) throw new Error("User not authenticated.")
 
-    // ✅ Ensure friend IDs are valid strings
     const safeFriendIds = Array.isArray(friendIds) ? friendIds : []
     const serializedFriendIds = safeFriendIds.map((id) => String(id))
 
-    // ✅ Validate group type
     const selectedGroupType = CHALLENGE_GROUP_TYPES.find((type) => type.id === groupType)
     if (!selectedGroupType) {
       throw new Error("Invalid challenge group type provided.")
@@ -820,29 +841,82 @@ export const createChallenge = async (challengeData, friendIds = [], groupType =
 
     const maxParticipants = selectedGroupType.maxParticipants
 
-    // ✅ Enforce participant limits
     if (selectedGroupType.id === "duo" && serializedFriendIds.length !== 1) {
-      throw new Error("Duo challenges require exactly one invited friend.")
-    }
-    if (selectedGroupType.id === "lobby" && serializedFriendIds.length > maxParticipants - 1) {
-      throw new Error(`Lobby challenges can invite up to ${maxParticipants - 1} friends.`)
+      throw new Error("Duo challenges require exactly one invited friend.");
     }
 
-    // ✅ Resolve activity type
+    if (selectedGroupType.id === "lobby") {
+      const minInvited = (selectedGroupType.minParticipants || 3) - 1;
+      const maxInvited = maxParticipants - 1;
+
+      if (serializedFriendIds.length < minInvited) {
+        throw new Error(`Lobby challenges require at least ${minInvited} invited friends (3-5 total players).`);
+      }
+      if (serializedFriendIds.length > maxInvited) {
+        throw new Error(`Lobby challenges can invite up to ${maxInvited} friends.`);
+      }
+    }
+
     const activityTypeId = resolveActivityTypeId(challengeData.type)
     const activityDisplayName = resolveActivityDisplayName(challengeData.type)
     const activityConfig = ACTIVITY_TYPES.find((a) => a.id === activityTypeId) || ACTIVITY_TYPES[0]
 
     const now = new Date()
-    const endDate = new Date(now.getTime() + 24 * 60 * 60 * 1000) // 1-day default
-
-    // 🧍‍♂️ All participants (creator + invited)
-    const allInvitedUsers = [user.uid, ...serializedFriendIds]
-
-    // 💰 Compute proper stakes
+    const raceDurationMinutes = Number(challengeData.durationMinutes) || 30
     const individualStake = Number(challengeData.individualStake) || Number(challengeData.stakeXP) || 0
-    const participantCount = allInvitedUsers.length
-    const totalStake = individualStake * participantCount // For prize pool display only
+    const totalStake = individualStake * maxParticipants
+
+    // START FIX: Determine mode and goal based on group type
+    let finalGoal = null;
+    let finalMode = "time";
+
+    if (selectedGroupType.id === "solo") {
+      finalMode = "goal";
+      // Solo challenge requires a goal; use provided goal or default to 5
+      finalGoal = Number(challengeData.goal) || 5;
+    } else {
+      // Duo/Lobby are time-based races, so they have no distance/reps goal
+      finalMode = "time";
+      finalGoal = null;
+    }
+    // END FIX
+
+    // CRITICAL FIX: Separate Join/Race Duration
+    const actualRaceEndTime = now.getTime() + raceDurationMinutes * 60 * 1000;
+    const minVisibilityDurationMs = 24 * 60 * 60 * 1000;
+    const joinCutoffTime = now.getTime() + minVisibilityDurationMs;
+    // Set endDate as the maximum of race end time and minimum visibility time
+    const visibilityCutoffTime = Math.max(actualRaceEndTime, joinCutoffTime);
+    const endDate = new Date(visibilityCutoffTime);
+
+    let participants = [user.uid]
+
+    // XP Deduction for Creator (if multiplayer)
+    if (selectedGroupType.id !== "solo" && individualStake > 0) {
+      const result = await runTransaction(db, async (transaction) => {
+        const userRef = doc(db, "users", user.uid);
+        const userSnap = await transaction.get(userRef);
+
+        if (!userSnap.exists()) {
+          throw new Error("Creator user document not found.");
+        }
+
+        const currentXP = Number(userSnap.data().xp || userSnap.data().totalXP) || 0;
+        if (currentXP < individualStake) {
+          throw new Error("Insufficient XP to stake for challenge creation.");
+        }
+
+        transaction.update(userRef, {
+          xp: increment(-individualStake)
+        });
+
+        return { staked: true };
+      });
+
+      if (!result.staked) {
+        throw new Error("Failed to deduct creator's stake.");
+      }
+    }
 
     // 🏗️ Build challenge document
     const newChallengeData = {
@@ -853,93 +927,76 @@ export const createChallenge = async (challengeData, friendIds = [], groupType =
       createdBy: user.uid,
       createdAt: serverTimestamp(),
       endDate: Timestamp.fromDate(endDate),
-      startDate: null,
+      startDate: selectedGroupType.id === "solo" ? serverTimestamp() : null,
       groupType: selectedGroupType.id,
       maxParticipants,
-      participants: [user.uid],
-      invitedUsers: allInvitedUsers,
 
-      // 💰 Stakes
-      individualStake: individualStake, // per player
-      stakeXP: totalStake, // total pool
+      participants: participants,
+      invitedUsers: serializedFriendIds,
 
-      // ⚙️ Challenge properties
-      mode: "time",
-      completionRequirement: "betterthanothers",
-      goal: null,
+      // Stakes and Status
+      individualStake: individualStake,
+      stakeXP: totalStake, // This is the TOTAL PRIZE POOL
+      xpDeducted: selectedGroupType.id === "solo", // true if solo, false if duo/lobby (deducted above)
+
+      mode: finalMode,
+      completionRequirement: finalMode === "time" ? "betterthanothers" : "complete_goal",
+      goal: finalGoal,
       unit: activityConfig.unit || null,
-      durationMinutes: Number(challengeData.durationMinutes) || 30,
+      durationMinutes: raceDurationMinutes,
 
-      // 📊 Progress
       progress: {},
-      status: { global: "pending" },
+      status: {
+        global: selectedGroupType.id === "solo" ? "active" : "pending",
+        [user.uid]: selectedGroupType.id !== "solo" && individualStake > 0 ? "staked" : "joined"
+      },
       completedBy: [],
     }
 
-    // ✅ Save to Firestore
     const challengeRef = await addDoc(collection(db, "challenges"), newChallengeData)
 
-    // ⚡ Deduct XP for all participants (creator + invited)
-    const xpDeductionPromises = allInvitedUsers.map(async (uid) => {
-      try {
-        const userRef = doc(db, "users", uid)
-        const userSnap = await getDoc(userRef)
-        if (userSnap.exists()) {
-          const userData = userSnap.data()
-          const currentXP = Number(userData.xp) || 0
-          const newXP = Math.max(currentXP - individualStake, 0)
+    if (serializedFriendIds.length > 0) {
+      const currentUserDoc = await getDoc(doc(db, "users", user.uid))
+      const currentUserData = currentUserDoc.data()
 
-          await updateDoc(userRef, { xp: newXP })
-          console.log(`✅ Deducted ${individualStake} XP from ${uid}`)
+      const notificationPromises = serializedFriendIds.map(async (friendId) => {
+        try {
+          const notificationId = await NotificationService.sendChallengeInvitationNotification(
+            friendId,
+            {
+              id: user.uid,
+              username: currentUserData.username || currentUserData.displayName,
+              displayName: currentUserData.displayName || currentUserData.username,
+              avatar: currentUserData.avatar || DEFAULT_AVATAR,
+            },
+            {
+              id: challengeRef.id,
+              title: challengeData.title,
+              type: activityDisplayName,
+              groupType: selectedGroupType.name,
+            },
+          )
+
+          if (notificationId) {
+            console.log(`✅ Challenge invitation notification sent to ${friendId}: ${notificationId}`)
+          } else {
+            console.warn(`⚠️ Failed to send challenge invitation notification to ${friendId}`)
+          }
+        } catch (notificationError) {
+          console.error(`❌ Error sending challenge invitation notification to ${friendId}:`, notificationError)
         }
-      } catch (err) {
-        console.error(`❌ Failed to deduct XP for ${uid}:`, err)
-      }
-    })
-    await Promise.allSettled(xpDeductionPromises)
+      })
 
-    // 📣 Send notifications to invited friends
-    const currentUserDoc = await getDoc(doc(db, "users", user.uid))
-    const currentUserData = currentUserDoc.data()
+      await Promise.allSettled(notificationPromises)
+    }
 
-    const notificationPromises = serializedFriendIds.map(async (friendId) => {
-      try {
-        const notificationId = await NotificationService.sendChallengeInvitationNotification(
-          friendId,
-          {
-            id: user.uid,
-            username: currentUserData.username || currentUserData.displayName,
-            displayName: currentUserData.displayName || currentUserData.username,
-            avatar: currentUserData.avatar || DEFAULT_AVATAR,
-          },
-          {
-            id: challengeRef.id,
-            title: challengeData.title,
-            type: activityDisplayName,
-            groupType: selectedGroupType.name,
-          },
-        )
-
-        if (notificationId) {
-          console.log(`✅ Challenge invitation notification sent to ${friendId}: ${notificationId}`)
-        } else {
-          console.warn(`⚠️ Failed to send challenge invitation notification to ${friendId}`)
-        }
-      } catch (notificationError) {
-        console.error(`❌ Error sending challenge invitation notification to ${friendId}:`, notificationError)
-      }
-    })
-
-    await Promise.allSettled(notificationPromises)
-
-    // 🎉 Return challenge result
     return {
       success: true,
-      message: `Challenge created and ${serializedFriendIds.length} friends invited!`,
+      message: `Challenge created and ${serializedFriendIds.length} friend(s) invited! Creator's stake deducted.`,
       challenge: {
         id: challengeRef.id,
         ...newChallengeData,
-        endDate, // Convert for frontend
+        endDate,
       },
     }
   } catch (err) {
@@ -948,223 +1005,79 @@ export const createChallenge = async (challengeData, friendIds = [], groupType =
   }
 }
 
-export const createCustomChallenge = async (customChallenge, targetFriend) => {
-  try {
-    if (!targetFriend) {
-      throw new Error("No target friend selected for challenge.")
-    }
-
-    if (!customChallenge.title.trim()) {
-      throw new Error("Please enter a challenge title.")
-    }
-
-    const user = auth.currentUser
-
-    const activityConfig = ACTIVITY_TYPES.find((a) => a.id === customChallenge.activityType)
-    if (!activityConfig) {
-      throw new Error("Invalid activity type selected.")
-    }
-
-    const difficultyConfig = DIFFICULTY_LEVELS.find((d) => d.id === customChallenge.difficulty)
-    if (!difficultyConfig) {
-      throw new Error("Invalid difficulty level selected.")
-    }
-
-    const adjustedGoal = Math.round(customChallenge.goal * difficultyConfig.multiplier)
-
-    const challengeData = {
-      title: customChallenge.title,
-      description: customChallenge.description,
-      type: activityConfig.name,
-      activityType: activityConfig.id,
-      goal: adjustedGoal,
-      originalGoal: customChallenge.goal,
-      unit: activityConfig.unit,
-      difficulty: difficultyConfig.id,
-      difficultyMultiplier: difficultyConfig.multiplier,
-      duration: customChallenge.duration,
-      createdBy: user.uid,
-      createdAt: serverTimestamp(),
-      endDate: Timestamp.fromDate(new Date(Date.now() + customChallenge.duration * 24 * 60 * 60 * 1000)),
-      isPublic: false,
-      isCustomChallenge: true,
-      groupType: "duo",
-      maxParticipants: 2,
-      participants: [user.uid],
-      invitedUsers: [targetFriend.id],
-      targetFriend: {
-        id: targetFriend.id,
-        name: targetFriend.displayName || targetFriend.username,
-        avatar: targetFriend.avatar,
-      },
-      status: "pending",
-      xpReward: 100,
-    }
-
-    console.log("🏆 Creating custom challenge:", challengeData)
-
-    const challengeRef = await addDoc(collection(db, "challenges"), challengeData)
-
-    const currentUserDoc = await getDoc(doc(db, "users", user.uid))
-    const currentUserData = currentUserDoc.data()
-
-    try {
-      const notificationId = await NotificationService.sendChallengeInvitationNotification(
-        targetFriend.id,
-        {
-          id: user.uid,
-          username: currentUserData.username || currentUserData.displayName,
-          displayName: currentUserData.displayName || currentUserData.username,
-          avatar: currentUserData.avatar || DEFAULT_AVATAR,
-        },
-        {
-          id: challengeRef.id,
-          title: customChallenge.title,
-          type: activityConfig.name,
-          goal: adjustedGoal,
-          unit: activityConfig.unit,
-          difficulty: difficultyConfig.name,
-          duration: customChallenge.duration,
-          groupType: "Duo Challenge",
-        },
-      )
-
-      if (notificationId) {
-        console.log(`✅ Custom challenge notification sent: ${notificationId}`)
-      } else {
-        console.warn("⚠️ Failed to send custom challenge notification")
-      }
-    } catch (notificationError) {
-      console.error("❌ Error sending custom challenge notification:", notificationError)
-    }
-
-    return {
-      success: true,
-      message: `Your ${activityConfig.name.toLowerCase()} challenge has been sent to ${targetFriend.displayName || targetFriend.username}!`,
-      challenge: {
-        id: challengeRef.id,
-        ...challengeData,
-        endDate: new Date(Date.now() + customChallenge.duration * 24 * 60 * 60 * 1000),
-      },
-    }
-  } catch (err) {
-    console.error("Error creating custom challenge:", err)
-    throw new Error(err.message || "Failed to create challenge. Please try again.")
-  }
-}
-
+// FIXED: joinChallenge performs XP deduction upon joining.
 export const joinChallenge = async (challengeId) => {
   try {
     const user = auth.currentUser
     if (!user) throw new Error("You must be signed in to join challenges.")
 
     const challengeRef = doc(db, "challenges", challengeId)
+    const userRef = doc(db, "users", user.uid)
 
-    // Use transaction to ensure atomic updates
+    // Use transaction for atomic updates: XP deduction + Challenge/Participant update
     const result = await runTransaction(db, async (transaction) => {
       const snap = await transaction.get(challengeRef)
+      const userSnap = await transaction.get(userRef)
+
       if (!snap.exists()) throw new Error("Challenge not found.")
+      if (!userSnap.exists()) throw new Error("User document not found.")
 
       const challengeData = snap.data()
       const participants = challengeData.participants || []
+      const individualStake = challengeData.individualStake || 0;
+
+      // Check if challenge has expired based on its visible endDate
+      const endDate = challengeData.endDate?.toDate ? challengeData.endDate.toDate() : new Date(challengeData.endDate);
+      if (new Date() > endDate) {
+        throw new Error("This challenge has expired and cannot be joined.")
+      }
 
       if (participants.includes(user.uid)) {
-        // Already joined
-        return { participants, shouldStart: false, challengeData }
+        throw new Error("You have already joined this challenge.")
+      }
+
+      // Check if challenge is full
+      if (challengeData.maxParticipants && participants.length >= challengeData.maxParticipants) {
+        throw new Error("This challenge is already full.")
+      }
+
+      // Only public/lobby challenges can be joined via this function
+      if (challengeData.groupType !== "lobby" && challengeData.groupType !== "public") {
+        throw new Error("This is a private challenge. You must be invited.")
+      }
+
+      // XP Deduction Logic (Only if staking > 0)
+      if (individualStake > 0) {
+        const currentXP = Number(userSnap.data().xp || userSnap.data().totalXP) || 0;
+        if (currentXP < individualStake) {
+          throw new Error(`Insufficient XP (${individualStake}) to stake and join the challenge.`);
+        }
+        // Deduct XP
+        transaction.update(userRef, { xp: increment(-individualStake) });
       }
 
       const newParticipants = [...participants, user.uid]
 
-      // Update participants
-      transaction.update(challengeRef, { participants: newParticipants })
+      // Update challenge document
+      transaction.update(challengeRef, {
+        participants: newParticipants,
+        // Set user status to 'staked' and updated time
+        [`status.${user.uid}`]: individualStake > 0 ? "staked" : "joined",
+        updatedAt: serverTimestamp()
+      });
 
-      // Check if we should auto-start (duo challenge with 2 participants)
-      const shouldStart =
-        challengeData.groupType === "duo" && newParticipants.length === 2 && challengeData.status?.global === "pending"
-
-      return { participants: newParticipants, shouldStart, challengeData }
+      return { participants: newParticipants, individualStake }
     })
-
-    // If we should auto-start, handle stakes and start challenge
-    if (result.shouldStart) {
-      const challengeData = result.challengeData
-      const participants = result.participants
-      const totalPrizePool = challengeData.stakeXP || 0
-      const individualStake = totalPrizePool / participants.length // For duo: stakeXP / 2
-
-      try {
-        // Check if all participants have enough XP
-        const participantChecks = await Promise.all(
-          participants.map(async (participantId) => {
-            const userDoc = await getDoc(doc(db, "users", participantId))
-            const userData = userDoc.data()
-            return {
-              id: participantId,
-              currentXP: userData?.xp || 0,
-              hasEnoughXP: (userData?.xp || 0) >= individualStake,
-            }
-          }),
-        )
-
-        // Check if all participants have enough XP
-        const allHaveEnoughXP = participantChecks.every((p) => p.hasEnoughXP)
-
-        if (!allHaveEnoughXP) {
-          // Cancel challenge and notify
-          await updateDoc(challengeRef, {
-            "status.global": "cancelled",
-            cancelledReason: "Insufficient XP from participants",
-            updatedAt: serverTimestamp(),
-          })
-
-          throw new Error("One or more participants don't have enough XP to stake.")
-        }
-
-        // Deduct stakes from all participants
-        const stakeDeductions = participants.map((participantId) =>
-          updateDoc(doc(db, "users", participantId), {
-            xp: increment(-individualStake),
-          }),
-        )
-
-        await Promise.all(stakeDeductions)
-
-        // Start the challenge with prize pool confirmation
-        await updateDoc(challengeRef, {
-          "status.global": "active",
-          startDate: serverTimestamp(),
-          prizePool: totalPrizePool, // Confirm prize pool is set
-          stakesDeducted: true, // Track that stakes have been deducted
-          individualStake: individualStake, // Store for potential refunds
-          updatedAt: serverTimestamp(),
-        })
-
-        console.log(`✅ Stakes deducted: ${individualStake} XP from each participant. Prize pool: ${totalPrizePool} XP`)
-      } catch (stakeError) {
-        console.error("❌ Error handling stakes:", stakeError)
-
-        // If stake deduction fails, cancel the challenge
-        await updateDoc(challengeRef, {
-          "status.global": "cancelled",
-          cancelledReason: stakeError.message,
-          updatedAt: serverTimestamp(),
-        })
-
-        throw stakeError
-      }
-    }
 
     return {
       success: true,
-      message: result.shouldStart
-        ? "You joined and the duo challenge has started! Stakes have been deducted."
-        : "Successfully joined the challenge!",
+      message: `Successfully joined and staked ${result.individualStake} XP for the challenge!`,
       updatedParticipants: result.participants,
-      challengeStarted: result.shouldStart,
+      challengeStarted: false,
     }
   } catch (err) {
     console.error("Error joining challenge:", err)
-    return {
+    throw {
       success: false,
       message: err.message || "Failed to join challenge. Please try again.",
       updatedParticipants: [],
@@ -1172,6 +1085,120 @@ export const joinChallenge = async (challengeId) => {
     }
   }
 }
+
+// FIXED: acceptChallengeInvite performs XP deduction upon accepting.
+export const acceptChallengeInvite = async (challengeId) => {
+  const user = auth.currentUser
+  if (!user) throw new Error("You must be signed in to accept challenges.")
+
+  const challengeRef = doc(db, "challenges", challengeId)
+  const userRef = doc(db, "users", user.uid)
+
+  // Use transaction for atomic updates: XP deduction + Challenge/Participant update
+  await runTransaction(db, async (transaction) => {
+    const snap = await transaction.get(challengeRef)
+    const userSnap = await transaction.get(userRef)
+
+    if (!snap.exists()) throw new Error("Challenge not found.")
+    if (!userSnap.exists()) throw new Error("User document not found.")
+
+    const data = snap.data()
+    const invited = data.invitedUsers || []
+    const participants = data.participants || []
+    const individualStake = data.individualStake || 0;
+
+    // Check if challenge has expired based on its visible endDate
+    const endDate = data.endDate?.toDate ? data.endDate.toDate() : new Date(data.endDate);
+    if (new Date() > endDate) {
+      throw new Error("This challenge has expired and cannot be accepted.")
+    }
+
+    // Check if user is invited
+    if (!invited.includes(user.uid)) {
+      throw new Error("You are not invited to this challenge.")
+    }
+
+    // Check if challenge is full
+    if (data.maxParticipants && participants.length >= data.maxParticipants) {
+      // Still remove them from invited, but throw error
+      transaction.update(challengeRef, {
+        invitedUsers: invited.filter((id) => id !== user.uid),
+      })
+      throw new Error("This challenge is already full.")
+    }
+
+    // XP Deduction Logic (Only if staking > 0)
+    if (individualStake > 0) {
+      const currentXP = Number(userSnap.data().xp || userSnap.data().totalXP) || 0;
+      if (currentXP < individualStake) {
+        throw new Error(`Insufficient XP (${individualStake}) to stake and accept the challenge.`);
+      }
+      // Deduct XP
+      transaction.update(userRef, { xp: increment(-individualStake) });
+    }
+
+
+    const updatedInvited = invited.filter((id) => id !== user.uid)
+    const updatedParticipants = participants.includes(user.uid) ? participants : [...participants, user.uid] // Prevent duplicates
+
+    // Update challenge document
+    transaction.update(challengeRef, {
+      invitedUsers: updatedInvited,
+      participants: updatedParticipants,
+      // Set user status to 'staked' and updated time
+      [`status.${user.uid}`]: individualStake > 0 ? "staked" : "joined",
+      updatedAt: serverTimestamp(),
+    })
+  })
+
+  return { success: true, message: "Challenge accepted and stake deducted!" }
+}
+
+// FIXED: startChallenge now only updates status.
+export const startChallenge = async (challengeId) => {
+  const user = auth.currentUser;
+  if (!user) throw new Error("You must be signed in.");
+
+  const challengeRef = doc(db, 'challenges', challengeId);
+
+  await runTransaction(db, async (transaction) => {
+    // 1. READ PHASE - Get challenge document
+    const challengeSnap = await transaction.get(challengeRef);
+    if (!challengeSnap.exists()) throw new Error("Challenge not found.");
+
+    const challenge = challengeSnap.data();
+
+    // Validation
+    if (challenge.createdBy !== user.uid) {
+      throw new Error("Only the creator can start this challenge.");
+    }
+    if (challenge.invitedUsers?.length > 0) {
+      throw new Error("All invited players must accept first.");
+    }
+    const participantCount = challenge.participants?.length || 0;
+    if (participantCount < 2 && challenge.groupType !== 'solo') {
+      throw new Error("At least two participants must join before starting.");
+    }
+    if (challenge.maxParticipants && participantCount !== challenge.maxParticipants) {
+      throw new Error(
+        `Waiting for ${challenge.maxParticipants - participantCount} more players to start.`
+      );
+    }
+    if (challenge.status?.global === 'active') {
+      throw new Error("Challenge is already active.");
+    }
+
+    // XP Deduction and Validation removed, as it's done upon joining/accepting.
+
+    // 2. WRITE PHASE - Update challenge in ONE operation
+    transaction.update(challengeRef, {
+      'status.global': 'active',
+      startDate: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  });
+};
+
 
 export const completeChallenge = async (challengeId, userId) => {
   try {
@@ -1233,55 +1260,64 @@ export const completeChallenge = async (challengeId, userId) => {
         xpPenalty: 0,
       }
 
-      if (isCompleted && !isExpired) {
-        // ✅ Reward stake XP
-        const xpReward = stakeXP
-        const newTotalXP = (userData.totalXP || 0) + xpReward
+      // ⚠️ Note: For Time-based (Duos/Lobbies) the completion and reward logic is in `finalizeTimeChallenge`.
+      // This `completeChallenge` is mainly for old quest-style challenges.
+      // We keep the logic for goal-based challenges but ensure it doesn't conflict with time-based.
+      if (challengeData.mode !== "time" || challengeData.groupType === "solo") {
+        if (isCompleted && !isExpired) {
+          // ✅ Reward stake XP (Solo/Goal-based)
+          const xpReward = stakeXP
+          const newTotalXP = (userData.totalXP || 0) + xpReward
 
-        transaction.update(userRef, {
-          totalXP: newTotalXP,
-          completedChallenges: arrayUnion(challengeId),
-        })
+          transaction.update(userRef, {
+            totalXP: newTotalXP,
+            completedChallenges: arrayUnion(challengeId),
+          })
 
-        transaction.update(challengeRef, {
-          completedBy: arrayUnion(userId),
-          [`status.${userId}`]: "completed",
-          [`completedAt.${userId}`]: serverTimestamp(),
-        })
+          transaction.update(challengeRef, {
+            completedBy: arrayUnion(userId),
+            [`status.${userId}`]: "completed",
+            [`completedAt.${userId}`]: serverTimestamp(),
+          })
 
-        receiptData = {
-          ...receiptData,
-          success: true,
-          xpReward,
-          message: `Challenge completed! +${xpReward} XP`,
-        }
-      } else if (isExpired && !isCompleted) {
-        // ❌ Deduct stake XP
-        const xpPenalty = stakeXP
-        const newTotalXP = Math.max(0, (userData.totalXP || 0) - xpPenalty)
+          receiptData = {
+            ...receiptData,
+            success: true,
+            xpReward,
+            message: `Challenge completed! +${xpReward} XP`,
+          }
+        } else if (isExpired && !isCompleted) {
+          // Goal-based failure
+          const xpPenalty = stakeXP
+          const newTotalXP = Math.max(0, (userData.totalXP || 0) - xpPenalty)
 
-        transaction.update(userRef, { totalXP: newTotalXP })
+          transaction.update(userRef, { totalXP: newTotalXP })
 
-        transaction.update(challengeRef, {
-          [`status.${userId}`]: "failed",
-          [`failedAt.${userId}`]: serverTimestamp(),
-          "status.global": "ended",
-        })
+          transaction.update(challengeRef, {
+            [`status.${userId}`]: "failed",
+            [`failedAt.${userId}`]: serverTimestamp(),
+            "status.global": "ended",
+          })
 
-        receiptData = {
-          ...receiptData,
-          success: false,
-          xpPenalty,
-          message: `Challenge failed. -${xpPenalty} XP`,
+          receiptData = {
+            ...receiptData,
+            success: false,
+            xpPenalty,
+            message: `Challenge failed. -${xpPenalty} XP`,
+          }
+        } else {
+          receiptData = {
+            ...receiptData,
+            message: "Challenge not yet completed.",
+          }
         }
       } else {
         receiptData = {
           ...receiptData,
-          message: "Challenge not yet completed.",
+          message: "Time-based challenge, waiting for finalization.",
         }
       }
 
-      // Save receipt
       transaction.set(receiptRef, receiptData)
       return receiptData
     })
@@ -1305,57 +1341,29 @@ export const updateChallengeProgress = async (challengeId, userId, progress) => 
 
       const challengeData = challengeDoc.data()
 
-      // Normalize units before comparison
       const normalizedProgress = normalizeUnits(progress, challengeData.unit)
       const normalizedGoal = normalizeUnits(challengeData.goal, challengeData.unit)
 
-      // Update progress
+      // CRITICAL: Progress is always accumulated from the activity completion
+      // This function is generally for manual, non-activity-driven progress updates,
+      // but if used by ActivityScreen, it should accumulate progress safely.
+      // Since this is called from XPManager, it's already accumulating.
+
       transaction.update(challengeRef, {
+        // XPManager already computes and updates the newProgress, we assume that progress here is the FINAL accumulated progress from the activity.
+        // The XPManager handles the accumulation and calls this as a log/status update
         [`progress.${userId}`]: normalizedProgress,
+        [`status.${userId}`]: normalizedProgress >= normalizedGoal ? "completed" : "in_progress",
         updatedAt: serverTimestamp(),
       })
 
-      // Check completion requirement with up-to-date state
       const completionRequirement = challengeData.completionRequirement || "complete_goal"
       const endDate = challengeData.endDate?.toDate ? challengeData.endDate.toDate() : new Date(challengeData.endDate)
       const now = new Date()
       const isExpired = now > endDate
 
-      // Only apply penalties at end of challenge, not during progress updates
-      if (isExpired && completionRequirement === "better_than_others") {
-        const participants = challengeData.participants || []
-        const progressMap = challengeData.progress || {}
-
-        // Find winner (highest progress)
-        let winnerId = null
-        let highestProgress = -1
-
-        for (const participantId of participants) {
-          const participantProgress = normalizeUnits(progressMap[participantId] || 0, challengeData.unit)
-          if (participantProgress > highestProgress) {
-            highestProgress = participantProgress
-            winnerId = participantId
-          }
-        }
-
-        // Apply penalties to losers only if challenge is expired
-        if (winnerId && winnerId !== userId) {
-          const userRef = doc(db, "users", userId)
-          const userDoc = await transaction.get(userRef)
-
-          if (userDoc.exists()) {
-            const userData = userDoc.data()
-            const xpPenalty = challengeData.xpPenalty || 10
-            const newXP = Math.max(0, (userData.totalXP || 0) - xpPenalty)
-
-            transaction.update(userRef, { totalXP: newXP })
-            transaction.update(challengeRef, {
-              [`status.${userId}`]: "failed",
-              [`failedAt.${userId}`]: serverTimestamp(),
-            })
-          }
-        }
-      }
+      // We remove the complex, duplicated finalization logic here.
+      // Finalization should be handled by an explicit call to `finalizeTimeChallenge` or a scheduled function.
 
       return {
         success: true,
@@ -1376,21 +1384,21 @@ const normalizeUnits = (value, unit) => {
   switch (unit.toLowerCase()) {
     case "meters":
     case "m":
-      return value / 1000 // Convert to kilometers
+      return value / 1000
     case "kilometers":
     case "km":
       return value
     case "seconds":
     case "s":
-      return value / 60 // Convert to minutes
+      return value / 60
     case "minutes":
     case "min":
       return value
     case "hours":
     case "h":
-      return value * 60 // Convert to minutes
+      return value * 60
     default:
-      return value // Return as-is for steps, reps, calories, etc.
+      return value
   }
 }
 
@@ -1402,24 +1410,12 @@ const checkChallengeCompletion = (challengeData, userId, normalizedProgress, nor
       return normalizedProgress >= normalizedGoal
 
     case "better_than_others":
-      const participants = challengeData.participants || []
-      const progressMap = challengeData.progress || {}
-
-      // Check if user has highest progress among all participants
-      for (const participantId of participants) {
-        if (participantId !== userId) {
-          const otherProgress = normalizeUnits(progressMap[participantId] || 0, challengeData.unit)
-          if (otherProgress >= normalizedProgress) {
-            return false
-          }
-        }
-      }
-      return normalizedProgress > 0 // Must have some progress to win
+      // For time-based challenges, this is resolved by `finalizeTimeChallenge`
+      return false
 
     case "time_based":
-      const endDate = challengeData.endDate?.toDate ? challengeData.endDate.toDate() : new Date(challengeData.endDate)
-      const now = new Date()
-      return now <= endDate && normalizedProgress >= normalizedGoal
+      // For time-based challenges, this is resolved by `finalizeTimeChallenge`
+      return false
 
     default:
       return normalizedProgress >= normalizedGoal
@@ -1458,87 +1454,71 @@ export const getUserChallenges = async (userId) => {
 }
 
 export const loadLeaderboardData = async (callbacks) => {
-  const { setLeaderboard, setError } = callbacks
-
+  const { setLeaderboard, setError } = callbacks;
   try {
-    const cachedLeaderboard = await getCachedData("leaderboard")
+    const cachedLeaderboard = await getCachedData("leaderboard");
     if (cachedLeaderboard) {
-      setLeaderboard(cachedLeaderboard)
+      setLeaderboard(cachedLeaderboard);
     }
 
-    const user = auth.currentUser
-    if (!user) return
+    const user = auth.currentUser;
+    if (!user) return;
 
-    const userDistances = {}
-    const userExp = {}
-    const userNames = {}
-    const userAvatars = {}
-    const userDocs = {}
-    const userOnlineStatus = {}
+    const userDistances = {};
+    const userExp = {};
+    const userNames = {};
+    const userAvatars = {};
+    const userDocs = {};
+    const userOnlineStatus = {};
 
-    const usersRef = collection(db, "users")
-    const usersQuery = query(usersRef, limit(50))
-    const usersSnapshot = await getDocs(usersQuery)
+    const usersRef = collection(db, "users");
+    const usersQuery = query(usersRef, limit(50));
+    const usersSnapshot = await getDocs(usersQuery);
 
     for (const userDoc of usersSnapshot.docs) {
-      const userData = userDoc.data()
-      const userId = userDoc.id
+      const userData = userDoc.data();
+      const userId = userDoc.id;
+      userNames[userId] = userData.displayName || userData.username || "User";
+      userAvatars[userId] = userData.avatar || "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y";
+      userDocs[userId] = userData;
 
-      userNames[userId] = userData.displayName || userData.username || "User"
-      userAvatars[userId] = userData.avatar || DEFAULT_AVATAR
-      userDocs[userId] = userData
-      userExp[userId] = userData.totalXP || userData.totalExp || userData.exp || 0
-      userOnlineStatus[userId] = userData.isOnline || false
-      userDistances[userId] = userData.totalDistance || 0
+      // FIXED: Use 'xp' (available XP) instead of 'totalXP'
+      userExp[userId] = userData.xp || 0;
+
+      userOnlineStatus[userId] = userData.isOnline || false;
+      userDistances[userId] = userData.totalDistance || 0;
     }
 
-    const activitiesRef = collection(db, "activities")
-    const activitiesQuery = query(activitiesRef, limit(100))
-    const activitiesSnapshot = await getDocs(activitiesQuery)
-
-    for (const activityDoc of activitiesSnapshot.docs) {
-      const activityData = activityDoc.data()
-      const userId = activityData.userId
-      if (!userId) continue
-
-      if (!userDistances[userId]) {
-        userDistances[userId] = 0
-      }
-
-      const distanceInMeters =
-        typeof activityData.distance === "number" && !isNaN(activityData.distance) ? activityData.distance : 0
-      userDistances[userId] += distanceInMeters / 1000
-    }
-
-    const allUserIds = Object.keys(userNames)
+    const allUserIds = Object.keys(userNames);
     const leaderboardData = allUserIds.map((userId) => ({
       id: userId,
       name: userNames[userId] || "User",
-      avatar: userAvatars[userId] || DEFAULT_AVATAR,
+      avatar: userAvatars[userId],
       distance: userDistances[userId] || 0,
-      exp: userExp[userId] || 0,
+      xp: userExp[userId] || 0, // Changed from 'exp' to 'xp' for clarity
+      exp: userExp[userId] || 0, // Keep 'exp' for backward compatibility
       isCurrentUser: userId === user.uid,
       isOnline: userOnlineStatus[userId] || false,
       level: userDocs[userId]?.level || 1,
       totalActivities: userDocs[userId]?.totalActivities || 0,
-    }))
+      totalXP: userDocs[userId]?.totalXP || 0, // Keep totalXP as reference
+    }));
 
+    // Sort by available XP (xp field)
     leaderboardData.sort((a, b) => {
-      if (b.exp !== a.exp) {
-        return b.exp - a.exp
-      }
-      return b.distance - a.distance
-    })
+      if (b.xp !== a.xp) return b.xp - a.xp;
+      return b.distance - a.distance;
+    });
 
-    const topLeaderboard = leaderboardData.slice(0, 15) // Show top 15 users
-
-    setLeaderboard(topLeaderboard)
-    await setCachedData("leaderboard", topLeaderboard)
+    const topLeaderboard = leaderboardData.slice(0, 15);
+    setLeaderboard(topLeaderboard);
+    await setCachedData("leaderboard", topLeaderboard);
   } catch (err) {
-    console.warn("Error creating leaderboard:", err)
-    setError(`Error loading leaderboard: ${err.message}`)
+    console.warn("Error creating leaderboard:", err);
+    setError("Error loading leaderboard " + err.message);
   }
-}
+};
+
 
 // Delete Challenge Management
 export const deleteChallenge = async (challengeId) => {
@@ -1567,144 +1547,6 @@ export const deleteChallenge = async (challengeId) => {
   } catch (err) {
     console.error("Error deleting challenge:", err)
     throw new Error(err.message || "Failed to delete challenge. Please try again.")
-  }
-}
-
-// Chat Management
-export const setupChatRoom = async (friendId) => {
-  try {
-    const user = auth.currentUser
-    if (!user) {
-      throw new Error("User not authenticated")
-    }
-
-    const chatRoomId = [user.uid, friendId].sort().join("_")
-
-    const cachedMessages = await getCachedData(`chatMessages_${chatRoomId}`)
-    let initialMessages = []
-    if (cachedMessages) {
-      initialMessages = cachedMessages
-    }
-
-    const chatRoomRef = doc(db, `chatRooms/${chatRoomId}`)
-    const chatRoomDoc = await getDoc(chatRoomRef)
-
-    if (!chatRoomDoc.exists()) {
-      try {
-        await setDoc(chatRoomRef, {
-          participants: [user.uid, friendId],
-          createdAt: serverTimestamp(),
-          lastMessage: null,
-          lastMessageTime: null,
-        })
-        await new Promise((resolve) => setTimeout(resolve, 500))
-        console.log("Chat room created successfully")
-      } catch (createErr) {
-        console.error("Error creating chat room:", createErr)
-        throw new Error("Failed to create chat room: " + createErr.message)
-      }
-    }
-
-    try {
-      const messagesRef = collection(db, `chatRooms/${chatRoomId}/messages`)
-      const messagesQuery = query(messagesRef, orderBy("timestamp", "desc"), limit(20))
-      const messagesSnapshot = await getDocs(messagesQuery)
-
-      const messages = messagesSnapshot.docs
-        .map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-          timestamp: doc.data().timestamp?.toDate() || new Date(),
-        }))
-        .reverse()
-
-      await setCachedData(`chatMessages_${chatRoomId}`, messages)
-
-      return {
-        success: true,
-        chatRoomId,
-        messages,
-        initialMessages,
-      }
-    } catch (messagesErr) {
-      console.error("Error fetching chat messages:", messagesErr)
-      throw new Error("Failed to load messages: " + messagesErr.message)
-    }
-  } catch (err) {
-    console.error("Error setting up chat room:", err)
-    let errorMessage = "Failed to open chat. Please try again."
-
-    if (err.code === "permission-denied") {
-      errorMessage = "You don't have permission to access this chat. This may be due to security rules."
-    }
-
-    throw new Error(errorMessage)
-  }
-}
-
-export const sendChatMessage = async (chatRoomId, messageText, selectedFriend, userProfile) => {
-  try {
-    if (!messageText.trim() || !selectedFriend) {
-      throw new Error("Message text and friend are required")
-    }
-
-    const user = auth.currentUser
-
-    // Send message to Firestore
-    const batch = writeBatch(db)
-    const messagesRef = collection(db, `chatRooms/${chatRoomId}/messages`)
-    const newMessageRef = doc(messagesRef)
-
-    const newMessage = {
-      text: messageText.trim(),
-      senderId: user.uid,
-      senderName: userProfile?.username || user.displayName || "You",
-      timestamp: serverTimestamp(),
-    }
-
-    batch.set(newMessageRef, newMessage)
-
-    // Update chat room with last message
-    const chatRoomRef = doc(db, "chatRooms", chatRoomId)
-    batch.update(chatRoomRef, {
-      lastMessage: messageText.trim(),
-      lastMessageTime: serverTimestamp(),
-    })
-
-    await batch.commit()
-
-    // Send notification to the recipient using the real NotificationService
-    try {
-      const notificationId = await NotificationService.sendChatMessageNotification(
-        selectedFriend.id,
-        {
-          id: user.uid,
-          username: userProfile?.username || userProfile?.displayName,
-          displayName: userProfile?.displayName || userProfile?.username,
-          avatar: userProfile?.avatar || DEFAULT_AVATAR,
-        },
-        messageText.trim(),
-        chatRoomId,
-      )
-
-      if (notificationId) {
-        console.log(`✅ Chat message notification sent: ${notificationId}`)
-      } else {
-        console.warn("⚠️ Failed to send chat message notification")
-      }
-    } catch (notificationError) {
-      console.error("❌ Error sending chat message notification:", notificationError)
-      // Don't fail the entire operation if notification fails
-    }
-
-    return {
-      success: true,
-      messageId: newMessageRef.id,
-      message: newMessage,
-    }
-  } catch (err) {
-    console.error("Error sending message:", err)
-    throw new Error("Failed to send message. Please try again.")
   }
 }
 
@@ -1778,75 +1620,653 @@ export const formatActivityDescription = (activity) => {
   return `${activityDisplayName} ${distanceInKm} km • ${timeAgo}`
 }
 
-export const startChallenge = async (challengeId) => {
-  const user = auth.currentUser
-  if (!user) throw new Error("You must be signed in.")
 
-  const challengeRef = doc(db, "challenges", challengeId)
+export const finalizeTimeChallenge = async (challengeId) => {
+  console.log(`Finalizing time challenge: ${challengeId}`)
 
-  await runTransaction(db, async (transaction) => {
-    const snap = await transaction.get(challengeRef)
-    if (!snap.exists()) throw new Error("Challenge not found.")
+  try {
+    const challengeRef = doc(db, "challenges", challengeId)
 
-    const challenge = snap.data()
-    const count = (challenge.participants || []).length
+    // Use a transaction to ensure atomicity
+    const finalizationResult = await runTransaction(db, async (transaction) => {
+      const challengeSnap = await transaction.get(challengeRef)
 
-    // 🔒 Ensure only creator can start
-    if (challenge.createdBy !== user.uid) {
-      throw new Error("Only the challenge creator can start this challenge.")
-    }
+      if (!challengeSnap.exists()) {
+        throw new Error("Challenge not found.")
+      }
 
-    // 🔒 Ensure still pending
-    if (challenge.status?.global !== "pending") {
-      throw new Error("Challenge has already started or ended.")
-    }
+      const challengeData = challengeSnap.data()
 
-    // Validate participant count
-    if (challenge.groupType === "duo" && count !== 2) {
-      throw new Error("Both players must join before starting.")
-    }
-    if (challenge.groupType === "lobby" && count < 2) {
-      throw new Error("At least 2 players must join before starting.")
-    }
+      // Prevent re-running if already completed
+      if (challengeData.status?.global === "completed") {
+        console.warn(`Challenge ${challengeId} is already completed.`)
+        return { success: false, message: "Challenge already completed.", winnerId: challengeData.winnerId }
+      }
 
-    transaction.update(challengeRef, {
-      startDate: serverTimestamp(),
-      "status.global": "active",
+      const participants = challengeData.participants || []
+      const progressMap = challengeData.progress || {}
+      const prizePool = challengeData.stakeXP || 0 // The total pot
+
+      if (participants.length === 0) {
+        throw new Error("No participants in this challenge.")
+      }
+
+      // --- 1. Find the Winner ---
+      let winnerId = null
+      let highestScore = -1
+
+      for (const participantId of participants) {
+        const score = progressMap[participantId] || 0
+        if (score > highestScore) {
+          highestScore = score
+          winnerId = participantId
+        }
+      }
+
+      // Handle no winner or a 0-0 tie (if multiple people tied at 0)
+      const tiedAtZero = participants.filter(id => (progressMap[id] || 0) === 0).length === participants.length;
+
+      if (!winnerId || highestScore === 0 || tiedAtZero) {
+        console.log(`No winner found for ${challengeId}. Highest score was ${highestScore}.`)
+
+        // Mark challenge as completed with no winner (stakes are lost or could be refunded)
+        transaction.update(challengeRef, {
+          "status.global": "completed",
+          winnerId: null, // No winner
+          updatedAt: serverTimestamp(),
+        })
+
+        return { success: true, message: "Challenge ended with no winner.", winnerId: null }
+      }
+
+      console.log(`Winner for ${challengeId} is: ${winnerId} with score ${highestScore}`)
+
+      // --- 2. Pay the Winner ---
+      const winnerUserRef = doc(db, "users", winnerId)
+
+      // We must read the user doc *within* the transaction before updating it
+      const winnerSnap = await transaction.get(winnerUserRef)
+      if (!winnerSnap.exists()) {
+        // This is bad, but we must continue to close the challenge
+        console.error(`Winner's user document (ID: ${winnerId}) not found! Cannot award XP.`)
+      } else {
+        // Use Firebase 'increment' for a safe, atomic update
+        transaction.update(winnerUserRef, {
+          xp: increment(prizePool), // Atomically adds prizePool to current XP
+        })
+      }
+
+      // --- 3. Update the Challenge Document ---
+      transaction.update(challengeRef, {
+        "status.global": "completed",
+        winnerId: winnerId,
+        highestScore: highestScore,
+        updatedAt: serverTimestamp(),
+      })
+
+      return { success: true, message: `Payout successful for ${winnerId}`, winnerId, prizePool }
     })
-  })
+
+    console.log("Finalization transaction successful:", finalizationResult)
+    return finalizationResult
+  } catch (error) {
+    console.error("Error finalizing time challenge:", error)
+    throw new Error(error.message || "Failed to finalize challenge.")
+  }
 }
 
-// CommunityBackend.js
-export const stakeForChallenge = async (challengeId) => {
-  const user = auth.currentUser
-  if (!user) throw new Error("Not signed in")
+export const loadPastChallenges = async (userId) => {
+  try {
+    const challengesRef = collection(db, "challenges")
+    const now = new Date()
 
-  const challengeRef = doc(db, "challenges", challengeId)
-  const userRef = doc(db, "users", user.uid)
+    // Query 1: Challenges where user participated and challenge has ended
+    const q1 = query(
+      challengesRef,
+      where("participants", "array-contains", userId),
+      where("endDate", "<", now),
+      orderBy("endDate", "desc"),
+    )
 
-  return await runTransaction(db, async (t) => {
-    const chSnap = await t.get(challengeRef)
-    const userSnap = await t.get(userRef)
+    // Query 2: Challenges where user participated and status is completed
+    const q2 = query(
+      challengesRef,
+      where("participants", "array-contains", userId),
+      where("status.global", "==", "completed"),
+      orderBy("endDate", "desc"),
+    )
 
-    if (!chSnap.exists()) throw new Error("Challenge not found")
-    if (!userSnap.exists()) throw new Error("User not found")
+    // Execute both queries
+    const [snapshot1, snapshot2] = await Promise.all([getDocs(q1), getDocs(q2)])
 
-    const ch = chSnap.data()
-    const individualStake = Number(ch.individualStake) || Number(ch.stakeXP) / (ch.participants?.length || 1)
+    // Combine results and deduplicate
+    const challengesMap = new Map()
 
-    const currentXP = Number(userSnap.data()?.xp ?? userSnap.data()?.totalXP ?? 0)
-    if (currentXP < individualStake) throw new Error("Insufficient XP to stake")
+    snapshot1.docs.forEach((doc) => {
+      const challenge = { id: doc.id, ...doc.data() }
+      challengesMap.set(challenge.id, challenge)
+    })
 
-    // deduct user's xp (only their own doc -> allowed)
-    t.update(userRef, { xp: currentXP - individualStake })
+    snapshot2.docs.forEach((doc) => {
+      const challenge = { id: doc.id, ...doc.data() }
+      challengesMap.set(challenge.id, challenge)
+    })
 
-    // record that this user staked in the challenge (only the user's key in status -> allowed by your rules)
-    t.update(challengeRef, {
-      [`status.${user.uid}`]: "staked",
-      [`stakedAt.${user.uid}`]: serverTimestamp(),
+    // Convert to array and normalize each challenge
+    const challenges = Array.from(challengesMap.values()).map((challenge) =>
+      normalizeChallengeForClient(challenge, challenge.id),
+    )
+
+    return challenges
+      .sort((a, b) => {
+        const dateA = a.endDate instanceof Date ? a.endDate : new Date(a.endDate)
+        const dateB = b.endDate instanceof Date ? b.endDate : new Date(b.endDate)
+        return dateB - dateA
+      })
+      .map((challenge) => computeChallengePastFields(challenge, userId))
+  } catch (error) {
+    console.error("Failed to load past challenges:", error)
+    return []
+  }
+}
+
+const computeChallengePastFields = (challenge, userId) => {
+  const userProgress = challenge.progress?.[userId] ?? 0
+  const userStatus = challenge.status?.[userId] ?? "not_started"
+
+  let endDate = challenge.endDate
+  if (endDate instanceof Date) {
+    // Already a Date
+  } else if (endDate?.toDate && typeof endDate.toDate === "function") {
+    // Firebase Timestamp
+    endDate = endDate.toDate()
+  } else if (endDate) {
+    // Try to parse as string or number
+    endDate = new Date(endDate)
+  } else {
+    // Fallback to now if no end date
+    endDate = new Date()
+  }
+
+  let startDate = challenge.startDate
+  if (startDate instanceof Date) {
+    // Already a Date
+  } else if (startDate?.toDate && typeof startDate.toDate === "function") {
+    // Firebase Timestamp
+    startDate = startDate.toDate()
+  } else if (startDate) {
+    // Try to parse as string or number
+    startDate = new Date(startDate)
+  } else {
+    // Fallback to endDate - 7 days if no start date
+    startDate = new Date(endDate.getTime() - 7 * 24 * 60 * 60 * 1000)
+  }
+
+  // Validate dates are valid
+  if (isNaN(endDate.getTime())) {
+    endDate = new Date()
+  }
+  if (isNaN(startDate.getTime())) {
+    startDate = new Date(endDate.getTime() - 7 * 24 * 60 * 60 * 1000)
+  }
+
+  // Calculate duration in minutes
+  const durationMs = Math.max(0, endDate - startDate)
+  const durationMinutes = Math.floor(durationMs / (1000 * 60))
+
+  const goal = challenge.goal ?? 1
+  const safeGoal = Math.max(goal, 1) // Ensure goal is at least 1 to avoid division by zero
+  const progressPercent = Math.min(Math.round((userProgress / safeGoal) * 100), 100)
+
+  let result = "expired"
+
+  // Check if user won or completed
+  if (userStatus === "completed" || userStatus === "won" || userProgress >= safeGoal) {
+    result = "won"
+  }
+  // Check if user failed or lost
+  else if (userStatus === "failed" || userStatus === "lost") {
+    result = "lost"
+  }
+  // Check if challenge globally completed
+  else if (challenge.status?.global === "completed") {
+    // If completed globally, determine win/loss based on winnerId
+    if (challenge.winnerId) {
+      result = challenge.winnerId === userId ? "won" : "lost"
+    } else {
+      result = "completed" // Completed but no winner (e.g., tie or all 0s)
+    }
+  }
+  // Default to expired (challenge ended without user reaching goal)
+  else {
+    result = "expired"
+  }
+
+  return {
+    // Required output fields
+    id: challenge.id,
+    title: challenge.title || "Untitled Challenge",
+    activityType: challenge.activityType,
+    groupType: challenge.groupType || "public",
+    startDate: startDate,
+    endDate: endDate,
+    participants: challenge.participants || [],
+    stakeXP: challenge.stakeXP || 0,
+    creator: challenge.createdBy || "Unknown",
+    userProgress: userProgress,
+    userStatus: userStatus,
+    winnerId: challenge.winnerId || null, // Include winner ID for display
+
+    // Computed fields
+    result: result,
+    durationMinutes: Math.max(0, durationMinutes), // Ensure non-negative
+    progressPercent: progressPercent,
+
+    // Additional fields for UI rendering
+    description: challenge.description || "",
+    difficulty: challenge.difficulty || "medium",
+    unit: challenge.unit || "km",
+    goal: safeGoal,
+    maxParticipants: challenge.maxParticipants,
+  }
+}
+
+/**
+ * Helper function to determine the color associated with a challenge result
+ * @param {string} result - The result status (won, lost, completed, expired)
+ * @returns {string} - Hex color code for the result
+ */
+export const getResultColor = (result) => {
+  switch (result) {
+    case "won":
+      return "#06D6A0"
+    case "lost":
+      return "#EF4444"
+    case "completed":
+      return "#4361EE"
+    case "expired":
+    default:
+      return "#6B7280"
+  }
+}
+
+/**
+ * Helper function to get human-readable label for a challenge result
+ * @param {string} result - The result status (won, lost, completed, expired)
+ * @returns {string} - Readable label for display
+ */
+const getResultLabel = () => {
+  // ✅ FIX: Prioritize the computed result from the backend (item.result)
+  switch (item.result) {
+    case "won":
+      return "You Won!"
+    case "lost":
+      return "Lost"
+    case "completed":
+      return "Completed"
+    case "expired":
+    default:
+      if (winnerInfo) {
+        return winnerInfo.isCurrentUser ? "You Won!" : `${winnerInfo.name} Won`
+      }
+      return "Expired"
+  }
+}
+
+/**
+ * Helper function to compute challenge progress percentage with safeguards
+ * @param {number} userProgress - User's current progress value
+ * @param {number} goal - Challenge goal value
+ * @returns {number} - Progress percentage (0-100)
+ */
+export const computeProgressPercent = (userProgress, goal) => {
+  const safeGoal = Math.max(goal ?? 1, 1) // Ensure goal is at least 1
+  const safeProgress = Math.max(userProgress ?? 0, 0) // Ensure progress is non-negative
+  const percent = (safeProgress / safeGoal) * 100
+  return Math.min(Math.round(percent), 100) // Cap at 100%
+}
+
+/**
+ * Helper function to compute challenge status based on progress and conditions
+ * @param {number} userProgress - User's current progress
+ * @param {number} goal - Challenge goal
+ * @param {string} userStatus - User's status in the challenge
+ * @param {object} challengeStatus - Challenge's global status object
+ * @returns {string} - Computed result status (won, lost, completed, expired)
+ */
+export const computeResultStatus = (userProgress, goal, userStatus, challengeStatus) => {
+  // Default to expired
+  let result = "expired"
+
+  // Check if user won or met goal
+  const safeGoal = Math.max(goal ?? 1, 1)
+  const metGoal = userProgress >= safeGoal
+
+  if (userStatus === "completed" || userStatus === "won" || metGoal) {
+    result = "won"
+  } else if (userStatus === "failed" || userStatus === "lost") {
+    result = "lost"
+  } else if (challengeStatus?.global === "completed") {
+    result = "completed"
+  }
+
+  return result
+}
+
+/**
+ * Helper function to calculate duration between two dates in minutes
+ * @param {Date|Timestamp} startDate - Challenge start date
+ * @param {Date|Timestamp} endDate - Challenge end date
+ * @returns {number} - Duration in minutes (non-negative)
+ */
+export const computeDurationMinutes = (startDate, endDate) => {
+  try {
+    let start = startDate
+    let end = endDate
+
+    // Convert Firebase Timestamps to Date objects
+    if (start?.toDate && typeof start.toDate === "function") {
+      start = start.toDate()
+    } else if (!(start instanceof Date)) {
+      start = new Date(start || 0)
+    }
+
+    if (end?.toDate && typeof end.toDate === "function") {
+      end = end.toDate()
+    } else if (!(end instanceof Date)) {
+      end = new Date(end || Date.now())
+    }
+
+    // Ensure both are valid Date objects
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return 0
+    }
+
+    const durationMs = Math.max(0, end - start)
+    return Math.floor(durationMs / (1000 * 60))
+  } catch (error) {
+    console.warn("[v0] Error computing duration:", error)
+    return 0
+  }
+}
+
+/**
+ * Helper function to safely convert and validate a date value
+ * @param {Date|Timestamp|string|number} dateValue - The date to convert
+ * @param {Date|Timestamp|string|number} fallback - Fallback value if conversion fails
+ * @returns {Date} - Valid Date object
+ */
+export const safeConvertDate = (dateValue, fallback = new Date()) => {
+  try {
+    if (dateValue instanceof Date) {
+      if (isNaN(dateValue.getTime())) {
+        return new Date(fallback)
+      }
+      return dateValue
+    }
+
+    if (dateValue?.toDate && typeof dateValue.toDate === "function") {
+      const converted = dateValue.toDate()
+      if (isNaN(converted.getTime())) {
+        return new Date(fallback)
+      }
+      return converted
+    }
+
+    const parsed = new Date(dateValue)
+    if (isNaN(parsed.getTime())) {
+      return new Date(fallback)
+    }
+    return parsed
+  } catch (error) {
+    console.warn("[v0] Error converting date:", error)
+    return new Date(fallback)
+  }
+}
+
+/**
+ * Helper function to determine if a challenge is expired
+ * @param {Date} endDate - Challenge end date
+ * @returns {boolean} - True if challenge is expired
+ */
+export const isChallengeExpired = (endDate) => {
+  try {
+    const end = safeConvertDate(endDate)
+    const now = new Date()
+    return now > end
+  } catch (error) {
+    console.warn("[v0] Error checking expiration:", error)
+    return false
+  }
+}
+
+/**
+ * Helper function to get remaining time string for a challenge
+ * @param {Date} endDate - Challenge end date
+ * @returns {string} - Human-readable remaining time
+ */
+export const getRemainingTimeString = (endDate) => {
+  try {
+    const end = safeConvertDate(endDate)
+    const now = new Date()
+    const diffMs = end - now
+
+    if (diffMs < 0) return "Ended"
+
+    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+    const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
+    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60))
+
+    if (days > 0) {
+      return `${days}d ${hours}h`
+    }
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`
+    }
+    return `${minutes}m`
+  } catch (error) {
+    console.warn("[v0] Error computing remaining time:", error)
+    return "N/A"
+  }
+}
+
+/**
+ * Helper function to format a date for display
+ * @param {Date|Timestamp|string|number} dateValue - Date to format
+ * @param {string} locale - Locale for formatting (default: "en-US")
+ * @returns {string} - Formatted date string
+ */
+export const formatDateForDisplay = (dateValue, locale = "en-US") => {
+  try {
+    const date = safeConvertDate(dateValue)
+    return date.toLocaleDateString(locale, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    })
+  } catch (error) {
+    console.warn("[v0] Error formatting date:", error)
+    return "N/A"
+  }
+}
+
+/**
+ * Helper function to validate challenge data completeness
+ * @param {object} challenge - Challenge object to validate
+ * @returns {object} - Object with isValid boolean and error message (if invalid)
+ */
+export const validateChallengeData = (challenge) => {
+  if (!challenge) {
+    return { isValid: false, error: "Challenge data is missing" }
+  }
+
+  if (!challenge.id) {
+    return { isValid: false, error: "Challenge ID is missing" }
+  }
+
+  if (!challenge.title) {
+    return { isValid: false, error: "Challenge title is missing" }
+  }
+
+  if (!challenge.endDate) {
+    return { isValid: false, error: "Challenge end date is missing" }
+  }
+
+  if (!challenge.participants || !Array.isArray(challenge.participants)) {
+    return { isValid: false, error: "Challenge participants data is invalid" }
+  }
+
+  if (typeof challenge.goal !== "number" || challenge.goal <= 0) {
+    return { isValid: false, error: "Challenge goal is invalid" }
+  }
+
+  return { isValid: true }
+}
+
+/**
+ * Helper function to get activity info by type ID
+ * @param {string} activityTypeId - Activity type ID (e.g., "walking", "running")
+ * @param {array} activities - Array of activity configurations
+ * @returns {object} - Activity configuration object or default
+ */
+export const getActivityConfig = (activityTypeId, activities) => {
+  if (!activities || !Array.isArray(activities)) {
+    return {
+      id: "unknown",
+      name: "Activity",
+      color: "#FFC107",
+      unit: "km",
+    }
+  }
+
+  const found = activities.find((a) => a.id === activityTypeId)
+  return (
+    found || {
+      id: "unknown",
+      name: "Activity",
+      color: "#FFC107",
+      unit: "km",
+    }
+  )
+}
+
+export const checkAllParticipantsSubmitted = (challengeData) => {
+  /**
+   * Purpose: To audit the progress map.
+   * Logic: Check if the challengeData.participants array contains exactly two members,
+   * AND if both members have a score greater than zero (> 0) recorded in the challengeData.progress map.
+   * Return: true if all submission criteria are met, otherwise false.
+   */
+  try {
+    // Must have exactly 2 participants
+    if (!Array.isArray(challengeData.participants) || challengeData.participants.length !== 2) {
+      return false
+    }
+
+    const participants = challengeData.participants
+    const progressMap = challengeData.progress || {}
+
+    // Both participants must have score > 0
+    for (const participantId of participants) {
+      const score = progressMap[participantId] || 0
+      if (score <= 0) {
+        return false
+      }
+    }
+
+    return true
+  } catch (error) {
+    console.error("[checkAllParticipantsSubmitted] Error:", error)
+    return false
+  }
+}
+
+export const finalizeChallengeImmediate = async (transaction, challengeRef, challengeData) => {
+  /**
+   * Purpose: To complete the challenge transactionally.
+   * Logic:
+   * 1. Determine the winnerId by finding the participant with the highest score in challengeData.progress.
+   * 2. Use the passed transaction to atomically update the winner's document: add the prizePool to their totalXP using increment(), and increment their completedChallenges counter.
+   * 3. Use the transaction to update the challengeRef to set winnerId and change status.global to "completed".
+   * 4. Create a challenge_rewards log entry using the transaction.
+   *
+   * ⚠️ NOTE: This function is the same as finalizeTimeChallenge but for use *inside* another transaction (like in XPManager)
+   */
+  try {
+    console.log(`[finalizeChallengeImmediate] Starting immediate finalization for challenge: ${challengeRef.id}`)
+
+    const participants = challengeData.participants || []
+    const progressMap = challengeData.progress || {}
+    const prizePool = challengeData.stakeXP || 0
+
+    // 1. Find the Winner
+    let winnerId = null
+    let highestScore = -1
+
+    for (const participantId of participants) {
+      const score = progressMap[participantId] || 0
+      if (score > highestScore) {
+        highestScore = score
+        winnerId = participantId
+      }
+    }
+
+    if (!winnerId || highestScore === 0) {
+      // Tie or all zeros: No winner determined.
+      transaction.update(challengeRef, {
+        winnerId: null,
+        "status.global": "completed",
+        updatedAt: serverTimestamp(),
+      })
+
+      return { success: true, winnerId: null, prizePool: 0 }
+    }
+
+    console.log(
+      `[finalizeChallengeImmediate] Winner determined: ${winnerId} with score ${highestScore}. Prize pool: ${prizePool}`,
+    )
+
+    // 2. Atomically update winner's XP and completedChallenges
+    const winnerRef = doc(db, "users", winnerId)
+    const winnerSnap = await transaction.get(winnerRef)
+
+    if (!winnerSnap.exists()) {
+      throw new Error(`Winner's user document (${winnerId}) not found for immediate finalization.`)
+    }
+
+    // FIXED: Use 'xp' field for increment
+    transaction.update(winnerRef, {
+      xp: increment(prizePool),
+      completedChallenges: increment(1),
+    })
+
+    // 3. Update challenge document
+    transaction.update(challengeRef, {
+      "status.global": "completed",
+      winnerId: winnerId,
+      highestScore: highestScore,
       updatedAt: serverTimestamp(),
     })
 
-    return { success: true, individualStake }
-  })
+    // 4. Create challenge_rewards log entry
+    const rewardRef = doc(collection(db, "challenge_rewards"))
+    transaction.set(rewardRef, {
+      challengeId: challengeRef.id,
+      winnerId: winnerId,
+      totalReward: prizePool,
+      participants: participants,
+      scores: progressMap,
+      finalizedAt: serverTimestamp(),
+      method: "immediate", // Indicate this was immediate finalization
+    })
+
+    console.log(
+      `[finalizeChallengeImmediate] ✅ Immediate finalization completed for challenge ${challengeRef.id}. Winner: ${winnerId}, Reward: ${prizePool}`,
+    )
+
+    return { success: true, winnerId, prizePool }
+  } catch (error) {
+    console.error("[finalizeChallengeImmediate] Error during immediate finalization:", error)
+    throw error
+  }
 }
