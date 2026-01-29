@@ -1,0 +1,209 @@
+import React, { useState, useEffect, useRef } from "react";
+import {
+    View,
+    TouchableOpacity,
+    Animated,
+    Easing,
+    Dimensions,
+    Image,
+    Platform,
+    StatusBar
+} from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import twrnc from "twrnc";
+import CustomText from "../components/CustomText";
+import { doc, updateDoc } from "firebase/firestore";
+import { auth, db } from "../firebaseConfig";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+const { width, height } = Dimensions.get("window");
+
+const StoryScreen = ({ navigation, route }) => {
+    const params = route.params || {};
+    const isIntro = params.isIntro || false;
+
+    // 1. STORY SCRIPT
+    const storyContent = isIntro
+        ? [
+            "Welcome to HakbangQuest!",
+            "The city lights are fading...",
+            "Only your movement can power them back up!",
+            "Run to recharge the grid.",
+            "Let's Save the City!"
+        ]
+        : [
+            "Zone Cleared!",
+            "The city grid is stabilizing.",
+            "Your energy levels are rising.",
+            "Proceed to the next sector."
+        ];
+
+    const [currentLineIndex, setCurrentLineIndex] = useState(0);
+    const [displayedText, setDisplayedText] = useState("");
+    const [isTyping, setIsTyping] = useState(false);
+
+    // Animation Values
+    const roadAnim = useRef(new Animated.Value(0)).current;
+
+    // 2. TYPEWRITER EFFECT
+    useEffect(() => {
+        const textToType = storyContent[currentLineIndex];
+        setDisplayedText("");
+        setIsTyping(true);
+        let charIndex = 0;
+
+        const typingInterval = setInterval(() => {
+            if (charIndex <= textToType.length) {
+                setDisplayedText(textToType.slice(0, charIndex));
+                charIndex++;
+            } else {
+                clearInterval(typingInterval);
+                setIsTyping(false);
+            }
+        }, 35); // Typing speed
+
+        return () => clearInterval(typingInterval);
+    }, [currentLineIndex]);
+
+    // 3. INFINITE SCROLL ANIMATION
+    useEffect(() => {
+        Animated.loop(
+            Animated.timing(roadAnim, {
+                toValue: 1,
+                duration: 8000, // Slower duration for the city to look massive
+                easing: Easing.linear,
+                useNativeDriver: true,
+            })
+        ).start();
+    }, []);
+
+    // Moves the background
+    const translateX = roadAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, -width],
+    });
+
+    // 4. INTERACTION
+    const handlePress = () => {
+        if (isTyping) {
+            setDisplayedText(storyContent[currentLineIndex]);
+            setIsTyping(false);
+            return;
+        }
+        if (currentLineIndex < storyContent.length - 1) {
+            setCurrentLineIndex((prev) => prev + 1);
+        } else {
+            finishStory();
+        }
+    };
+
+    const finishStory = async () => {
+        if (isIntro && auth.currentUser) {
+            try {
+                const userRef = doc(db, "users", auth.currentUser.uid);
+                await updateDoc(userRef, { hasSeenIntro: true });
+            } catch (error) {
+                console.error("Error updating intro status:", error);
+            }
+        }
+        navigation.navigate("dashboard");
+    };
+
+    const RetroStatBar = ({ icon, color, fill }) => (
+        <View style={twrnc`flex-row items-center bg-gray-900/80 border border-white/30 rounded px-2 py-1 mr-2`}>
+            <Ionicons name={icon} size={14} color={color} style={twrnc`mr-2`} />
+            <View style={twrnc`w-12 h-1.5 bg-gray-700 rounded-full overflow-hidden`}>
+                <View style={[twrnc`h-full`, { width: `${fill}%`, backgroundColor: color }]} />
+            </View>
+        </View>
+    );
+
+    return (
+        <View style={twrnc`flex-1 bg-[#1a1b26]`}>
+            <StatusBar hidden />
+
+            {/* --- GAME WORLD --- */}
+            <View style={twrnc`flex-1 justify-end`}>
+
+                {/* BACKGROUND LAYER 1: THE NIGHT CITY GIF */}
+                {/* We make this take up the WHOLE screen for maximum atmosphere */}
+                <View style={twrnc`absolute top-0 left-0 w-full h-full`}>
+                    {/* If the GIF is wide, we scroll it. If it's just a scene, we just display it.
+                Assuming it's a scene, we just make it cover the screen. 
+            */}
+                    <Image
+                        source={require('../assets/story/city_night.gif')}
+                        style={twrnc`w-full h-full opacity-60`}
+                        resizeMode="cover"
+                    />
+                </View>
+
+                {/* BACKGROUND LAYER 2: SCROLLING BUILDINGS (Optional Parallax) */}
+                {/* If you want movement, we scroll a duplicate layer slightly. */}
+                <View style={twrnc`absolute bottom-0 w-full h-full overflow-hidden opacity-30`}>
+                    <Animated.View style={[twrnc`flex-row w-[200%] h-full`, { transform: [{ translateX }] }]}>
+                        <Image source={require('../assets/story/city_night.gif')} style={twrnc`w-[${width}px] h-full`} resizeMode="cover" />
+
+                    </Animated.View>
+                </View>
+
+                {/* ROAD / FLOOR */}
+                <View style={twrnc`h-20 w-full bg-[#111827] border-t-2 border-[#6366f1] z-10`}>
+                    {/* Simple road markings */}
+                    <Animated.View style={[twrnc`flex-row w-[200%] h-full items-center`, { transform: [{ translateX }] }]}>
+                        {[...Array(20)].map((_, i) => (
+                            <View key={i} style={twrnc`w-20 h-1 bg-gray-700/50 mr-20`} />
+                        ))}
+                    </Animated.View>
+                </View>
+
+                {/* --- CHARACTER --- */}
+                <View style={twrnc`absolute bottom-5 left-10 z-20`}>
+                    <Image
+                        // Ensure this is a TRANSPARENT GIF
+                        source={require('../assets/story/runner.gif')}
+                        style={twrnc`w-50 h-50`}
+                        resizeMode="contain"
+                    />
+                </View>
+            </View>
+
+            {/* --- DIALOG BOX --- */}
+            <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={handlePress}
+                style={twrnc`absolute top-1/4 self-center w-[90%] z-50`}
+            >
+                <View style={[
+                    twrnc`bg-[#1F2937]/95 p-1`,
+                    {
+                        borderWidth: 2,
+                        borderColor: '#6366f1', // Neon Purple Border to match city
+                        borderRadius: 8,
+                        shadowColor: "#6366f1",
+                        shadowOffset: { width: 0, height: 0 },
+                        shadowOpacity: 0.8,
+                        shadowRadius: 10,
+                        elevation: 10
+                    }
+                ]}>
+                    <View style={twrnc`p-5 min-h-[120px]`}>
+                        <CustomText weight="bold" style={[twrnc`text-white text-base leading-6`, { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }]}>
+                            {displayedText}
+                            {isTyping && <CustomText style={twrnc`text-[#6366f1]`}>_</CustomText>}
+                        </CustomText>
+                    </View>
+
+                    {!isTyping && (
+                        <View style={twrnc`absolute bottom-2 right-4`}>
+                            <Ionicons name="caret-down" size={20} color="#6366f1" />
+                        </View>
+                    )}
+                </View>
+            </TouchableOpacity>
+
+        </View>
+    );
+};
+
+export default StoryScreen;

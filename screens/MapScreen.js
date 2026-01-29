@@ -43,10 +43,10 @@ const isAndroid = Platform.OS === "android"
 const isSmallDevice = width < 375
 
 const MINIMUM_DISTANCE_THRESHOLDS = {
-  walking: 0.5,  
-  jogging: 1,  
-  running: 2,  
-  cycling: 4, 
+  walking: 0.5,
+  jogging: 1,
+  running: 2,
+  cycling: 4,
 };
 
 const PACE_WINDOW_SIZES = { walking: 5, jogging: 5, running: 5, cycling: 7 }
@@ -66,7 +66,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     targetTime = "0",
     tracking: initialTracking = true,
     initialCoordinates = [],
-    initialStats = { distance: 0, duration: 0, pace: 0, avgSpeed: 0, steps: 0, reps: 0 },
+    initialStats = { distance: 0, duration: 0, pace: 0, avgSpeed: 0, steps: 0, reps: 0, elevationGain: 0 },
     activeQuest = null,
     questProgress = 0,
     userHeight = 170,
@@ -119,10 +119,10 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     totalXP: 0,
   })
 
-  // NEW: Countdown timer state
+  // Countdown timer state
   const [remainingSecs, setRemainingSecs] = useState(null);
   const countdownIntervalRef = useRef(null);
-  const timerInitializedRef = useRef(false); // FIXED: Track if timer has been initialized
+  const timerInitializedRef = useRef(false);
 
   console.log("MapScreen: Current selectedQuest state:", selectedQuest)
 
@@ -181,14 +181,12 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
   const currentActivity = activityConfigs[activityType] || activityConfigs.walking
   const maxSpeed = activityType === "cycling" ? 20 : 8
 
-  // Format time function for countdown timer
   const formatTime = useCallback((seconds) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   }, []);
 
-  // Create pan responder for draggable GPS indicator
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
@@ -209,7 +207,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     }),
   ).current
 
-  // Load user stats from Firestore
   const loadUserStats = async () => {
     try {
       const user = auth.currentUser
@@ -257,29 +254,22 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         stakeXP: params.stakeXP,
       }
 
-      console.log("MapScreen: Setting selected quest from params:", questData)
       setSelectedQuest(questData)
 
-      // FIXED: Initialize timer when quest is set
       if (questData.durationMinutes && questData.durationMinutes > 0 && !timerInitializedRef.current) {
         const initialSeconds = questData.durationMinutes * 60;
         setRemainingSecs(initialSeconds);
         timerInitializedRef.current = true;
-        console.log(`MapScreen: Timer initialized with ${initialSeconds}s`);
       }
     } else if (activeQuest) {
-      console.log("MapScreen: Setting selected quest from activeQuest param:", activeQuest)
       setSelectedQuest(activeQuest)
 
-      // FIXED: Initialize timer for activeQuest
       if (activeQuest.durationMinutes && activeQuest.durationMinutes > 0 && !timerInitializedRef.current) {
         const initialSeconds = activeQuest.durationMinutes * 60;
         setRemainingSecs(initialSeconds);
         timerInitializedRef.current = true;
-        console.log(`MapScreen: Timer initialized with ${initialSeconds}s`);
       }
     } else {
-      console.log("MapScreen: No quest data found in params")
       setSelectedQuest(null)
     }
   }, [params, activeQuest])
@@ -290,7 +280,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
 
   useEffect(() => {
     if (selectedQuest) {
-      console.log("MapScreen: Starting pulse animation for selected quest")
       Animated.loop(
         Animated.sequence([
           Animated.timing(questPulseAnim, {
@@ -323,7 +312,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     }
   }, [selectedQuest, activityType])
 
-  // Cleanup countdown timer on unmount
   useEffect(() => {
     return () => {
       if (countdownIntervalRef.current) {
@@ -332,17 +320,13 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     };
   }, []);
 
-  // FIXED: Start countdown timer when tracking starts
   useEffect(() => {
     if (tracking && remainingSecs !== null && !countdownIntervalRef.current) {
-      console.log(`MapScreen: Starting countdown timer with ${remainingSecs}s remaining`);
-
       countdownIntervalRef.current = setInterval(() => {
         setRemainingSecs((prev) => {
           if (prev === null || prev <= 1) {
             clearInterval(countdownIntervalRef.current);
             countdownIntervalRef.current = null;
-            console.log('MapScreen: Timer finished. Auto-finishing activity.');
             Vibration.vibrate(500);
             stopTracking();
             return 0;
@@ -354,10 +338,8 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         });
       }, 1000);
     } else if (!tracking && countdownIntervalRef.current) {
-      // Pause the timer when tracking is paused
       clearInterval(countdownIntervalRef.current);
       countdownIntervalRef.current = null;
-      console.log('MapScreen: Timer paused');
     }
   }, [tracking, remainingSecs]);
 
@@ -928,6 +910,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
             latitude: currentLocation.latitude,
             longitude: currentLocation.longitude,
             accuracy: 10,
+            altitude: 0,
           },
           timestamp: Date.now(),
         }
@@ -946,6 +929,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         timestamp: initialLocation.timestamp,
         accuracy: initialLocation.coords.accuracy,
         speed: 0,
+        altitude: initialLocation.coords.altitude || 0,
       }
 
       if (coordinates.length === 0 || !isPaused) {
@@ -965,6 +949,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
           avgSpeed: 0,
           steps: 0,
           reps: 0,
+          elevationGain: 0,
         })
         console.log("MapScreen: Starting new tracking session with reset stats")
       } else {
@@ -1000,16 +985,13 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
           timeInterval: 1000,
         },
         (loc) => {
-          if (isPaused) return
+          // --- FIX: Removed "if (isPaused) return" to prevent stale closure bug ---
 
           const { latitude, longitude, accuracy, speed = 0, altitude = 0 } = loc.coords
 
           if (accuracy > 50 || speed > maxSpeed) {
             lowAccuracyCountRef.current += 1
             if (lowAccuracyCountRef.current >= 5) setGpsSignal("Poor")
-            console.log(
-              `MapScreen: Skipping location due to poor accuracy (${accuracy?.toFixed?.(1)}m) or high speed (${speed?.toFixed?.(1)} m/s)`,
-            )
             return
           }
 
@@ -1032,7 +1014,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
           if (lastCoord) {
             const nowMs = smoothedCoordinate.timestamp
             const lastMs = lastUpdateTimeRef.current || nowMs
-            const dt = Math.max(0, (nowMs - lastMs) / 1000)
             lastUpdateTimeRef.current = nowMs
 
             const dHav = calculateDistance(
@@ -1044,9 +1025,18 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
 
             const distanceIncrement = dHav >= distanceThreshold ? dHav : 0
 
-            if (distanceIncrement === 0 && dHav > 0) {
-              console.log(`MapScreen: Filtered small move (${dHav.toFixed(2)}m < ${distanceThreshold}m)`)
+            // --- ELEVATION CALCULATION START ---
+            let elevationGainIncrement = 0;
+            const currentAltitude = smoothedCoordinate.altitude || 0;
+            const lastAltitude = lastCoord.altitude || 0;
+
+            if (currentAltitude !== 0 && lastAltitude !== 0 && accuracy < 20) {
+              const altDiff = currentAltitude - lastAltitude;
+              if (altDiff > 1.5) {
+                elevationGainIncrement = altDiff;
+              }
             }
+            // --- ELEVATION CALCULATION END ---
 
             setStats((prevStats) => {
               const newDistance = (prevStats.distance || 0) + distanceIncrement
@@ -1063,12 +1053,10 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
                 avgSpeed,
                 rawPace,
                 pace: smoothed,
+                elevationGain: (prevStats.elevationGain || 0) + elevationGainIncrement,
               }
             })
-          } else {
-            console.log("MapScreen: No previous coordinate for distance calc; initializing lastCoord")
           }
-
           setCoordinates((prev) => [...prev, smoothedCoordinate])
           lastCoordinateRef.current = smoothedCoordinate
         },
@@ -1169,7 +1157,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
           action: () => {
             console.log("MapScreen: Discarding activity and resetting session progress")
             setCoordinates([])
-            setStats({ distance: 0, duration: 0, pace: 0, avgSpeed: 0, steps: 0, reps: 0 })
+            setStats({ distance: 0, duration: 0, pace: 0, avgSpeed: 0, steps: 0, reps: 0, elevationGain: 0 })
             setIsPaused(false)
             setTracking(false)
 
@@ -1178,7 +1166,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
               countdownIntervalRef.current = null;
             }
 
-            // FIXED: Reset timer state properly
             if (selectedQuest?.durationMinutes) {
               const initialSeconds = selectedQuest.durationMinutes * 60;
               setRemainingSecs(initialSeconds);
@@ -1258,7 +1245,31 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         return;
       }
 
+      // --- FIX START: Calculate Calories Logic ---
+      const calculateCalories = (type, durationInSeconds) => {
+        // Approximate MET values for different activities
+        const metValues = {
+          walking: 3.5,
+          running: 9.8,
+          jogging: 7.0,
+          cycling: 7.5,
+        };
+
+        const met = metValues[type] || 3.5;
+        const weightKg = 70; // Standard average weight (or fetch from user profile if available)
+        const durationHours = durationInSeconds / 3600;
+
+        // Formula: MET * weight * hours
+        const calculated = Math.round(met * weightKg * durationHours);
+        return calculated > 0 ? calculated : 0;
+      };
+
+      // Calculate based on the duration currently in stats
+      const calculatedCalories = calculateCalories(activityType, ensureNumeric(stats.duration));
+      // --- FIX END ---
+
       const coords = Array.isArray(coordinates) ? coordinates : [];
+
       const activityData = {
         userId: user.uid,
         activityType,
@@ -1270,7 +1281,10 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         elevationGain: ensureNumeric(stats.elevationGain),
         elevationLoss: ensureNumeric(stats.elevationLoss),
         steps: ensureNumeric(stats.steps),
-        calories: ensureNumeric(stats.calories),
+
+        // Use the calculated value here instead of stats.calories (which was 0)
+        calories: calculatedCalories,
+
         coordinates: coords,
         createdAt: serverTimestamp(),
         startLocation: coords.length
@@ -1289,7 +1303,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
           : null,
       };
 
-      // FIXED: Prepare activity params properly
       const activityParams = {
         activityType: activityType,
         questId: selectedQuest?.id || null,
@@ -1303,7 +1316,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
       const sessionStartTime = sessionStartRef.current || Date.now();
       const activityId = XPManager.generateActivityId(user.uid, sessionStartTime);
 
-      // FIXED: Pass challengeData and questData separately
       const xpResult = await XPManager.awardXPForActivity({
         userId: user.uid,
         activityId,
@@ -1312,7 +1324,8 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
           distance: ensureNumeric(stats.distance),
           duration: ensureNumeric(stats.duration),
           steps: ensureNumeric(stats.steps),
-          calories: ensureNumeric(stats.calories),
+          // Ensure XP Manager also sees the calculated calories
+          calories: calculatedCalories,
         },
         activityParams,
         questData: selectedQuest?.category === 'challenge' ? null : selectedQuest,
@@ -1339,8 +1352,9 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         `• ${formatDistance(stats.distance)} covered\n` +
         `• ${formatDuration(stats.duration)} duration\n` +
         `• ${formatSpeedKmh(stats.avgSpeed)} avg speed\n` +
-        `• ${stats.steps?.toLocaleString() || 0} steps\n` +
-        `• ${stats.calories || 0} calories burned` +
+        `• ${stats.elevationGain?.toFixed(0) || 0}m elevation gain\n` +
+        // Show the calculated calories in the message
+        `• ${calculatedCalories} calories burned` +
         (xpResult?.xpEarned
           ? `\n• ${xpResult.xpEarned} XP earned${xpResult.bonusXP ? ` (+${xpResult.bonusXP} bonus)` : ""}`
           : "");
@@ -1385,8 +1399,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     }
   };
 
-
-  console.log("MapScreen: Rendering with selectedQuest:", selectedQuest)
 
   const isActivityIdle = !tracking && !isPaused && coordinates.length === 0
   const isActivityTracking = tracking
@@ -1745,279 +1757,246 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         </>
       )}
 
-      {/* Stats panel (slides up from bottom when not fullscreen) */}
+      {/* Stats Panel (Slide Up Drawer) */}
       {!isMapFullscreen && (
         <Animated.View
           style={[
-            twrnc`absolute bottom-0 left-0 right-0 bg-black`,
+            twrnc`absolute bottom-0 left-0 right-0 bg-[#0f172a] shadow-2xl`,
             {
-              height: height * 0.5,
-              borderTopLeftRadius: 24,
-              borderTopRightRadius: 24,
+              borderTopLeftRadius: 28,
+              borderTopRightRadius: 28,
+              borderTopWidth: 1,
+              borderColor: 'rgba(255,255,255,0.08)',
+              // Use padding instead of fixed height to remove dead space
+              paddingBottom: Platform.OS === 'ios' ? 34 : 24,
+              elevation: 20, // Android shadow
             },
           ]}
         >
+          {/* 1. Drawer Handle (Visual Indicator) */}
+          <View style={twrnc`w-12 h-1.5 bg-gray-700/50 rounded-full self-center mt-3 mb-2`} />
 
+          {/* 2. Quest Banner (Floating style, integrated into flow) */}
           {selectedQuest && (
-            <View
+            <Animated.View
               style={[
-                {
-                  position: "absolute",
-                  top: 200,
-                  left: 16,
-                  right: 16,
-                  zIndex: 15,
-                },
+                twrnc`mx-5 mb-4 mt-2`,
+                { opacity: fadeAnim, transform: [{ scale: questPulseAnim }] }
               ]}
             >
-              <Animated.View style={{ opacity: fadeAnim, transform: [{ scale: questPulseAnim }] }}>
-                <LinearGradient
-                  colors={
-                    getQuestStatus(selectedQuest) === "completed"
-                      ? ["#10B981", "#FFC107"]
-                      : ["#FFC107", "#FFC107"]
-                  }
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={twrnc`p-4 rounded-2xl shadow-2xl ${isAndroid ? "elevation-8" : ""}`}
-                >
-                  <View style={twrnc`flex-row items-center justify-between mb-2`}>
-                    <View style={twrnc`flex-row items-center flex-1`}>
-                      <View style={twrnc`bg-white bg-opacity-25 rounded-full p-2.5 mr-3 shadow-sm`}>
-                        <FontAwesome
-                          name={getQuestStatus(selectedQuest) === "completed" ? "trophy" : "bullseye"}
-                          size={16}
-                          color="#FFFFFF"
-                        />
-                      </View>
-                      <View style={twrnc`flex-1`}>
-                        <CustomText weight="bold" style={twrnc`text-white text-sm mb-0.5`}>
-                          {selectedQuest.title}
-                        </CustomText>
-                        <CustomText style={twrnc`text-white text-opacity-85 text-xs`}>
-                          {selectedQuest.description}
-                        </CustomText>
-                      </View>
+              <LinearGradient
+                colors={
+                  getQuestStatus(selectedQuest) === "completed"
+                    ? ["#10B981", "#059669"]
+                    : ["#F59E0B", "#D97706"]
+                }
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={twrnc`p-3.5 rounded-2xl shadow-lg border border-white/10`}
+              >
+                <View style={twrnc`flex-row items-center justify-between`}>
+                  <View style={twrnc`flex-row items-center flex-1`}>
+                    <View style={twrnc`bg-white/20 rounded-full p-2 mr-3`}>
+                      <FontAwesome
+                        name={getQuestStatus(selectedQuest) === "completed" ? "trophy" : "bullseye"}
+                        size={14}
+                        color="#FFFFFF"
+                      />
                     </View>
-                    <TouchableOpacity
-                      onPress={() => setSelectedQuest(null)}
-                      style={twrnc`bg-white bg-opacity-20 p-2 rounded-full shadow-sm`}
-                    >
-                      <FontAwesome name="times" size={12} color="#FFFFFF" />
-                    </TouchableOpacity>
-                  </View>
+                    <View style={twrnc`flex-1`}>
+                      <CustomText weight="bold" numberOfLines={1} style={twrnc`text-white text-sm`}>
+                        {selectedQuest.title}
+                      </CustomText>
 
-                  {/* Only show Progress for non-challenge quests */}
-                  {selectedQuest.category !== 'challenge' && (
-                    <View style={twrnc`mb-1`}>
-                      <View style={twrnc`flex-row justify-between items-center mb-1`}>
-                        <CustomText style={twrnc`text-white text-opacity-90 text-xs font-medium`}>Progress</CustomText>
-                        <View style={twrnc`flex-row items-center`}>
-                          <CustomText weight="bold" style={twrnc`text-white text-sm mr-2`}>
+                      {/* Progress Bar (Compact) */}
+                      {selectedQuest.category !== 'challenge' && (
+                        <View style={twrnc`flex-row items-center mt-1`}>
+                          <View style={twrnc`flex-1 h-1.5 bg-black/20 rounded-full overflow-hidden mr-2`}>
+                            <View style={[
+                              twrnc`h-full rounded-full bg-white`,
+                              { width: `${Math.min(getDisplayQuestProgress(selectedQuest) * 100, 100)}%` }
+                            ]} />
+                          </View>
+                          <CustomText style={twrnc`text-white/90 text-[10px] font-mono`}>
                             {Math.round(getDisplayQuestProgress(selectedQuest) * 100)}%
                           </CustomText>
-                          <CustomText style={twrnc`text-white text-opacity-75 text-xs`}>
-                            {QuestProgressManager.getProgressDisplayText(
-                              selectedQuest,
-                              {
-                                ...stats,
-                                distance: stats.distance / 1000,
-                              },
-                              0,
-                            )}
-                          </CustomText>
                         </View>
-                      </View>
-                      <View style={twrnc`h-2 bg-white bg-opacity-20 rounded-full overflow-hidden shadow-inner`}>
-                        <View
-                          style={[
-                            twrnc`h-2 rounded-full shadow-sm`,
-                            {
-                              width: `${Math.min(getDisplayQuestProgress(selectedQuest) * 100, 100)}%`,
-                              backgroundColor: getDisplayQuestProgress(selectedQuest) >= 1 ? "#FFFFFF" : "#FDE68A",
-                            },
-                          ]}
-                        />
-                      </View>
+                      )}
                     </View>
-                  )}
+                  </View>
 
-                  {getQuestStatus(selectedQuest) === "completed" && (
-                    <View
-                      style={twrnc`flex-row items-center justify-center mt-2 bg-white bg-opacity-20 rounded-full py-1.5 px-3`}
-                    >
-                      <FontAwesome name="check-circle" size={14} color="#FFFFFF" />
-                      <CustomText style={twrnc`text-white text-xs font-semibold ml-2`}>
-                        Quest Completed! +{selectedQuest.xpReward || 50} XP
-                      </CustomText>
-                    </View>
-                  )}
-                </LinearGradient>
-              </Animated.View>
-            </View>
+                  {/* Close Button */}
+                  <TouchableOpacity
+                    onPress={() => setSelectedQuest(null)}
+                    style={twrnc`bg-black/10 p-1.5 rounded-full ml-2`}
+                  >
+                    <FontAwesome name="times" size={10} color="#FFFFFF" />
+                  </TouchableOpacity>
+                </View>
+              </LinearGradient>
+            </Animated.View>
           )}
 
-          {/* Stats Grid */}
-          <View style={twrnc`pt-${selectedQuest ? 20 : 8} pb-4 px-6`}>
-            <View style={twrnc`flex-row justify-around mb-6`}>
+          {/* 3. Stats Grid - Modern 2x2 Layout */}
+          <View style={twrnc`px-5 mb-6`}>
+            <View style={twrnc`flex-row flex-wrap justify-between gap-3`}>
+
               {/* Distance */}
-              <View style={twrnc`items-center`}>
-                <CustomText style={twrnc`text-gray-400 text-xs mb-1`}>Distance</CustomText>
-                <CustomText weight="bold" style={twrnc`text-white text-3xl`}>
-                  {(stats.distance / 1000).toFixed(2)}
-                </CustomText>
-                <CustomText style={twrnc`text-gray-500 text-xs`}>km</CustomText>
+              <View style={twrnc`w-[48%] bg-[#1e293b] rounded-2xl p-3.5 border border-white/5`}>
+                <View style={twrnc`flex-row justify-between mb-1`}>
+                  <CustomText style={twrnc`text-gray-400 text-[10px] uppercase font-bold tracking-wider`}>Distance</CustomText>
+                  <Ionicons name="map" size={14} color={currentActivity.color || "#4361EE"} />
+                </View>
+                <View style={twrnc`flex-row items-baseline`}>
+                  <CustomText weight="bold" style={twrnc`text-white text-2xl mr-1`}>
+                    {(stats.distance / 1000).toFixed(2)}
+                  </CustomText>
+                  <CustomText style={twrnc`text-gray-500 text-xs`}>km</CustomText>
+                </View>
               </View>
 
-              {/* Duration */}
-              <View style={twrnc`items-center`}>
-                <CustomText style={twrnc`text-gray-400 text-xs mb-1`}>Time</CustomText>
-                <CustomText weight="bold" style={twrnc`text-white text-3xl font-mono`}>
+              {/* Time */}
+              <View style={twrnc`w-[48%] bg-[#1e293b] rounded-2xl p-3.5 border border-white/5`}>
+                <View style={twrnc`flex-row justify-between mb-1`}>
+                  <CustomText style={twrnc`text-gray-400 text-[10px] uppercase font-bold tracking-wider`}>Time</CustomText>
+                  <Ionicons name="time" size={14} color="#FFC107" />
+                </View>
+                <CustomText weight="bold" style={twrnc`text-white text-2xl font-mono`}>
                   {formatDuration(stats.duration)}
                 </CustomText>
-                <CustomText style={twrnc`text-gray-500 text-xs`}>duration</CustomText>
               </View>
 
               {/* Speed/Pace */}
-              <View style={twrnc`items-center`}>
-                <CustomText style={twrnc`text-gray-400 text-xs mb-1`}>
-                  {activityType === "cycling" ? "Speed" : "Pace"}
-                </CustomText>
-                <CustomText weight="bold" style={twrnc`text-white text-2xl`}>
-                  {activityType === "cycling" ? stats.avgSpeed.toFixed(1) : formatPacePerKm(stats.pace)}
-                </CustomText>
-                <CustomText style={twrnc`text-gray-500 text-xs`}>
-                  {activityType === "cycling" ? "km/h" : "min/km"}
-                </CustomText>
+              <View style={twrnc`w-[48%] bg-[#1e293b] rounded-2xl p-3.5 border border-white/5`}>
+                <View style={twrnc`flex-row justify-between mb-1`}>
+                  <CustomText style={twrnc`text-gray-400 text-[10px] uppercase font-bold tracking-wider`}>
+                    {activityType === "cycling" ? "Speed" : "Pace"}
+                  </CustomText>
+                  <Ionicons name="speedometer" size={14} color="#06D6A0" />
+                </View>
+                <View style={twrnc`flex-row items-baseline`}>
+                  <CustomText weight="bold" style={twrnc`text-white text-2xl mr-1`}>
+                    {activityType === "cycling" ? stats.avgSpeed.toFixed(1) : formatPacePerKm(stats.pace)}
+                  </CustomText>
+                  {activityType === "cycling" && <CustomText style={twrnc`text-gray-500 text-xs`}>km/h</CustomText>}
+                </View>
               </View>
+
+              {/* Elevation */}
+              <View style={twrnc`w-[48%] bg-[#1e293b] rounded-2xl p-3.5 border border-white/5`}>
+                <View style={twrnc`flex-row justify-between mb-1`}>
+                  <CustomText style={twrnc`text-gray-400 text-[10px] uppercase font-bold tracking-wider`}>Elevation</CustomText>
+                  <Ionicons name="trending-up" size={14} color="#EF476F" />
+                </View>
+                <View style={twrnc`flex-row items-baseline`}>
+                  <CustomText weight="bold" style={twrnc`text-white text-2xl mr-1`}>
+                    {Math.round(stats.elevationGain || 0)}
+                  </CustomText>
+                  <CustomText style={twrnc`text-gray-500 text-xs`}>m</CustomText>
+                </View>
+              </View>
+
             </View>
           </View>
 
-          {/* Loading Overlay */}
-          {loading && (
-            <View style={twrnc`absolute inset-0 bg-black bg-opacity-90 items-center justify-center z-50 rounded-t-3xl`}>
-              <Animated.View style={{ transform: [{ scale: satellitePulseAnim }] }}>
-                <Ionicons name="location" size={48} color="#FFC107" />
-              </Animated.View>
-              <CustomText weight="semibold" style={twrnc`text-white text-lg mt-4`}>
-                Acquiring GPS Signal...
-              </CustomText>
-            </View>
-          )}
+          {/* 4. Controls Section (Integrated Flow - No Absolute Positioning) */}
+          <View style={twrnc`px-6 flex-row items-center justify-center gap-6`}>
 
-          {/* Error Overlay */}
-          {error && (
-            <View style={twrnc`absolute inset-0 bg-black bg-opacity-90 items-center justify-center z-50 px-6 rounded-t-3xl`}>
-              <Ionicons name="warning" size={48} color="#EF476F" style={twrnc`mb-4`} />
-              <CustomText weight="semibold" style={twrnc`text-white text-lg mb-2 text-center`}>
-                {error}
-              </CustomText>
-              <TouchableOpacity
-                style={twrnc`bg-blue-600 px-6 py-3 rounded-xl mt-4`}
-                onPress={() => {
-                  setError(null)
-                  startLocationUpdates()
-                }}
-              >
-                <CustomText weight="bold" style={twrnc`text-white text-base`}>
-                  Try Again
-                </CustomText>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {/* Control Buttons */}
-          {isActivityIdle && (
-            <TouchableOpacity
-              style={[
-                twrnc`absolute bottom-6 self-center w-20 h-20 rounded-full items-center justify-center shadow-2xl ${isAndroid ? "elevation-12" : ""}`,
-                { backgroundColor: currentActivity.color },
-              ]}
-              onPress={() => startTracking()}
-              disabled={isTrackingLoading}
-            >
-              {isTrackingLoading ? (
-                <ActivityIndicator size="large" color="white" />
-              ) : (
-                <Ionicons name="play" size={36} color="white" />
-              )}
-            </TouchableOpacity>
-          )}
-
-          {(isActivityTracking || isActivityPaused) && (
-            <View style={twrnc`absolute bottom-6 left-0 right-0 flex-row items-center justify-center gap-6`}>
+            {/* START BUTTON (When Idle) */}
+            {isActivityIdle && (
               <TouchableOpacity
                 style={[
-                  twrnc`w-16 h-16 rounded-full items-center justify-center shadow-xl ${isAndroid ? "elevation-8" : ""}`,
-                  { backgroundColor: isPaused ? "#10B981" : "#FFC107" },
+                  twrnc`w-20 h-20 rounded-full items-center justify-center shadow-2xl shadow-blue-500/30`,
+                  { backgroundColor: currentActivity.color },
                 ]}
-                onPress={togglePause}
-              >
-                <Ionicons name={isPaused ? "play" : "pause"} size={28} color="white" />
-              </TouchableOpacity>
-
-              {isActivityPaused && (
-                <TouchableOpacity
-                  style={[
-                    twrnc`w-16 h-16 rounded-full items-center justify-center shadow-xl ${isAndroid ? "elevation-8" : ""}`,
-                    { backgroundColor: "#EF476F" },
-                  ]}
-                  onPress={() => stopTracking()}
-                >
-                  <Ionicons name="stop" size={28} color="white" />
-                </TouchableOpacity>
-              )}
-            </View>
-          )}
-
-          {isActivityEnded && (
-            <View style={twrnc`absolute bottom-6 left-0 right-0 flex-row items-center justify-center gap-4 px-6`}>
-              <TouchableOpacity
-                style={twrnc`flex-1 bg-emerald-600 py-4 rounded-2xl items-center justify-center shadow-xl`}
-                onPress={saveActivity}
+                onPress={() => startTracking()}
                 disabled={isTrackingLoading}
               >
                 {isTrackingLoading ? (
-                  <ActivityIndicator size="small" color="white" />
+                  <ActivityIndicator size="large" color="white" />
                 ) : (
-                  <>
-                    <Ionicons name="checkmark-circle" size={24} color="white" />
-                    <CustomText weight="bold" style={twrnc`text-white text-sm mt-1`}>
-                      Save
-                    </CustomText>
-                  </>
+                  <Ionicons name="play" size={32} color="white" style={{ marginLeft: 4 }} />
                 )}
               </TouchableOpacity>
+            )}
 
-              <TouchableOpacity
-                style={twrnc`flex-1 bg-red-600 py-4 rounded-2xl items-center justify-center shadow-xl`}
-                onPress={handleDiscard}
-                disabled={isTrackingLoading}
-              >
-                <Ionicons name="trash" size={24} color="white" />
-                <CustomText weight="bold" style={twrnc`text-white text-sm mt-1`}>
-                  Discard
-                </CustomText>
-              </TouchableOpacity>
+            {/* ACTIVE CONTROLS (Pause/Resume/Stop) */}
+            {(isActivityTracking || isActivityPaused) && (
+              <>
+                <TouchableOpacity
+                  style={[
+                    twrnc`w-16 h-16 rounded-full items-center justify-center shadow-lg border-4`,
+                    {
+                      backgroundColor: isPaused ? "#10B981" : "#1e293b",
+                      borderColor: isPaused ? "#10B981" : currentActivity.color
+                    },
+                  ]}
+                  onPress={togglePause}
+                >
+                  <Ionicons name={isPaused ? "play" : "pause"} size={26} color="white" />
+                </TouchableOpacity>
+
+                {isActivityPaused && (
+                  <TouchableOpacity
+                    style={twrnc`w-16 h-16 rounded-full items-center justify-center bg-red-500 shadow-lg shadow-red-500/40`}
+                    onPress={() => stopTracking()}
+                  >
+                    <Ionicons name="stop" size={26} color="white" />
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
+
+            {/* ENDED CONTROLS (Save/Discard) */}
+            {isActivityEnded && (
+              <View style={twrnc`flex-row flex-1 gap-4`}>
+                <TouchableOpacity
+                  style={twrnc`flex-1 bg-emerald-600 py-4 rounded-2xl items-center justify-center shadow-lg shadow-emerald-600/20`}
+                  onPress={saveActivity}
+                  disabled={isTrackingLoading}
+                >
+                  {isTrackingLoading ? (
+                    <ActivityIndicator color="white" />
+                  ) : (
+                    <View style={twrnc`flex-row items-center`}>
+                      <Ionicons name="checkmark-circle" size={20} color="white" style={twrnc`mr-2`} />
+                      <CustomText weight="bold" style={twrnc`text-white`}>Save Activity</CustomText>
+                    </View>
+                  )}
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={twrnc`w-14 bg-[#1e293b] rounded-2xl items-center justify-center border border-red-500/30`}
+                  onPress={handleDiscard}
+                  disabled={isTrackingLoading}
+                >
+                  <Ionicons name="trash-outline" size={20} color="#EF476F" />
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+
+          {/* Fullscreen Toggle (Top Right) */}
+          <TouchableOpacity
+            style={twrnc`absolute top-4 right-5 bg-[#1e293b] p-2 rounded-full border border-white/10`}
+            onPress={toggleMapView}
+          >
+            <Ionicons name="expand-outline" size={18} color="white" />
+          </TouchableOpacity>
+
+          {/* Overlays (Loading/Error) - Kept relative to this container */}
+          {loading && (
+            <View style={twrnc`absolute inset-0 bg-[#0f172a]/95 items-center justify-center z-50 rounded-t-3xl`}>
+              <ActivityIndicator size="large" color="#FFC107" />
+              <CustomText style={twrnc`text-white mt-4`}>Acquiring GPS...</CustomText>
             </View>
           )}
 
-          {/* Expand to fullscreen button */}
-          <TouchableOpacity
-            style={[
-              twrnc`absolute top-4 right-4 w-12 h-12 rounded-full items-center justify-center shadow-xl ${isAndroid ? "elevation-8" : ""}`,
-              { backgroundColor: currentActivity.color },
-            ]}
-            onPress={toggleMapView}
-          >
-            <Ionicons name="expand" size={20} color="white" />
-          </TouchableOpacity>
         </Animated.View>
       )}
 
     </View>
   )
-
 }
 
 export default MapScreen

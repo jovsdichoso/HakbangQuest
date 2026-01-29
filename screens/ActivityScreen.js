@@ -25,6 +25,7 @@ import { Accelerometer } from "expo-sensors"
 import FaceProximityPushUpCounter from "../components/FaceProximityPushUpCounter"
 import CountdownOverlay from "../components/CountdownOverlay"
 import XPManager from "../utils/xpManager"
+import WorkoutCompleteModal from '../components/WorkoutCompleteModal';
 
 // Badge System Imports
 import {
@@ -43,6 +44,8 @@ import JoggingIcon from "../components/icons/jogging.png"
 import PushupIcon from "../components/icons/pushup.png"
 
 const { width, height } = Dimensions.get("window")
+
+
 
 const activities = [
   {
@@ -184,7 +187,7 @@ const ButtonSection = ({
 
 
 
-const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => {
+const ActivityScreen = ({ navigateToDashboard, navigateToMap, params, userData = {} }) => {
   console.log("ActivityScreen: Initialized with params:", params)
 
   // State variables
@@ -203,6 +206,9 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
       reps: 0,
     }
   )
+
+  const [workoutCompleteVisible, setWorkoutCompleteVisible] = useState(false);
+  const [workoutCompleteData, setWorkoutCompleteData] = useState(null);
 
   // User stats
   const [userStats, setUserStats] = useState({
@@ -394,13 +400,13 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
   }, [activeQuest, navigateToDashboard, showModal]);
 
 
-  const calculateCalories = useCallback(() => {
-    const weight = 70
-    const timeInHours = (Number.parseFloat(time) || 0) / 60
-    const activity = activities.find((a) => a.id === selectedActivity)
-    const kcal = (activity?.met || 3.5) * weight * timeInHours
-    return Math.round(kcal)
-  }, [time, selectedActivity])
+  const calculateCalories = () => {
+    const userWeight = userData?.weight || 70;
+    const timeInHours = parseFloat(time || 0) / 60;
+    const activity = activities.find(a => a.id === selectedActivity);
+    const kcal = activity?.met * 3.5 * userWeight * timeInHours;
+    return Math.round(kcal);
+  };
 
   useEffect(() => {
     setCalories(calculateCalories())
@@ -449,31 +455,26 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
     }
   }, [sensorSubscription])
 
-  const getDisplayQuestProgress = useCallback(
-    (quest) => {
-      if (!quest) return 0
+  const getDisplayQuestProgress = useCallback((quest) => {
+    if (!quest) return 0;
 
-      const initialProgressValue = (quest.progress || 0) * (quest.goal || 1)
-      let currentSessionValue = 0
+    // ✅ quest.progress is the actual value (40 reps)
+    const initialProgressValue = quest.progress || 0;
 
-      if (quest.unit === "steps") {
-        currentSessionValue = stats.steps
-      } else if (quest.unit === "reps") {
-        currentSessionValue = stats.reps
-      } else if (quest.unit === "distance") {
-        currentSessionValue = Number.parseFloat(stats.distance || 0) / 1000
-      } else if (quest.unit === "duration") {
-        currentSessionValue = stats.duration / 60
-      } else if (quest.unit === "calories") {
-        currentSessionValue = calories
-      }
+    let currentSessionValue = 0;
+    if (quest.unit === "steps") currentSessionValue = stats.steps;
+    else if (quest.unit === "reps") currentSessionValue = stats.reps;
+    else if (quest.unit === "distance") currentSessionValue = Number.parseFloat(stats.distance || 0) / 1000;
+    else if (quest.unit === "duration") currentSessionValue = (stats.duration || 0) / 60;
+    else if (quest.unit === "calories") currentSessionValue = calories;
 
-      const totalAchievedValue = initialProgressValue + currentSessionValue
-      const goalValue = Number.parseFloat(quest.goal || 0)
-      return goalValue > 0 ? Math.min(totalAchievedValue / goalValue, 1) : 0
-    },
-    [stats.steps, stats.distance, stats.reps, stats.duration, calories]
-  )
+    const totalAchievedValue = initialProgressValue + currentSessionValue;
+    const goalValue = Number.parseFloat(quest.goal || 0);
+
+    return goalValue > 0 ? Math.min(totalAchievedValue / goalValue, 1) : 0;
+  }, [stats.steps, stats.distance, stats.reps, stats.duration, calories]);
+
+
 
   const showModal = useCallback((title, message, onCloseCallback, type = "success", buttons = []) => {
     setModalContent({
@@ -499,63 +500,78 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
 
   const saveActivity = useCallback(
     async (finalStats = null) => {
-      setIsTrackingLoading(true)
-      const activityStatsToSave = finalStats || stats || { reps: 0, duration: 0, distance: 0, steps: 0 }
-      const strengthFlag = finalStats?.isStrengthActivity ?? isStrengthActivity
-      const isTimerChallenge = activeQuest?.mode === "time"
+      setIsTrackingLoading(true);
+
+      // ✅ FIXED: Include activityType in stats
+      const activityStatsToSave = finalStats || {
+        ...stats,
+        reps: stats.reps || 0,
+        duration: stats.duration || 0,
+        distance: stats.distance || 0,
+        steps: stats.steps || 0,
+        activityType: selectedActivity, // ✅ Add activityType here
+      };
+
+      const strengthFlag = finalStats?.isStrengthActivity ?? isStrengthActivity;
+      const isTimerChallenge = activeQuest?.mode === "time";
 
       try {
-        const user = auth.currentUser
+        const user = auth.currentUser;
         if (!user) {
-          showModal("Error", "You must be logged in to save activities.")
-          setIsTrackingLoading(false)
-          return
+          showModal("Error", "You must be logged in to save activities.");
+          setIsTrackingLoading(false);
+          return;
         }
 
-        // Validate activity data
+        // Validation for strength activities
         if (strengthFlag) {
           if (!isTimerChallenge) {
-            const minReps = 5
+            const minReps = 5;
             if ((activityStatsToSave.reps || 0) < minReps) {
               showModal(
                 "Activity Too Short",
                 `Your activity was too short to save. Please complete at least ${minReps} repetitions.`
-              )
-              setIsTrackingLoading(false)
-              return
+              );
+              setIsTrackingLoading(false);
+              return;
             }
           } else {
             if (activityStatsToSave.reps === undefined) {
-              activityStatsToSave.reps = 0
+              activityStatsToSave.reps = 0;
             }
           }
         } else {
-          const minDistance = 0.1
-          const minDuration = 60
-          const distanceInKm = (activityStatsToSave.distance || 0) / 1000
+          // Validation for cardio activities
+          const minDistance = 0.1;
+          const minDuration = 60;
+          const distanceInKm = (activityStatsToSave.distance || 0) / 1000;
 
           if (distanceInKm < minDistance) {
-            showModal("Activity Too Short", `Your activity was too short to save. Please cover at least ${minDistance} km.`)
-            setIsTrackingLoading(false)
-            return
+            showModal(
+              "Activity Too Short",
+              `Your activity was too short to save. Please cover at least ${minDistance} km.`
+            );
+            setIsTrackingLoading(false);
+            return;
           }
 
           if ((activityStatsToSave.duration || 0) < minDuration) {
             showModal(
               "Activity Too Short",
               `Your activity was too short to save. Please exercise for at least ${Math.floor(minDuration / 60)} minute(s).`
-            )
-            setIsTrackingLoading(false)
-            return
+            );
+            setIsTrackingLoading(false);
+            return;
           }
         }
 
-        // Prepare activity data
+        const caloriesBurned = activityStatsToSave.calories || calories || 0;
+
         const activityData = {
           userId: user.uid,
           activityType: selectedActivity,
           duration: activityStatsToSave.duration || 0,
-          calories: activityStatsToSave.calories || calories || 0,
+          calories: caloriesBurned,
           createdAt: serverTimestamp(),
           ...(strengthFlag
             ? {
@@ -568,9 +584,9 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
               coordinates: coordinates || [],
             }),
           questCompleted: getQuestStatus(activeQuest) === "completed",
-        }
+        };
 
-        const activityId = XPManager.generateActivityId(user.uid, Date.now(), selectedActivity)
+        const activityId = XPManager.generateActivityId(user.uid, Date.now(), selectedActivity);
 
         const activityParams = {
           activityType: selectedActivity,
@@ -580,92 +596,95 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
           isChallenge: activeQuest?.category === "challenge",
           groupType: activeQuest?.groupType || null,
           mode: activeQuest?.mode || null,
-        }
+        };
 
+        // ✅ FIXED: Make sure activityType is included in statsWithCalories
+        const statsWithCalories = {
+          ...activityStatsToSave,
+          calories: caloriesBurned,
+          activityType: selectedActivity, // ✅ Ensure activityType is here
+        };
+
+        // Call XP Manager
         const xpResult = await XPManager.awardXPForActivity({
           userId: user.uid,
           activityId,
           activityData,
-          stats: activityStatsToSave,
+          stats: statsWithCalories,
           activityParams,
           questData: activeQuest,
           challengeData: activeQuest?.category === "challenge" ? activeQuest : null,
           isStrengthActivity: strengthFlag,
-        })
+        });
 
         if (!xpResult.success) {
-          showModal("Activity Not Saved", xpResult.reason || "Activity does not meet minimum requirements.")
-          setIsTrackingLoading(false)
-          return
+          showModal(
+            "Activity Not Saved",
+            xpResult.reason || "Activity does not meet minimum requirements."
+          );
+          setIsTrackingLoading(false);
+          return;
         }
 
-        // Badge system check
-        let newBadges = []
+        // Badge System
+        let newBadges = [];
         try {
-          const existingBadges = await loadBadgesFromFirestore(user.uid)
-          const userQuestHistory = await getUserQuestHistory(user.uid)
+          const existingBadges = await loadBadgesFromFirestore(user.uid);
+          const userQuestHistory = await getUserQuestHistory(user.uid);
 
-          const activitiesRef = collection(db, "activities")
-          const questActivitiesRef = collection(db, "quest_activities")
-          const challengeActivitiesRef = collection(db, "challenge_activities")
+          const activitiesRef = collection(db, "activities");
+          const questActivitiesRef = collection(db, "quest_activities");
+          const challengeActivitiesRef = collection(db, "challenge_activities");
 
           const [allActivitiesSnap, allQuestActivitiesSnap, allChallengeActivitiesSnap] = await Promise.all([
             getDocs(query(activitiesRef, where("userId", "==", user.uid))),
             getDocs(query(questActivitiesRef, where("userId", "==", user.uid))),
             getDocs(query(challengeActivitiesRef, where("userId", "==", user.uid))),
-          ])
+          ]);
 
           const allActivitiesData = [
             ...allActivitiesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
             ...allQuestActivitiesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
             ...allChallengeActivitiesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
-          ]
+          ];
 
-          const badgeStats = calculateBadgeStats(allActivitiesData, userQuestHistory)
-          newBadges = evaluateBadges(badgeStats, existingBadges)
+          const badgeStats = calculateBadgeStats(allActivitiesData, userQuestHistory);
+          newBadges = evaluateBadges(badgeStats, existingBadges);
 
           if (newBadges.length > 0) {
-            const updatedBadges = [...existingBadges, ...newBadges]
-            await saveBadgesToFirestore(user.uid, updatedBadges)
+            const updatedBadges = [...existingBadges, ...newBadges];
+            await saveBadgesToFirestore(user.uid, updatedBadges);
           }
         } catch (badgeError) {
-          console.error("Badge pipeline error:", badgeError)
+          console.error("Badge pipeline error:", badgeError);
         }
 
-        // Build success message
-        let successMessage = ""
-        if (strengthFlag) {
-          successMessage = `Awesome ${selectedActivity} session!\n\nWorkout Summary:\n• ${activityStatsToSave.reps} reps completed\n• ${formatDuration(
-            activityStatsToSave.duration
-          )} duration\n• ${activityStatsToSave.calories || calories} calories burned\n• ${xpResult.xpEarned} XP earned`
-        } else {
-          const distanceInKm = (activityStatsToSave.distance || 0) / 1000
-          successMessage = `Great ${selectedActivity} session!\n\nWorkout Summary:\n• ${distanceInKm.toFixed(
-            2
-          )} km covered\n• ${formatDuration(activityStatsToSave.duration)} duration\n• ${xpResult.xpEarned} XP earned`
-        }
+        // ✅ NEW: Show sleek workout complete modal instead of text modal
+        setWorkoutCompleteData({
+          activityName: selectedActivity,
+          stats: {
+            reps: activityStatsToSave.reps || 0,
+            distance: activityStatsToSave.distance || 0,
+            duration: activityStatsToSave.duration || 0,
+            calories: caloriesBurned,
+            steps: activityStatsToSave.steps || 0,
+          },
+          xpEarned: xpResult.xpEarned || 0,
+          questCompleted: xpResult.questCompleted || false,
+          questTitle: activeQuest?.title || '',
+          challengeCompleted: xpResult.challengeCompleted || false,
+          levelUp: xpResult.levelUp || false,
+          newLevel: xpResult.newLevel || 1,
+          isStrength: strengthFlag,
+          newBadges: newBadges,
+        });
+        setWorkoutCompleteVisible(true);
 
-        if (xpResult.questCompleted) {
-          successMessage = `🎯 Congratulations! You completed the "${activeQuest?.title}" quest!\n\n${successMessage}`
-        }
-
-        if (xpResult.challengeCompleted) {
-          successMessage = `💪 Challenge Completed! You earned bonus XP!\n\n${successMessage}`
-        }
-
-        if (xpResult.levelUp) {
-          successMessage += `\n\n⭐ Level Up! You've reached level ${xpResult.newLevel}!`
-        }
-
-        showModal("Activity Saved", successMessage, () => {
-          clearActivity()
-          navigateToDashboard({ newlyEarnedBadges: newBadges })
-        })
       } catch (error) {
-        console.error("Error saving activity:", error)
-        showModal("Error", "Failed to save activity. Please try again.")
+        console.error("Error saving activity:", error);
+        showModal("Error", "Failed to save activity. Please try again.");
       } finally {
-        setIsTrackingLoading(false)
+        setIsTrackingLoading(false);
       }
     },
     [
@@ -681,7 +700,9 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
       showModal,
       getQuestStatus,
     ]
-  )
+  );
+
+
 
   const resumeTracking = useCallback(() => {
     const activityConfig = activities.find((a) => a.id === selectedActivity)
@@ -830,31 +851,25 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
     [getDisplayQuestProgress]
   )
 
-  const getCurrentQuestValue = useCallback(
-    (quest) => {
-      if (!quest) return 0
+  const getCurrentQuestValue = useCallback((quest) => {
+    if (!quest) return 0;
 
-      const initialProgressValue = (quest.progress || 0) * (quest.goal || 1)
-      let currentSessionValue = 0
+    // ✅ quest.progress is the actual value (40 reps), NOT a percentage!
+    const initialProgressValue = quest.progress || 0;
 
-      if (quest.unit === "steps") {
-        currentSessionValue = stats.steps
-      } else if (quest.unit === "reps") {
-        currentSessionValue = stats.reps
-      } else if (quest.unit === "distance") {
-        currentSessionValue = Number.parseFloat(stats.distance || 0) / 1000
-      } else if (quest.unit === "duration") {
-        currentSessionValue = stats.duration / 60
-      } else if (quest.unit === "calories") {
-        currentSessionValue = calories
-      }
+    let currentSessionValue = 0;
+    if (quest.unit === "steps") currentSessionValue = stats.steps;
+    else if (quest.unit === "reps") currentSessionValue = stats.reps;
+    else if (quest.unit === "distance") currentSessionValue = Number.parseFloat(stats.distance || 0) / 1000;
+    else if (quest.unit === "duration") currentSessionValue = (stats.duration || 0) / 60;
+    else if (quest.unit === "calories") currentSessionValue = calories;
 
-      const totalAchievedValue = initialProgressValue + currentSessionValue
-      const goalValue = Number.parseFloat(quest.goal || 0)
-      return Math.min(totalAchievedValue, goalValue)
-    },
-    [stats.steps, stats.reps, stats.distance, stats.duration, calories]
-  )
+    const totalAchievedValue = initialProgressValue + currentSessionValue;
+    const goalValue = Number.parseFloat(quest.goal || 0);
+
+    return Math.min(totalAchievedValue, goalValue);
+  }, [stats.steps, stats.reps, stats.distance, stats.duration, calories]);
+
 
   const handleFaceCounterRep = useCallback((rep) => {
     setRepCount(rep)
@@ -1113,7 +1128,7 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
                 <TouchableOpacity
                   style={[
                     twrnc` rounded-xl py-2.5 px-4 flex-row items-center justify-center`,
-                    { backgroundColor: 'rgba(239, 71, 111, 0.1)' } 
+                    { backgroundColor: 'rgba(239, 71, 111, 0.1)' }
                   ]}
                   onPress={handleCancelQuest}
                   activeOpacity={0.8}
@@ -1429,6 +1444,24 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params = {} }) => 
           />
         </View>
       </ScrollView>
+
+      <WorkoutCompleteModal
+        visible={workoutCompleteVisible}
+        onClose={() => {
+          setWorkoutCompleteVisible(false);
+          clearActivity();
+          navigateToDashboard({ newlyEarnedBadges: workoutCompleteData?.newBadges || [] });
+        }}
+        activityName={workoutCompleteData?.activityName}
+        stats={workoutCompleteData?.stats || {}}
+        xpEarned={workoutCompleteData?.xpEarned}
+        questCompleted={workoutCompleteData?.questCompleted}
+        questTitle={workoutCompleteData?.questTitle}
+        challengeCompleted={workoutCompleteData?.challengeCompleted}
+        levelUp={workoutCompleteData?.levelUp}
+        newLevel={workoutCompleteData?.newLevel}
+        isStrength={workoutCompleteData?.isStrength}
+      />
 
       {/* SIMPLIFIED SETTINGS MODAL */}
       <Modal animationType="slide" transparent={true} visible={showSettings} onRequestClose={() => setShowSettings(false)}>

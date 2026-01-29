@@ -2125,9 +2125,9 @@ export const validateChallengeData = (challenge) => {
 
 /**
  * Helper function to get activity info by type ID
- * @param {string} activityTypeId - Activity type ID (e.g., "walking", "running")
- * @param {array} activities - Array of activity configurations
- * @returns {object} - Activity configuration object or default
+ * @param {string} activityTypeId 
+ * @param {array} activities 
+ * @returns {object} 
  */
 export const getActivityConfig = (activityTypeId, activities) => {
   if (!activities || !Array.isArray(activities)) {
@@ -2151,12 +2151,6 @@ export const getActivityConfig = (activityTypeId, activities) => {
 }
 
 export const checkAllParticipantsSubmitted = (challengeData) => {
-  /**
-   * Purpose: To audit the progress map.
-   * Logic: Check if the challengeData.participants array contains exactly two members,
-   * AND if both members have a score greater than zero (> 0) recorded in the challengeData.progress map.
-   * Return: true if all submission criteria are met, otherwise false.
-   */
   try {
     // Must have exactly 2 participants
     if (!Array.isArray(challengeData.participants) || challengeData.participants.length !== 2) {
@@ -2182,91 +2176,106 @@ export const checkAllParticipantsSubmitted = (challengeData) => {
 }
 
 export const finalizeChallengeImmediate = async (transaction, challengeRef, challengeData) => {
-  /**
-   * Purpose: To complete the challenge transactionally.
-   * Logic:
-   * 1. Determine the winnerId by finding the participant with the highest score in challengeData.progress.
-   * 2. Use the passed transaction to atomically update the winner's document: add the prizePool to their totalXP using increment(), and increment their completedChallenges counter.
-   * 3. Use the transaction to update the challengeRef to set winnerId and change status.global to "completed".
-   * 4. Create a challenge_rewards log entry using the transaction.
-   *
-   * ⚠️ NOTE: This function is the same as finalizeTimeChallenge but for use *inside* another transaction (like in XPManager)
-   */
-  try {
-    console.log(`[finalizeChallengeImmediate] Starting immediate finalization for challenge: ${challengeRef.id}`)
+  console.log("CommunityBackend: Starting immediate finalization for challenge", challengeData.id);
 
-    const participants = challengeData.participants || []
-    const progressMap = challengeData.progress || {}
-    const prizePool = challengeData.stakeXP || 0
+  const { participants, progress, stakeXP, groupType } = challengeData;
 
-    // 1. Find the Winner
-    let winnerId = null
-    let highestScore = -1
+  // Validate it's a duo challenge
+  if (groupType !== "duo" || participants.length !== 2) {
+    console.warn("CommunityBackend: Not a duo challenge, skipping immediate finalization");
+    return { success: false, reason: "Not a duo challenge" };
+  }
 
-    for (const participantId of participants) {
-      const score = progressMap[participantId] || 0
-      if (score > highestScore) {
-        highestScore = score
-        winnerId = participantId
-      }
-    }
+  // Determine winner based on progress
+  const participant1 = participants[0];
+  const participant2 = participants[1];
+  const progress1 = progress?.[participant1] || 0;
+  const progress2 = progress?.[participant2] || 0;
 
-    if (!winnerId || highestScore === 0) {
-      // Tie or all zeros: No winner determined.
-      transaction.update(challengeRef, {
-        winnerId: null,
-        "status.global": "completed",
-        updatedAt: serverTimestamp(),
-      })
+  console.log("CommunityBackend: Progress comparison", {
+    participant1,
+    progress1,
+    participant2,
+    progress2,
+  });
 
-      return { success: true, winnerId: null, prizePool: 0 }
-    }
+  let winnerId = null;
+  let loserId = null;
 
-    console.log(
-      `[finalizeChallengeImmediate] Winner determined: ${winnerId} with score ${highestScore}. Prize pool: ${prizePool}`,
-    )
-
-    // 2. Atomically update winner's XP and completedChallenges
-    const winnerRef = doc(db, "users", winnerId)
-    const winnerSnap = await transaction.get(winnerRef)
-
-    if (!winnerSnap.exists()) {
-      throw new Error(`Winner's user document (${winnerId}) not found for immediate finalization.`)
-    }
-
-    // FIXED: Use 'xp' field for increment
-    transaction.update(winnerRef, {
-      xp: increment(prizePool),
-      completedChallenges: increment(1),
-    })
-
-    // 3. Update challenge document
+  if (progress1 > progress2) {
+    winnerId = participant1;
+    loserId = participant2;
+  } else if (progress2 > progress1) {
+    winnerId = participant2;
+    loserId = participant1;
+  } else {
+    // It's a tie
+    console.log("CommunityBackend: Challenge ended in a tie");
     transaction.update(challengeRef, {
       "status.global": "completed",
-      winnerId: winnerId,
-      highestScore: highestScore,
-      updatedAt: serverTimestamp(),
-    })
-
-    // 4. Create challenge_rewards log entry
-    const rewardRef = doc(collection(db, "challenge_rewards"))
-    transaction.set(rewardRef, {
-      challengeId: challengeRef.id,
-      winnerId: winnerId,
-      totalReward: prizePool,
-      participants: participants,
-      scores: progressMap,
-      finalizedAt: serverTimestamp(),
-      method: "immediate", // Indicate this was immediate finalization
-    })
-
-    console.log(
-      `[finalizeChallengeImmediate] ✅ Immediate finalization completed for challenge ${challengeRef.id}. Winner: ${winnerId}, Reward: ${prizePool}`,
-    )
-
-    return { success: true, winnerId, prizePool }
-  } catch (error) {
-    console.error("[finalizeChallengeImmediate] Error during immediate finalization:", error)
-    throw error
+      winnerId: null,
+      completedAt: serverTimestamp(),
+    });
+    return { success: true, winnerId: null, tie: true };
   }
-}
+
+  console.log("CommunityBackend: Winner determined", { winnerId, loserId });
+
+  // ✅ XP TRANSFER - Duo only
+  if (stakeXP && stakeXP > 0) {
+    const winnerRef = doc(db, "users", winnerId);
+    const loserRef = doc(db, "users", loserId);
+
+    // Get current user data within transaction
+    const winnerSnap = await transaction.get(winnerRef);
+    const loserSnap = await transaction.get(loserRef);
+
+    if (!winnerSnap.exists() || !loserSnap.exists()) {
+      throw new Error("User not found during XP transfer");
+    }
+
+    const winnerData = winnerSnap.data();
+    const loserData = loserSnap.data();
+
+    const winnerXP = winnerData.totalXP || 0;
+    const loserXP = loserData.totalXP || 0;
+
+    // Calculate new XP
+    const newWinnerXP = winnerXP + stakeXP;
+    const newLoserXP = Math.max(0, loserXP - stakeXP); // ✅ Can't go negative
+
+    console.log("CommunityBackend: XP Transfer", {
+      winnerId,
+      winnerXP,
+      newWinnerXP,
+      loserId,
+      loserXP,
+      newLoserXP,
+      stakeXP,
+    });
+
+    // Update both users atomically
+    transaction.update(winnerRef, {
+      totalXP: newWinnerXP,
+      updatedAt: serverTimestamp(),
+    });
+    transaction.update(loserRef, {
+      totalXP: newLoserXP,
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  // Update challenge status
+  transaction.update(challengeRef, {
+    "status.global": "completed",
+    winnerId: winnerId,
+    completedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  console.log("CommunityBackend: Challenge finalized successfully", { winnerId, stakeXP });
+
+  return { success: true, winnerId, stakeXP };
+};
+
+

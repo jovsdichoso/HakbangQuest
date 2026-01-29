@@ -25,7 +25,7 @@ import { FontAwesome, Ionicons } from "@expo/vector-icons";
 
 const { width, height } = Dimensions.get("window");
 
-const LoginScreen = ({ navigateToLanding, navigateToSignUp, navigateToDashboard, prefilledEmail, setUserData }) => {
+const LoginScreen = ({ navigation, navigateToLanding, navigateToSignUp, navigateToDashboard, prefilledEmail, setUserData }) => {
   const [email, setEmail] = useState(prefilledEmail || "");
   const [password, setPassword] = useState("");
   const [isPasswordVisible, setIsPasswordVisible] = useState(false);
@@ -191,6 +191,7 @@ const LoginScreen = ({ navigateToLanding, navigateToSignUp, navigateToDashboard,
         avgDailyReps: 20,
         level: 1,
         totalXP: 0,
+        hasSeenIntro: false, // Default assumption for new/unfetched
       };
 
       const userDocRef = doc(db, "users", user.uid);
@@ -210,25 +211,49 @@ const LoginScreen = ({ navigateToLanding, navigateToSignUp, navigateToDashboard,
           avgDailyReps: firestoreData.avgDailyReps || userData.avgDailyReps,
           level: firestoreData.level || userData.level,
           totalXP: firestoreData.totalXP || userData.totalXP,
+          hasSeenIntro: firestoreData.hasSeenIntro, // Capture this specific field
         };
       } else {
         await setDoc(userDocRef, userData);
         console.log("Created new user document for UID:", user.uid);
       }
 
-      await AsyncStorage.multiSet([
-        ["userSession", JSON.stringify({
-          uid: user.uid,
-          email: user.email,
-          emailVerified: user.emailVerified,
-          lastLogin: new Date().toISOString(),
-        })],
-        ["lastActiveScreen", "dashboard"],
-      ]);
-
+      // Update User Data Context
       setUserData(userData);
       await NotificationService.sendWelcomeBackNotification(userData.username);
-      navigateToDashboard();
+
+      // --- CONDITIONAL NAVIGATION LOGIC ---
+      if (userData.hasSeenIntro === false) {
+        await AsyncStorage.multiSet([
+          ["userSession", JSON.stringify({
+            uid: user.uid,
+            email: user.email,
+            emailVerified: user.emailVerified,
+            lastLogin: new Date().toISOString(),
+          })],
+          ["lastActiveScreen", "story"], // Set last screen to STORY
+        ]);
+        
+        // Navigate to Story
+        if (navigation && navigation.navigate) {
+          navigation.navigate("story", { isIntro: true });
+        }
+      } else {
+        await AsyncStorage.multiSet([
+          ["userSession", JSON.stringify({
+            uid: user.uid,
+            email: user.email,
+            emailVerified: user.emailVerified,
+            lastLogin: new Date().toISOString(),
+          })],
+          ["lastActiveScreen", "dashboard"],
+        ]);
+
+        // Navigate to Dashboard
+        navigateToDashboard(); 
+      }
+      // ------------------------------------
+
     } catch (error) {
       console.error("Login error:", error.message);
       setModalTitle("Login Failed");

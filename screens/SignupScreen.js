@@ -80,7 +80,7 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
   const buttonScaleAnim = useRef(new Animated.Value(1)).current
   const inputShakeAnim = useRef(new Animated.Value(0)).current
   const stepTransitionAnim = useRef(new Animated.Value(0)).current
-  
+
   // Bubble animations for each step
   const bubbleAnims = [
     useRef(new Animated.Value(1)).current,
@@ -104,9 +104,9 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
   // Password strength evaluation
   const evaluatePasswordStrength = (pass) => {
     if (!pass) return { score: 0, label: "", color: "" }
-    
+
     let score = 0
-    
+
     // Check password length
     if (pass.length >= 8) score += 1
     if (pass.length >= 12) score += 1
@@ -118,10 +118,10 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
     if (/[0-9]/.test(pass)) score += 1
     // Contains special character
     if (/[^A-Za-z0-9]/.test(pass)) score += 1
-    
+
     let label = ""
     let color = ""
-    
+
     if (score <= 2) {
       label = "Weak"
       color = "#EF476F"
@@ -132,7 +132,7 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
       label = "Strong"
       color = "#06D6A0"
     }
-    
+
     return { score, label, color }
   }
 
@@ -155,7 +155,7 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
         setKeyboardHeight(e.endCoordinates.height)
       }
     )
-    
+
     const keyboardWillHide = Keyboard.addListener(
       Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
       () => {
@@ -190,7 +190,7 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
     fadeAnim.setValue(0)
     slideAnim.setValue(50)
     headerSlideAnim.setValue(-50)
-    
+
     Animated.parallel([
       Animated.timing(fadeAnim, { toValue: 1, duration: 600, useNativeDriver: true }),
       Animated.timing(slideAnim, { toValue: 0, duration: 600, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
@@ -369,19 +369,46 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
       await setDoc(doc(db, "users", user.uid), {
         username,
         email,
+        avatar: "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y",
+
         height: parseFloat(height),
         weight: parseFloat(weight),
         bmi: parseFloat(bmi),
         fitnessGoal,
+
         createdAt: new Date(),
+
+        hasSeenIntro: false,
+
         level: 1,
-        xp: 0,
+        totalXP: 0,
+
         totalActivities: 0,
         totalDistance: 0,
         totalDuration: 0,
+        totalReps: 0,
+        totalStrengthDuration: 0,
+        totalCalories: 0,
+
+        avgDailyDistance: 0,
+        avgActiveDuration: 0,
+        avgDailyReps: 0,
+
         achievements: [],
         badges: [],
-      })
+        friends: [],
+
+        privacySettings: {
+          showProfile: true,
+          showActivities: true,
+          showStats: true,
+        },
+
+        isOnline: false,
+        lastSeen: new Date(),
+        lastActivityDate: null,
+        lastQuestCompleted: null,
+      });
 
       const storedEmails = await AsyncStorage.getItem("registeredEmails")
       const emails = storedEmails ? JSON.parse(storedEmails) : []
@@ -394,7 +421,7 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
       setModalMessage("Your HakbangQuest account has been created. Please verify your email before logging in.")
       setModalType("success")
       setModalVisible(true)
-      
+
       await sendEmailVerification(user)
       await NotificationService.sendVerifyAccountNotification()
     } catch (error) {
@@ -453,7 +480,7 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
                 },
               ]}
             />
-            
+
             <Animated.View
               style={[
                 twrnc`w-10 h-10 rounded-full items-center justify-center z-10`,
@@ -601,7 +628,7 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
           </TouchableOpacity>
         </View>
         {errors.password && <CustomText style={twrnc`text-red-400 text-xs mt-1.5 ml-1`}>{errors.password}</CustomText>}
-        
+
         {/* Password Strength Indicator */}
         {password.length > 0 && (
           <View style={twrnc`mt-3`}>
@@ -782,7 +809,7 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
               </CustomText>
             </View>
           </View>
-          
+
           {/* BMI Bar */}
           <View style={twrnc`h-2 bg-gray-700 rounded-full overflow-hidden mb-2`}>
             <View style={twrnc`flex-row h-full`}>
@@ -792,7 +819,7 @@ const SignupScreen = ({ navigateToLanding, navigateToSignIn, setIsInSignupFlow, 
               <View style={[twrnc`flex-1`, { backgroundColor: "#EF476F" }]} />
             </View>
           </View>
-          
+
           {/* BMI Scale Labels */}
           <View style={twrnc`flex-row justify-between`}>
             <CustomText style={twrnc`text-xs text-gray-500`}>18.5</CustomText>

@@ -1,0 +1,14 @@
+# Ignore node_modules
+node_modules/
+
+# Ignore android build folders (EAS will rebuild these)
+android/app/build/
+android/.gradle/
+android/build/
+
+# Ignore iOS build folders (just in case)
+ios/Pods/
+ios/build/
+
+# Ignore the .git folder
+.git/

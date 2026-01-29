@@ -31,6 +31,7 @@ import ProfileScreen from "./screens/ProfileScreen";
 import CommunityScreen from "./screens/CommunityScreen";
 import LeaderboardScreen from "./screens/LeaderboardScreen";
 import MapScreen from "./screens/MapScreen";
+import StoryScreen from "./screens/StoryScreen";
 import CustomText from "./components/CustomText";
 import CustomModal from "./components/CustomModal";
 import NotificationDropdown from "./components/NotificationDropdown";
@@ -109,10 +110,9 @@ const initializeUserData = async (user, setUserData) => {
         showActivities: true,
         showStats: true,
       },
-      avgDailySteps: 5000,
-      avgDailyDistance: 2.5,
-      avgActiveDuration: 45,
-      avgDailyReps: 20,
+      avgDailyDistance: 0,
+      avgActiveDuration: 0,
+      avgDailyReps: 0,
       level: 1,
       totalXP: 0,
     };
@@ -179,6 +179,7 @@ const fetchUserDataFromFirestore = async (uid, defaultUserData) => {
         avgDailyReps: firestoreData.avgDailyReps || defaultUserData.avgDailyReps,
         level: firestoreData.level || defaultUserData.level,
         totalXP: firestoreData.totalXP || defaultUserData.totalXP,
+        hasSeenIntro: firestoreData.hasSeenIntro, // Ensure this is returned
       };
     } else {
       const newUserData = { ...defaultUserData, uid };
@@ -457,7 +458,7 @@ export default function App() {
   const notificationsUnsubscribe = useRef(null);
   const backPressedTimeRef = useRef(0);
 
-  const tabScreens = ["dashboard", "activity", "map", "Leaderboard", "community"];
+  const tabScreens = ["dashboard", "activity", "map", "Leaderboard", "community", "story"];
 
   const navigateWithAnimation = useCallback((newScreen, params = {}) => {
     if (newScreen === activeScreen) return;
@@ -647,7 +648,15 @@ export default function App() {
                       lastSeen: firestoreData.lastSeen || null,
                       lastActivityDate: firestoreData.lastActivityDate || null,
                       lastQuestCompleted: firestoreData.lastQuestCompleted || null,
+                      hasSeenIntro: firestoreData.hasSeenIntro,
                     }));
+
+                    // --- CHECK FOR INTRO STORY ---
+                    // If the user hasn't seen the intro yet, redirect them to the StoryScreen
+                    if (firestoreData.hasSeenIntro === false) {
+                      navigateWithAnimation("story", { isIntro: true });
+                    }
+                    // -----------------------------
 
                     // Update AsyncStorage cache
                     AsyncStorage.setItem("userData", JSON.stringify(firestoreData)).catch((err) => {
@@ -661,10 +670,12 @@ export default function App() {
               );
 
               const lastScreen = await AsyncStorage.getItem("lastActiveScreen");
+              // Default to dashboard, but the onSnapshot listener above will redirect to "story" if needed
               const targetScreen = lastScreen && ["dashboard", "activity", "profile", "community", "Leaderboard"].includes(lastScreen)
                 ? lastScreen
                 : "dashboard";
               navigateWithAnimation(targetScreen);
+
               if (targetScreen === "activity") {
                 const savedParams = await AsyncStorage.getItem("activityParams");
                 if (savedParams) {
@@ -718,7 +729,14 @@ export default function App() {
                       lastSeen: firestoreData.lastSeen || null,
                       lastActivityDate: firestoreData.lastActivityDate || null,
                       lastQuestCompleted: firestoreData.lastQuestCompleted || null,
+                      hasSeenIntro: firestoreData.hasSeenIntro,
                     }));
+
+                    // --- CHECK FOR INTRO STORY (Session Case) ---
+                    if (firestoreData.hasSeenIntro === false) {
+                      navigateWithAnimation("story", { isIntro: true });
+                    }
+                    // --------------------------------------------
 
                     AsyncStorage.setItem("userData", JSON.stringify(firestoreData)).catch((err) => {
                       console.warn("Could not cache user data", err);
@@ -991,13 +1009,29 @@ export default function App() {
             </View>
           )}
 
+          <AnimatedScreenWrapper isActive={activeScreen === "story"}>
+            <StoryScreen
+              navigation={{
+                navigate: navigateWithAnimation,
+                goBack: () => navigateWithAnimation("dashboard")
+              }}
+              route={{ params: activityParams }} // Pass params here
+            />
+          </AnimatedScreenWrapper>
+
           {/* SCREENS */}
           <AnimatedScreenWrapper isActive={activeScreen === "landing"}>
             <LandingScreen navigateToSignIn={navigateToSignIn} navigateToSignUp={navigateToSignUp} />
           </AnimatedScreenWrapper>
 
           <AnimatedScreenWrapper isActive={activeScreen === "signin"}>
-            <LoginScreen navigateToDashboard={navigateToDashboard} navigateToSignUp={navigateToSignUp} initialEmail={loginEmail} />
+            <LoginScreen
+              navigation={{ navigate: navigateWithAnimation }} // ✅ PASSED NAVIGATION PROP
+              navigateToDashboard={navigateToDashboard}
+              navigateToSignUp={navigateToSignUp}
+              initialEmail={loginEmail}
+              setUserData={updateUserData}
+            />
           </AnimatedScreenWrapper>
 
           <AnimatedScreenWrapper isActive={activeScreen === "signup"}>
@@ -1015,6 +1049,7 @@ export default function App() {
               navigateToActivity={navigateToActivity}
               navigateToMap={navigateToMap}
               updateUserData={updateUserData}
+              navigation={{ navigate: navigateWithAnimation }}
             />
           </AnimatedScreenWrapper>
 
@@ -1023,6 +1058,7 @@ export default function App() {
               navigateToDashboard={navigateToDashboard}
               navigateToMap={navigateToMap}
               params={activityParams}
+              userData={userData}
             />
           </AnimatedScreenWrapper>
 

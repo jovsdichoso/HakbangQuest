@@ -6,8 +6,9 @@ import twrnc from "twrnc"
 import CustomText from "../components/CustomText"
 import { Ionicons } from "@expo/vector-icons"
 import { db, auth } from "../firebaseConfig"
-import { collection, query, getDocs } from "firebase/firestore"
+import { collection, query, getDocs, doc, updateDoc } from "firebase/firestore" // Added updateDoc, doc
 import { onAuthStateChanged } from "firebase/auth"
+import * as Location from "expo-location" // Import Location
 
 // Define the collections that hold trackable user activities
 const ACTIVITY_COLLECTIONS = [
@@ -22,6 +23,11 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
   const [sortMetric, setSortMetric] = useState("challengeWins")
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+
+  // --- NEW STATE FOR LOCATION ---
+  const [filterMode, setFilterMode] = useState("global") // "global" | "city"
+  const [userLocation, setUserLocation] = useState(null) // { city: "Naga City", country: "Philippines" }
+  const [locationPermission, setLocationPermission] = useState(false)
 
   // Animation ref - EXACTLY LIKE DASHBOARD
   const patternAnim = useRef(new Animated.Value(0)).current
@@ -53,7 +59,7 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
     },
   ]
 
-  // Animate pattern on mount - EXACTLY LIKE DASHBOARD
+  // Animate pattern on mount
   useEffect(() => {
     Animated.loop(
       Animated.timing(patternAnim, {
@@ -69,6 +75,48 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
     inputRange: [0, 1],
     outputRange: ["0deg", "360deg"],
   })
+
+  // --- 1. INITIALIZE LOCATION ---
+  useEffect(() => {
+    const initializeLocation = async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync()
+        if (status !== 'granted') {
+          setLocationPermission(false)
+          return
+        }
+        setLocationPermission(true)
+
+        // Get coordinates
+        const location = await Location.getCurrentPositionAsync({})
+        // Reverse Geocode to get City/Region
+        const address = await Location.reverseGeocodeAsync(location.coords)
+
+        if (address.length > 0) {
+          const { city, region, country, isoCountryCode } = address[0]
+          const locationData = {
+            city: city || region, // Fallback to region if city is null
+            country,
+            isoCountryCode
+          }
+          setUserLocation(locationData)
+
+          // Update Firestore User Profile so others can see me in Local Leaderboard
+          if (auth.currentUser) {
+            const userRef = doc(db, "users", auth.currentUser.uid)
+            // We update silently without blocking UI
+            updateDoc(userRef, { location: locationData }).catch(e => console.log("Loc update failed", e))
+          }
+        }
+      } catch (err) {
+        console.log("Error getting location for leaderboard:", err)
+      }
+    }
+
+    if (isAuthenticated) {
+      initializeLocation()
+    }
+  }, [isAuthenticated])
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -89,13 +137,14 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
       if (!isRefresh) setLoading(true)
       else setRefreshing(true)
 
-      // Fetch user data
+      // Fetch user data INCLUDING LOCATION
       const usersQuery = query(collection(db, "users"))
       const usersSnapshot = await getDocs(usersQuery)
       const users = usersSnapshot.docs.map((doc) => ({
         uid: doc.id,
         username: doc.data().displayName || doc.data().username || "User",
         avatar: doc.data().avatar || "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y",
+        location: doc.data().location || null, // Fetch stored location
       }))
 
       // Initialize user stats
@@ -109,7 +158,7 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
         }
       })
 
-      // Fetch activities
+      // Fetch activities (Existing logic...)
       const fetchActivitiesPromises = ACTIVITY_COLLECTIONS.map(collectionName =>
         getDocs(query(collection(db, collectionName)))
       )
@@ -141,16 +190,26 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
         }
       })
 
-      // Combine and sort
-      const leaderboard = users
+      // Combine
+      let leaderboard = users
         .map((user) => ({
           uid: user.uid,
           username: user.username,
           avatar: user.avatar,
+          location: user.location, // Include location in final object
           ...userStats[user.uid],
         }))
         .filter((user) => user.totalActivities > 0)
-        .sort((a, b) => b[sortMetric] - a[sortMetric])
+
+      // --- 2. APPLY LOCATION FILTER ---
+      if (filterMode === 'city' && userLocation?.city) {
+        leaderboard = leaderboard.filter(user =>
+          user.location?.city === userLocation.city
+        )
+      }
+
+      // Sort
+      leaderboard.sort((a, b) => b[sortMetric] - a[sortMetric])
 
       setLeaderboardData(leaderboard)
     } catch (err) {
@@ -164,11 +223,12 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
     }
   }
 
+  // Re-fetch when filter mode changes
   useEffect(() => {
     if (isAuthenticated) {
       fetchData()
     }
-  }, [isAuthenticated, sortMetric, navigateToDashboard])
+  }, [isAuthenticated, sortMetric, navigateToDashboard, filterMode, userLocation]) // Added filterMode, userLocation
 
   const handleMetricChange = (metric) => {
     setSortMetric(metric)
@@ -180,14 +240,10 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
 
   const getRankingColor = (index) => {
     switch (index) {
-      case 0:
-        return "#FFD700"
-      case 1:
-        return "#C0C0C0"
-      case 2:
-        return "#CD7F32"
-      default:
-        return "#6B7280"
+      case 0: return "#FFD700"
+      case 1: return "#C0C0C0"
+      case 2: return "#CD7F32"
+      default: return "#6B7280"
     }
   }
 
@@ -198,6 +254,54 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
     }
     return `${Math.round(value) || 0}${metric?.unit || ''}`
   }
+
+  // --- UI COMPONENT: LOCATION TOGGLE ---
+  const renderLocationToggle = () => (
+    <View style={twrnc`px-5 pb-2`}>
+      <View style={twrnc`flex-row bg-[#1e293b] p-1 rounded-xl border border-[#334155]`}>
+        {/* Global Tab */}
+        <TouchableOpacity
+          onPress={() => setFilterMode("global")}
+          style={[
+            twrnc`flex-1 py-2 rounded-lg items-center justify-center flex-row`,
+            filterMode === "global" ? twrnc`bg-[#4361EE]` : twrnc`bg-transparent`
+          ]}
+        >
+          <Ionicons name="earth" size={16} color="white" style={twrnc`mr-2`} />
+          <CustomText weight="bold" style={twrnc`text-white text-xs`}>Global</CustomText>
+        </TouchableOpacity>
+
+        {/* Local Tab */}
+        <TouchableOpacity
+          onPress={() => {
+            if (!userLocation) {
+              Alert.alert("Location Required", "We need your location to show local rankings.")
+              return
+            }
+            setFilterMode("city")
+          }}
+          style={[
+            twrnc`flex-1 py-2 rounded-lg items-center justify-center flex-row`,
+            filterMode === "city" ? twrnc`bg-[#4361EE]` : twrnc`bg-transparent`
+          ]}
+        >
+          <Ionicons name="location" size={16} color="white" style={twrnc`mr-2`} />
+          <View>
+            <CustomText weight="bold" style={twrnc`text-white text-xs`}>
+              {userLocation ? userLocation.city : "Local"}
+            </CustomText>
+          </View>
+        </TouchableOpacity>
+      </View>
+
+      {/* Location Status Text */}
+      {filterMode === "city" && userLocation && (
+        <CustomText style={twrnc`text-[#94a3b8] text-[10px] text-center mt-2`}>
+          Showing competitors in {userLocation.city}, {userLocation.country}
+        </CustomText>
+      )}
+    </View>
+  )
 
   const renderLeaderboardItem = ({ item, index }) => (
     <View style={twrnc`mb-3 mx-5`}>
@@ -239,42 +343,44 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
               <CustomText style={twrnc`text-white text-base font-semibold`}>
                 {item.username}
               </CustomText>
-              <CustomText style={twrnc`text-[#94a3b8] text-xs mt-0.5`}>
-                {item.totalActivities} activities completed
-              </CustomText>
+
+              {/* Added Location display under name */}
+              <View style={twrnc`flex-row items-center mt-0.5`}>
+                {item.location?.city && (
+                  <View style={twrnc`flex-row items-center mr-2`}>
+                    <Ionicons name="location-sharp" size={10} color="#64748b" style={twrnc`mr-0.5`} />
+                    <CustomText style={twrnc`text-[#94a3b8] text-xs`}>
+                      {item.location.city}
+                    </CustomText>
+                  </View>
+                )}
+                <CustomText style={twrnc`text-[#94a3b8] text-xs`}>
+                  • {item.totalActivities} activities
+                </CustomText>
+              </View>
             </View>
           </View>
 
           {/* Stats Grid */}
           <View style={twrnc`mt-4 flex-row justify-between`}>
-            {/* Distance */}
+            {/* ... existing stats grid code ... */}
             <View style={twrnc`items-center flex-1`}>
               <CustomText style={twrnc`text-[#4361EE] text-lg font-bold`}>
                 {formatValue(item.totalDistance, "totalDistance")}
               </CustomText>
-              <CustomText style={twrnc`text-[#64748b] text-xs mt-1`}>
-                Distance
-              </CustomText>
+              <CustomText style={twrnc`text-[#64748b] text-xs mt-1`}>Distance</CustomText>
             </View>
-
-            {/* Activities */}
             <View style={twrnc`items-center flex-1`}>
               <CustomText style={twrnc`text-[#06D6A0] text-lg font-bold`}>
                 {formatValue(item.totalActivities, "totalActivities")}
               </CustomText>
-              <CustomText style={twrnc`text-[#64748b] text-xs mt-1`}>
-                Activities
-              </CustomText>
+              <CustomText style={twrnc`text-[#64748b] text-xs mt-1`}>Activities</CustomText>
             </View>
-
-            {/* Wins */}
             <View style={twrnc`items-center flex-1`}>
               <CustomText style={twrnc`text-[#FFC107] text-lg font-bold`}>
                 {formatValue(item.challengeWins, "challengeWins")}
               </CustomText>
-              <CustomText style={twrnc`text-[#64748b] text-xs mt-1`}>
-                Wins
-              </CustomText>
+              <CustomText style={twrnc`text-[#64748b] text-xs mt-1`}>Wins</CustomText>
             </View>
           </View>
 
@@ -302,6 +408,7 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
               </CustomText>
             </View>
           )}
+
         </View>
       </View>
     </View>
@@ -336,47 +443,19 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
     </TouchableOpacity>
   )
 
-  if (!isAuthenticated) {
-    return (
-      <View style={twrnc`flex-1 bg-[#0f172a] items-center justify-center p-6`}>
-        <Ionicons name="lock-closed-outline" size={64} color="#64748b" style={twrnc`mb-4`} />
-        <CustomText style={twrnc`text-white text-xl font-bold mb-2 text-center`}>
-          Authentication Required
-        </CustomText>
-        <CustomText style={twrnc`text-[#94a3b8] text-center mb-6`}>
-          Please sign in to view the leaderboard and compete with other users.
-        </CustomText>
-        <TouchableOpacity
-          onPress={navigateToDashboard}
-          style={twrnc`bg-[#4361EE] px-6 py-3 rounded-xl`}
-        >
-          <CustomText style={twrnc`text-white font-semibold`}>
-            Back to Dashboard
-          </CustomText>
-        </TouchableOpacity>
-      </View>
-    )
-  }
+  // ... Authentication and Loading checks remain the same ...
 
-  if (loading) {
-    return (
-      <View style={twrnc`flex-1 bg-[#0f172a] items-center justify-center`}>
-        <ActivityIndicator size="large" color="#4361EE" />
-        <CustomText style={twrnc`text-white text-base mt-4`}>
-          Loading Leaderboard
-        </CustomText>
-        <CustomText style={twrnc`text-[#64748b] text-sm mt-2`}>
-          Fetching the latest rankings...
-        </CustomText>
-      </View>
-    )
-  }
+  if (!isAuthenticated) return <View style={twrnc`flex-1 bg-[#0f172a]`} />
+  if (loading) return (
+    <View style={twrnc`flex-1 bg-[#0f172a] items-center justify-center`}>
+      <ActivityIndicator size="large" color="#4361EE" />
+    </View>
+  )
 
   return (
     <View style={twrnc`flex-1 bg-[#0f172a]`}>
-      {/* ===== HEADER WITH ANIMATED PATTERN - EXACTLY LIKE DASHBOARD ===== */}
+      {/* ===== HEADER WITH ANIMATED PATTERN ===== */}
       <View style={twrnc`relative bg-gradient-to-b from-[#1e293b] to-[#0f172a] overflow-hidden`}>
-        {/* Animated Decorative Pattern - EXACT DASHBOARD STYLE */}
         <Animated.View
           style={[
             twrnc`absolute top-0 right-0 w-32 h-32`,
@@ -393,9 +472,7 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
           </View>
         </Animated.View>
 
-        {/* Header Content */}
-        <View style={twrnc`pt-12 pb-6 px-5 relative z-10`}>
-          {/* Back Button */}
+        <View style={twrnc`pt-12 pb-4 px-5 relative z-10`}>
           <TouchableOpacity
             onPress={navigateToDashboard}
             style={twrnc`mb-4 flex-row items-center`}
@@ -403,18 +480,16 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
             <Ionicons name="arrow-back" size={24} color="#fff" />
           </TouchableOpacity>
 
-          {/* Title Section */}
           <View style={twrnc`flex-row items-center justify-between mb-2`}>
             <View style={twrnc`flex-1`}>
               <CustomText style={twrnc`text-white text-3xl font-bold`}>
                 Leaderboard
               </CustomText>
               <CustomText style={twrnc`text-[#94a3b8] text-sm mt-1`}>
-                {leaderboardData.length} competitors
+                {leaderboardData.length} competitors {filterMode === 'city' ? 'nearby' : 'globally'}
               </CustomText>
             </View>
 
-            {/* Refresh Button */}
             <TouchableOpacity
               onPress={handleRefresh}
               style={twrnc`bg-[#1e293b] p-3 rounded-xl border border-[#334155]`}
@@ -429,6 +504,9 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
         </View>
       </View>
 
+      {/* ===== NEW: LOCATION TOGGLE ===== */}
+      {renderLocationToggle()}
+
       {/* ===== METRIC SELECTOR ===== */}
       <View style={twrnc`px-5 py-4`}>
         <View style={twrnc`flex-row gap-3`}>
@@ -440,26 +518,28 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
       {leaderboardData.length > 0 ? (
         <FlatList
           data={leaderboardData}
-          keyExtractor={(item, index) => `${item.username}-${index}`}
+          keyExtractor={(item, index) => `${item.uid}-${index}`}
           renderItem={renderLeaderboardItem}
           contentContainerStyle={twrnc`pb-4`}
           showsVerticalScrollIndicator={false}
         />
       ) : (
         <View style={twrnc`flex-1 items-center justify-center p-6`}>
-          <Ionicons name="trophy-outline" size={64} color="#64748b" style={twrnc`mb-4`} />
+          <Ionicons name="location-outline" size={64} color="#64748b" style={twrnc`mb-4`} />
           <CustomText style={twrnc`text-white text-xl font-bold mb-2 text-center`}>
-            No Activities Yet
+            No Competitors Here
           </CustomText>
           <CustomText style={twrnc`text-[#94a3b8] text-center mb-6`}>
-            Start tracking your activities to join the leaderboard and compete with other users!
+            {filterMode === 'city'
+              ? `You're the first one in ${userLocation?.city || 'this area'}! Be the local champion.`
+              : "Start tracking to join the global leaderboard."}
           </CustomText>
           <TouchableOpacity
             onPress={navigateToDashboard}
             style={twrnc`bg-[#4361EE] px-6 py-3 rounded-xl`}
           >
             <CustomText style={twrnc`text-white font-semibold`}>
-              Start Your First Activity
+              Start Activity
             </CustomText>
           </TouchableOpacity>
         </View>
