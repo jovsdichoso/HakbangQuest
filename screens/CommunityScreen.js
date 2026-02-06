@@ -21,6 +21,8 @@ import AnimatedButton from "../components/buttons/AnimatedButton"
 import ChallengeDetailsModal from "../components/modals/ChallengeDetailsModal"
 import CreateChallengeModal from "../components/modals/CreateChallengeModal"
 import DuoVsModal from "../components/modals/DuoVsModal"
+import SquadVsModal from "../components/modals/SquadVsModal"
+import WinnerModal from "../components/WinnerModal"
 import AddFriendModal from "../components/modals/AddFriendModal"
 import FriendProfileModal from "../components/modals/FriendProfileModal"
 import EditChallengeModal from "../components/modals/EditChallengeModal"
@@ -122,9 +124,9 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, navigateToPr
   const [loadingMoreFriends, setLoadingMoreFriends] = useState(false)
   const [pastChallenges, setPastChallenges] = useState([]) // History tab data
 
-  const [sendingFriendRequests, setSendingFriendRequests] = useState({}) // Loading state for requests
-  const [processingRequests, setProcessingRequests] = useState({}) // Loading state for requests
-  const [joiningChallenges, setJoiningChallenges] = useState({}) // Loading state for challenges
+  const [sendingFriendRequests, setSendingFriendRequests] = useState({})
+  const [processingRequests, setProcessingRequests] = useState({})
+  const [joiningChallenges, setJoiningChallenges] = useState({})
   const [initialLoadComplete, setInitialLoadComplete] = useState(false)
   const [creatingChallenge, setCreatingChallenge] = useState(false)
 
@@ -138,6 +140,12 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, navigateToPr
     onConfirm: () => setModalVisible(false),
     onCancel: () => setModalVisible(false),
   })
+
+  const [showSquadModal, setShowSquadModal] = useState(false);
+  const [squadModalData, setSquadModalData] = useState({ participants: [], stakeXP: 0 });
+
+  const [isWinnerModalVisible, setIsWinnerModalVisible] = useState(false);
+  const [finalizationData, setFinalizationData] = useState(null);
 
   const [selectedChallenge, setSelectedChallenge] = useState(null)
   const [isChallengeDetailsVisible, setIsChallengeDetailsVisible] = useState(false)
@@ -343,6 +351,23 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, navigateToPr
       setUserOfflineStatus().catch((err) => console.warn("Error updating offline status:", err))
     }
   }, [])
+
+
+  const handleFinalize = async (challengeId) => {
+    try {
+      const result = await finalizeTimeChallenge(challengeId);
+
+      if (result.success) {
+        setFinalizationData(result);
+        setIsWinnerModalVisible(true); // Open the new styled modal
+      } else {
+        // Only use generic alert for "Already completed" notices
+        showModal({ title: "Status", message: result.message, type: "info" });
+      }
+    } catch (err) {
+      showModal({ title: "Error", message: err.message, type: "error" });
+    }
+  };
 
   const fetchParticipantsData = useCallback(async () => {
     if (!selectedChallenge) {
@@ -723,6 +748,15 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, navigateToPr
         return
       }
 
+      if (newChallenge.groupType === "lobby" && selectedFriendsCount < 2) {
+        showModal({
+          title: "Error",
+          message: "Squad challenges require at least 2 friends.",
+          type: "error",
+        })
+        return
+      }
+
       // Validation for Race Challenges (Duo/Lobby)
       if (newChallenge.groupType === 'duo' || newChallenge.groupType === 'lobby') {
         if (!newChallenge.durationMinutes || newChallenge.durationMinutes < 1) {
@@ -832,7 +866,7 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, navigateToPr
       groupType: challenge.groupType,
     }
 
-    // Trigger VS modal for duo challenges if necessary
+    // 1. Trigger VS modal for DUO challenges (1v1)
     if (!skipAnimation && challenge.groupType === "duo" && challenge.participants?.length === 2) {
       setSelectedChallenge(challenge)
       handleShowDuoVs({
@@ -842,10 +876,23 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, navigateToPr
         stakeXP: challenge.stakeXP,
         fullChallenge: challenge,
       })
-    } else {
+    }
+    // 2. Trigger SQUAD modal for LOBBY challenges (3+ players)
+    else if (!skipAnimation && challenge.groupType === "lobby") {
+      setSquadModalData({
+        challengeId: challenge.id,
+        participants: challenge.participants,
+        stakeXP: challenge.stakeXP,
+        fullChallenge: challenge,
+      })
+      setShowSquadModal(true)
+    }
+    // 3. Navigate directly (Solo challenges, skipped animation, or fallback)
+    else {
       navigateToActivity({ questData: challengeData })
       setIsChallengeDetailsVisible(false)
       setShowVsModal(false)
+      setShowSquadModal(false) // Make sure to close Squad modal too
     }
   }
 
@@ -3213,6 +3260,16 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, navigateToPr
         navigateToActivityWithChallenge={navigateToActivityWithChallenge}
       />
 
+      <SquadVsModal
+        visible={showSquadModal}
+        challengeId={squadModalData.challengeId}
+        participants={squadModalData.participants}
+        stakeXP={squadModalData.stakeXP}
+        fullChallenge={squadModalData.fullChallenge}
+        onClose={() => setShowSquadModal(false)}
+        navigateToActivityWithChallenge={navigateToActivityWithChallenge}
+      />
+
       <ChallengeDetailsModal
         isVisible={isChallengeDetailsVisible}
         onClose={() => setIsChallengeDetailsVisible(false)}
@@ -3235,6 +3292,15 @@ const CommunityScreen = ({ navigateToDashboard, navigateToActivity, navigateToPr
         }}
 
       />
+
+      <WinnerModal
+        visible={isWinnerModalVisible}
+        onClose={() => setIsWinnerModalVisible(false)}
+        result={finalizationData}
+        participantsData={participantsData}
+        currentUserId={auth.currentUser?.uid}
+      />
+
     </View>
   )
 }

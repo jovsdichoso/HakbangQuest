@@ -1,47 +1,29 @@
-// xpManager.js - COMPLETE VERSION WITH ELEVATION BONUS & MET-BASED DIFFICULTY XP
-
-import { doc, runTransaction, serverTimestamp, collection, increment } from "firebase/firestore";
+// utils/xpManager.js
+import { doc, runTransaction, serverTimestamp, collection, increment, query, where, getDocs } from "firebase/firestore";
 import { db } from "../firebaseConfig";
 import { ActivityTypeManager, ACTIVITY_TYPES } from "./ActivityTypeManager";
 import { QuestProgressManager } from "./QuestProgressManager";
 import { checkAllParticipantsSubmitted, finalizeChallengeImmediate } from "./CommunityBackend";
-import QuestManager from "./QuestManager";
 
 export class XPManager {
 
-    /**
-     * ✅ NEW: Get base XP multiplier based on activity MET value (intensity)
-     * MET (Metabolic Equivalent of Task) indicates exercise intensity
-     */
     static getActivityMultiplierByMET(activityType) {
-        // Activity MET values and their XP multipliers
         const activityMETConfig = {
-            // Cardio Activities
-            'walking': { met: 3.5, multiplier: 1.0 },      // Easy - Base level
-            'jogging': { met: 7.0, multiplier: 1.4 },      // Hard
-            'running': { met: 8.0, multiplier: 1.6 },      // Very Hard
-            'cycling': { met: 6.0, multiplier: 1.3 },      // Medium-Hard
-
-            // Strength Activities
-            'pushup': { met: 3.8, multiplier: 1.2 },       // Medium
+            'walking': { met: 3.5, multiplier: 1.0 },
+            'jogging': { met: 7.0, multiplier: 1.4 },
+            'running': { met: 8.0, multiplier: 1.6 },
+            'cycling': { met: 6.0, multiplier: 1.3 },
+            'pushup': { met: 3.8, multiplier: 1.2 },
             'push-ups': { met: 3.8, multiplier: 1.2 },
         };
-
         const config = activityMETConfig[activityType?.toLowerCase()];
         return config ? config.multiplier : 1.0;
     }
 
-    /**
-     * ✅ NEW: Calculate base XP with difficulty multiplier
-     * Adjusted baseAmount to 100 to make point differences more visible.
-     */
     static calculateBaseXP(activityType, isStrengthActivity) {
-        const baseAmount = 100; // Increased base to highlight differences
+        const baseAmount = 100;
         const multiplier = this.getActivityMultiplierByMET(activityType);
-        const finalXP = Math.round(baseAmount * multiplier);
-
-        console.log(`[XPManager] Base XP for ${activityType}: ${finalXP} (${multiplier}x multiplier)`);
-        return finalXP;
+        return Math.round(baseAmount * multiplier);
     }
 
     static async awardXPForActivity({
@@ -54,56 +36,65 @@ export class XPManager {
         challengeData = null,
         isStrengthActivity = false,
     }) {
-        console.log("[XPManager] Starting XP award process for activity:", activityId);
+        console.log(`[XPManager] 🚀 Processing ${activityData.activityType} for user ${userId}`);
 
         try {
+            // STEP 1: PRE-FETCH ACTIVE QUESTS (The "Passive Scan" Fix)
+            // We fetch IDs here to know what to read inside the transaction
+            const questsRef = collection(db, "quests");
+            const q = query(
+                questsRef,
+                where("userId", "==", userId),
+                where("status", "in", ["active", "ready_to_claim"])
+            );
+            const questsSnapshot = await getDocs(q);
+            const userQuestIds = questsSnapshot.docs.map(d => d.id);
+
             return await runTransaction(db, async (transaction) => {
+                // =========================================================
+                // PHASE 1: ALL READS (Must come before ANY writes)
+                // =========================================================
+
+                // 1. Receipt Check
                 const receiptRef = doc(db, "activity_receipts", activityId);
                 const receiptDoc = await transaction.get(receiptRef);
-
                 if (receiptDoc.exists()) {
-                    console.log("[XPManager] XP already awarded for this activity");
-                    const receiptData = receiptDoc.data();
-                    return {
-                        success: true,
-                        alreadyAwarded: true,
-                        xpEarned: receiptData.xpEarned,
-                        questCompleted: receiptData.questCompleted || false,
-                        challengeCompleted: receiptData.challengeCompleted || false,
-                    };
+                    const rData = receiptDoc.data();
+                    return { success: true, alreadyAwarded: true, xpEarned: rData.xpEarned };
                 }
 
+                // 2. User Data
                 const userRef = doc(db, "users", userId);
                 const userDoc = await transaction.get(userRef);
-
-                if (!userDoc.exists()) {
-                    throw new Error("User document not found");
-                }
-
+                if (!userDoc.exists()) throw new Error("User not found");
                 const userData = userDoc.data();
 
+                // 3. Challenge Data (Restored Logic)
                 let challengeDoc = null;
-                let challengeRef = null;
                 let challengeToUse = challengeData;
-
                 if (challengeData && challengeData.id) {
-                    challengeRef = doc(db, "challenges", challengeData.id);
+                    const challengeRef = doc(db, "challenges", challengeData.id);
                     challengeDoc = await transaction.get(challengeRef);
-
                     if (challengeDoc.exists()) {
                         challengeToUse = { ...challengeData, ...challengeDoc.data() };
-                    } else {
-                        challengeToUse = null;
                     }
                 }
 
+                // 4. Quest Data (Passive Scan Read)
+                const questDocs = [];
+                for (const qId of userQuestIds) {
+                    const qRef = doc(db, "quests", qId);
+                    const qDoc = await transaction.get(qRef);
+                    if (qDoc.exists()) questDocs.push({ ref: qRef, data: qDoc.data(), id: qId });
+                }
+
+                // =========================================================
+                // PHASE 2: LOGIC & CALCULATIONS
+                // =========================================================
+
                 const completionCheck = this.checkActivityCompletion(stats, isStrengthActivity, challengeToUse);
                 if (!completionCheck.isComplete) {
-                    return {
-                        success: false,
-                        reason: completionCheck.reason,
-                        xpEarned: 0,
-                    };
+                    return { success: false, reason: completionCheck.reason, xpEarned: 0 };
                 }
 
                 const typeConfig = ActivityTypeManager.determineActivityType({
@@ -111,48 +102,105 @@ export class XPManager {
                     activityType: activityData?.activityType || "normal"
                 });
 
+                // --- QUEST UPDATES (Immediate Calculation) ---
+                const questsToUpdate = [];
+                let anyQuestCompleted = false;
+
+                for (const qObj of questDocs) {
+                    const quest = qObj.data;
+
+                    // Check if activity matches quest type
+                    const isMatching =
+                        quest.activityType === 'any' ||
+                        quest.activityType === activityData.activityType;
+
+                    if (isMatching) {
+                        const sessionValue = QuestProgressManager.getSessionValue(quest, stats, stats.calories || 0);
+
+                        if (sessionValue > 0) {
+                            const newProgress = (quest.progress || 0) + sessionValue;
+                            const isGoalMet = newProgress >= (quest.goal - 0.01); // Float tolerance
+
+                            // Determine status: If done, mark 'ready_to_claim' (don't auto-complete)
+                            let newStatus = quest.status;
+                            if (quest.status !== 'claimed' && quest.status !== 'completed') {
+                                newStatus = isGoalMet ? 'ready_to_claim' : 'active';
+                            }
+
+                            console.log(`[XPManager] 🎯 Updating "${quest.title}": ${quest.progress} -> ${newProgress}`);
+
+                            questsToUpdate.push({
+                                ref: qObj.ref,
+                                data: {
+                                    progress: newProgress,
+                                    status: newStatus,
+                                    updatedAt: serverTimestamp()
+                                },
+                                // Metadata for logging
+                                isGoalMet,
+                                title: quest.title,
+                                id: qObj.id,
+                                xpReward: quest.xpReward
+                            });
+
+                            if (isGoalMet) anyQuestCompleted = true;
+                        }
+                    }
+                }
+
+                // Calculate XP
                 const xpCalculation = this.calculateXPByType(
                     stats,
                     typeConfig,
-                    questData,
+                    null, // Pass null so we don't double-dip Quest XP (it's claimed later)
                     challengeToUse,
                     isStrengthActivity
                 );
-
-                const currentTotalXP = userData.totalXP || userData.xp || 0;
-                const currentLevel = userData.level || 1;
                 const xpEarned = xpCalculation.totalXP;
-                const newTotalXP = currentTotalXP + xpEarned;
-                const newLevel = Math.floor(newTotalXP / 1000) + 1;
-                const levelUp = newLevel > currentLevel;
 
+                // =========================================================
+                // PHASE 3: ALL WRITES (Atomic Updates)
+                // =========================================================
+
+                // 1. Update Quests (IMMEDIATE - Fixes the "Criteria Not Met" error)
+                questsToUpdate.forEach(update => {
+                    transaction.update(update.ref, update.data);
+
+                    // Optional: Log completion timestamp if just finished
+                    if (update.isGoalMet) {
+                        const logRef = doc(collection(db, "quest_completions"));
+                        transaction.set(logRef, {
+                            userId,
+                            questId: update.id,
+                            title: update.title,
+                            xpEarned: update.xpReward || 50,
+                            completedAt: serverTimestamp(),
+                            activityId,
+                            status: "ready_to_claim"
+                        });
+                    }
+                });
+
+                // 2. Update User Stats
                 const userUpdateData = {
-                    totalXP: newTotalXP,
-                    level: newLevel,
+                    totalXP: (userData.totalXP || 0) + xpEarned,
+                    level: Math.floor(((userData.totalXP || 0) + xpEarned) / 1000) + 1,
                     lastActivityDate: serverTimestamp(),
                     totalActivities: increment(1),
                     updatedAt: serverTimestamp(),
                 };
 
-                if (userData.xp === undefined || userData.xp === null) {
-                    userUpdateData.xp = xpEarned;
-                } else {
-                    userUpdateData.xp = increment(xpEarned);
-                }
+                if (userData.xp === undefined) userUpdateData.xp = xpEarned;
+                else userUpdateData.xp = increment(xpEarned);
 
                 const caloriesEarned = stats.calories || activityData.calories || 0;
-                if (userData.totalCalories === undefined) {
-                    userUpdateData.totalCalories = caloriesEarned;
-                } else {
-                    userUpdateData.totalCalories = increment(caloriesEarned);
-                }
+                userUpdateData.totalCalories = increment(caloriesEarned);
 
                 if (isStrengthActivity) {
                     userUpdateData.totalReps = increment(stats.reps || 0);
                     userUpdateData.totalStrengthDuration = increment(stats.duration || 0);
                 } else {
-                    const distanceInKm = (stats.distance || 0) / 1000;
-                    userUpdateData.totalDistance = increment(distanceInKm);
+                    userUpdateData.totalDistance = increment((stats.distance || 0) / 1000);
                     userUpdateData.totalSteps = increment(stats.steps || 0);
                     userUpdateData.totalDuration = increment(stats.duration || 0);
                 }
@@ -160,37 +208,26 @@ export class XPManager {
                 this.updateTypeSpecificStats(userUpdateData, typeConfig, xpCalculation);
                 transaction.update(userRef, userUpdateData);
 
-                const completeActivityData = {
+                // 3. Save Activity (Fixes Data Overwrite)
+                const collectionName = this.getCollectionForActivityType(typeConfig.type);
+                const activityRef = doc(db, collectionName, activityId);
+
+                transaction.set(activityRef, {
                     ...activityData,
-                    activityType: typeConfig.type,
-                    xpEarned: xpEarned,
+                    activityType: activityData.activityType, // ✅ Keeps specific type (e.g. "pushup")
+                    activityCategory: typeConfig.type,       // ✅ Stores category separately (e.g. "normal")
+                    xpEarned,
                     bonusXP: xpCalculation.bonusXP,
-                    questCompleted: xpCalculation.questCompleted,
+                    questCompleted: anyQuestCompleted,
                     challengeCompleted: xpCalculation.challengeCompleted,
                     questId: questData?.id || null,
                     challengeId: challengeToUse?.id || null,
                     userId: userId,
                     createdAt: serverTimestamp(),
                     updatedAt: serverTimestamp(),
-                };
+                });
 
-                const collectionName = this.getCollectionForActivityType(typeConfig.type);
-                const activityRef = doc(db, collectionName, activityId);
-                transaction.set(activityRef, completeActivityData);
-
-                if (xpCalculation.questCompleted && questData) {
-                    await this.handleQuestCompletion(
-                        transaction,
-                        userId,
-                        questData,
-                        typeConfig,
-                        xpCalculation,
-                        activityId,
-                        stats,
-                        isStrengthActivity,
-                    );
-                }
-
+                // 4. Update Challenge (Restored Logic)
                 if (challengeToUse && challengeDoc && challengeDoc.exists()) {
                     const challengeWasFinalized = await this.handleChallengeProgress(
                         transaction,
@@ -208,130 +245,72 @@ export class XPManager {
                     }
                 }
 
-                const receiptData = {
+                // 5. Create Receipt
+                transaction.set(receiptRef, {
                     userId,
                     activityId,
-                    activityType: typeConfig.type,
-                    xpEarned: xpEarned,
-                    baseXP: xpCalculation.baseXP,
-                    bonusXP: xpCalculation.bonusXP,
-                    questXP: xpCalculation.questXP,
-                    challengeXP: xpCalculation.challengeXP,
-                    questCompleted: xpCalculation.questCompleted,
-                    challengeCompleted: xpCalculation.challengeCompleted,
-                    awardedAt: serverTimestamp(),
-                };
-
-                transaction.set(receiptRef, receiptData);
+                    xpEarned,
+                    awardedAt: serverTimestamp()
+                });
 
                 return {
                     success: true,
-                    xpEarned: xpEarned,
+                    xpEarned,
                     baseXP: xpCalculation.baseXP,
                     bonusXP: xpCalculation.bonusXP,
-                    questCompleted: xpCalculation.questCompleted,
+                    questCompleted: anyQuestCompleted,
                     challengeCompleted: xpCalculation.challengeCompleted,
-                    levelUp,
-                    newLevel,
+                    levelUp: userUpdateData.level > (userData.level || 1),
+                    newLevel: userUpdateData.level
                 };
             });
+
         } catch (error) {
             console.error("[XPManager] ❌ Error awarding XP:", error);
-            return {
-                success: false,
-                reason: "Failed to process activity."
-            };
+            return { success: false, reason: "Failed to process activity." };
         }
     }
 
-    static getCollectionForActivityType(activityType) {
-        switch (activityType) {
-            case ACTIVITY_TYPES.CHALLENGE: return "challenge_activities";
-            case ACTIVITY_TYPES.QUEST: return "quest_activities";
-            default: return "normal_activities";
-        }
+    // --- HELPER METHODS ---
+
+    static getCollectionForActivityType(type) {
+        return type === ACTIVITY_TYPES.CHALLENGE ? "challenge_activities" : "normal_activities";
     }
 
     static calculateXPByType(stats, typeConfig, questData, challengeData, isStrengthActivity) {
-        const isNonChallengeQuest = typeConfig.type === ACTIVITY_TYPES.QUEST && !challengeData;
         const isNormalActivity = typeConfig.type === 'normal';
 
-        let questXP = 0;
-        let questCompleted = false;
-        let achievedValue = 0;
-
-        if (questData) {
-            const questResult = this.calculateQuestXP(stats, questData, isStrengthActivity);
-            questCompleted = questResult.completed;
-            achievedValue = questResult.achievedValue;
-
-            if (isNonChallengeQuest && questCompleted) {
-                questXP = questResult.xp;
-            }
-        }
-
-        const activityType = stats.activityType || typeConfig.activityType || 'walking';
-        const baseXP = isNormalActivity ? this.calculateBaseXP(activityType, isStrengthActivity) : 0;
+        const baseXP = isNormalActivity ? this.calculateBaseXP(stats.activityType, isStrengthActivity) : 0;
         const bonusXP = isNormalActivity ? this.calculatePerformanceBonusXP(stats, isStrengthActivity) : 0;
 
         let challengeXP = 0;
         let challengeCompleted = false;
 
-        if (challengeData && !isNonChallengeQuest) {
-            const challengeResult = this.calculateChallengeXP(stats, challengeData, isStrengthActivity);
-            challengeCompleted = challengeResult.completed;
-            challengeXP = challengeResult.xp;
+        // Restored Challenge XP Logic
+        if (challengeData && challengeData.groupType === 'solo') {
+            const result = this.calculateChallengeXP(stats, challengeData, isStrengthActivity);
+            challengeXP = result.xp;
+            challengeCompleted = result.completed;
         }
 
-        let totalXP = baseXP + bonusXP + questXP + challengeXP;
-
-        if (challengeData?.groupType && challengeData?.groupType !== 'solo') {
-            totalXP = 0;
-        }
+        // Quest XP is 0 here because it is claimed manually via the Dashboard
+        const questXP = 0;
 
         return {
             baseXP,
             bonusXP,
             questXP,
             challengeXP,
-            totalXP,
-            questCompleted,
+            totalXP: baseXP + bonusXP + questXP + challengeXP,
             challengeCompleted,
-            achievedValue,
         };
     }
 
-    static calculateQuestXP(stats, questData, isStrengthActivity) {
-        if (!questData) return { xp: 0, completed: false, achievedValue: 0 };
-
-        const sessionStats = { ...stats };
-        if (questData.unit === "distance") sessionStats.distance = sessionStats.distance || 0;
-        else if (questData.unit === "steps") sessionStats.steps = sessionStats.steps || 0;
-        else if (questData.unit === "reps") sessionStats.reps = sessionStats.reps || 0;
-        else if (questData.unit === "duration") sessionStats.duration = sessionStats.duration || 0;
-
-        const progressPercentage = QuestProgressManager.getProgressPercentage(
-            questData,
-            sessionStats,
-            stats.calories || 0
-        );
-
-        const completed = progressPercentage >= 0.99;
-        const xp = completed ? (questData.xpReward || 50) : 0;
-        const achievedValue = QuestProgressManager.getTotalValue(questData, sessionStats, stats.calories || 0);
-
-        return { xp, completed, achievedValue };
-    }
-
     static calculateChallengeXP(stats, challengeData, isStrengthActivity) {
-        if (!challengeData) return { xp: 0, completed: false };
-        if (challengeData.groupType !== 'solo' && challengeData.stakeXP) return { xp: 0, completed: false };
-
         const progressValue = this.getProgressValueForChallenge(stats, challengeData, isStrengthActivity);
         const goal = challengeData.goal || 0;
         const completed = goal > 0 && progressValue >= goal;
         const xp = completed ? (challengeData.xpReward || 100) : 0;
-
         return { xp, completed };
     }
 
@@ -339,84 +318,37 @@ export class XPManager {
         const unit = challengeData.unit?.toLowerCase() || "";
         switch (unit) {
             case "reps": return stats.reps || 0;
-            case "distance":
-            case "km": return isStrengthActivity ? 0 : (stats.distance || 0) / 1000;
-            case "duration":
-            case "minutes": return (stats.duration || 0) / 60;
+            case "distance": return (stats.distance || 0) / 1000;
+            case "duration": return (stats.duration || 0) / 60;
             case "steps": return stats.steps || 0;
             case "calories": return stats.calories || 0;
             default: return 0;
         }
     }
 
-    static async handleQuestCompletion(transaction, userId, questData, typeConfig, xpCalculation, activityId, stats, isStrengthActivity) {
-        try {
-            if (questData.id) {
-                const activityData = {
-                    reps: stats.reps || 0,
-                    distance: stats.distance || 0,
-                    duration: stats.duration || 0,
-                    calories: stats.calories || 0,
-                    steps: stats.steps || 0,
-                };
-                setTimeout(async () => {
-                    try {
-                        await QuestManager.updateQuestProgress(questData.id, activityData, activityId);
-                    } catch (e) { console.error(e); }
-                }, 100);
-            }
-
-            const questCompletionRef = doc(db, "quest_completions", `${userId}_${questData.id}_${Date.now()}`);
-            const achievedValue = QuestProgressManager.getTotalValue(questData, stats, stats.calories || 0);
-
-            transaction.set(questCompletionRef, {
-                questId: questData.id,
-                userId,
-                questTitle: questData.title,
-                questDescription: questData.description,
-                achievedValue,
-                activityType: typeConfig.type,
-                xpEarned: questData.xpReward || 50,
-                completed: true,
-                completedAt: serverTimestamp(),
-                activityId,
-                isFromChallenge: typeConfig.type === ACTIVITY_TYPES.CHALLENGE,
-                challengeId: typeConfig.challengeId || null,
-            });
-
-            if (questData.progressField) {
-                const userRef = doc(db, "users", userId);
-                transaction.update(userRef, {
-                    [questData.progressField]: increment(achievedValue),
-                });
-            }
-        } catch (error) { console.error(error); }
-    }
-
     static async handleChallengeProgress(transaction, userId, challengeData, challengeDoc, stats, xpCalculation, activityId, isStrengthActivity) {
         try {
-            if (!challengeDoc || !challengeDoc.exists()) return false;
-
             const challengeRef = challengeDoc.ref;
             const challenge = challengeDoc.data();
-            if (challenge.status?.global === "completed") return false;
+
+            if (challenge.status?.global === 'completed') return false;
 
             let progressValue = this.getProgressValueForChallenge(stats, challenge, isStrengthActivity);
             const currentProgress = challenge.progress?.[userId] || 0;
             const newProgress = currentProgress + progressValue;
+
             const goal = challenge.goal || 0;
             const isCompletedByGoal = goal > 0 && newProgress >= goal;
             const newUserStatus = isCompletedByGoal ? "completed" : "in_progress";
 
-            const updatedProgressMap = { ...challenge.progress };
-            updatedProgressMap[userId] = newProgress;
-
+            // Update Challenge
             transaction.update(challengeRef, {
                 [`progress.${userId}`]: newProgress,
                 [`status.${userId}`]: newUserStatus,
-                lastUpdated: serverTimestamp(),
+                lastUpdated: serverTimestamp()
             });
 
+            // Log Participation
             const participationRef = doc(collection(db, "challenge_participations"));
             transaction.set(participationRef, {
                 challengeId: challengeData.id,
@@ -428,21 +360,20 @@ export class XPManager {
                 participatedAt: serverTimestamp(),
             });
 
-            const isImmediateFinalizationType =
-                challengeData.groupType === "duo" &&
-                challengeData.completionRequirement === "betterthanothers" &&
-                challengeData.participants?.length === 2;
+            // Check for Winner (Duo/Lobby)
+            const isRaceChallenge = challengeData.completionRequirement === "betterthanothers";
+            const isDuoReady = challengeData.groupType === "duo" && challengeData.participants?.length === 2;
+            const isLobbyReady = challengeData.groupType === "lobby" && (challengeData.participants?.length || 0) >= 2;
 
-            if (isImmediateFinalizationType) {
+            if (isRaceChallenge && (isDuoReady || isLobbyReady)) {
+                const updatedProgressMap = { ...challenge.progress, [userId]: newProgress };
                 if (checkAllParticipantsSubmitted({ ...challengeData, progress: updatedProgressMap })) {
-                    try {
-                        const updatedChallengeData = { ...challengeData, progress: updatedProgressMap };
-                        await finalizeChallengeImmediate(transaction, challengeRef, updatedChallengeData);
-                        return true;
-                    } catch (e) { return false; }
+                    await finalizeChallengeImmediate(transaction, challengeRef, { ...challengeData, progress: updatedProgressMap });
+                    return true;
                 }
             }
 
+            // Solo Completion
             if (challengeData.groupType === 'solo' && isCompletedByGoal) {
                 transaction.update(challengeRef, {
                     'status.global': 'completed',
@@ -453,7 +384,31 @@ export class XPManager {
             }
 
             return false;
-        } catch (error) { return false; }
+        } catch (e) {
+            console.error("Challenge Progress Error:", e);
+            return false;
+        }
+    }
+
+    static calculatePerformanceBonusXP(stats, isStrengthActivity) {
+        let bonusXP = 0;
+        const multiplier = stats.activityType ? this.getActivityMultiplierByMET(stats.activityType) : 1.0;
+
+        if (isStrengthActivity) {
+            bonusXP += Math.floor((stats.reps || 0) / 5) * 1;
+            bonusXP += Math.floor((stats.duration || 0) / 120) * 1;
+        } else {
+            const km = (stats.distance || 0) / 1000;
+            bonusXP += Math.floor(km / 0.5) * Math.max(1, multiplier);
+            bonusXP += Math.floor((stats.duration || 0) / 300) * multiplier;
+            bonusXP += Math.floor((stats.steps || 0) / 500) * 1;
+
+            const elevation = stats.elevationGain || 0;
+            if (elevation > 0) {
+                bonusXP += Math.min(Math.floor(elevation / 10) * 2, 50);
+            }
+        }
+        return Math.min(bonusXP, 150);
     }
 
     static updateTypeSpecificStats(userUpdateData, typeConfig, xpCalculation) {
@@ -464,57 +419,20 @@ export class XPManager {
                 break;
             case ACTIVITY_TYPES.QUEST:
                 userUpdateData.totalQuestActivities = increment(1);
-                if (xpCalculation.questCompleted) userUpdateData.completedQuests = increment(1);
                 break;
             default:
                 userUpdateData.totalNormalActivities = increment(1);
         }
     }
 
-    static checkActivityCompletion(stats, isStrengthActivity, challengeData = null) {
-        const isTimeChallenge = challengeData?.mode === 'time' || challengeData?.unit === 'duration';
-
-        if (isStrengthActivity) {
-            if ((stats.reps || 0) < 1) return { isComplete: false, reason: "Minimum 1 repetition required" };
-        } else if (isTimeChallenge) {
-            if ((stats.duration || 0) < 10) return { isComplete: false, reason: "Minimum 10 seconds required" };
-        } else {
-            const distanceInKm = (stats.distance || 0) / 1000;
-            if (distanceInKm < 0.01) return { isComplete: false, reason: "Minimum 0.01 km required" };
-            if ((stats.duration || 0) < 10) return { isComplete: false, reason: "Minimum 10 seconds required" };
-        }
+    static checkActivityCompletion(stats, isStrength, challenge) {
+        if (isStrength && (stats.reps || 0) < 1) return { isComplete: false, reason: "No reps detected" };
+        if (!isStrength && (stats.distance || 0) < 10) return { isComplete: false, reason: "Distance too short" };
         return { isComplete: true };
     }
 
-    static calculatePerformanceBonusXP(stats, isStrengthActivity) {
-        let bonusXP = 0;
-
-        const multiplier = stats.activityType ? this.getActivityMultiplierByMET(stats.activityType) : 1.0;
-
-        if (isStrengthActivity) {
-            bonusXP += Math.floor((stats.reps || 0) / 5) * 1;
-            bonusXP += Math.floor((stats.duration || 0) / 120) * 1;
-        } else {
-            const km = (stats.distance || 0) / 1000;
-
-            bonusXP += Math.floor(km / 0.5) * Math.max(1, multiplier);
-
-            bonusXP += Math.floor((stats.duration || 0) / 300) * multiplier;
-
-            bonusXP += Math.floor((stats.steps || 0) / 500) * 1;
-
-            const elevation = stats.elevationGain || 0;
-            if (elevation > 0) {
-                const elevationBonus = Math.min(Math.floor(elevation / 10) * 2, 50);
-                bonusXP += elevationBonus;
-            }
-        }
-
-        return Math.min(bonusXP, 150);
-    }
-
-    static generateActivityId(userId, sessionStartTime, activityType = "normal") {
-        return `${userId}_${sessionStartTime}_${activityType}_${Math.random().toString(36).substr(2, 9)}`;
+    static generateActivityId(userId, time, type) {
+        return `${userId}_${time}_${type}_${Math.random().toString(36).substr(2, 5)}`;
     }
 }
 

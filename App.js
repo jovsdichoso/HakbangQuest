@@ -64,24 +64,28 @@ const formatDate = () => {
   return `${days[date.getDay()]}, ${date.getDate()} ${months[date.getMonth()]} ${date.getFullYear()}`;
 };
 
-const requestLocationPermissions = async (setModalTitle, setModalMessage, setModalVisible) => {
+// ✅ FIX: Added setModalType to handle permission warning colors
+const requestLocationPermissions = async (setModalTitle, setModalMessage, setModalVisible, setModalType) => {
   try {
     const { status, canAskAgain } = await Location.requestForegroundPermissionsAsync();
     if (status === "granted") return true;
-    if (!canAskAgain) {
-      setModalTitle("Permission Required");
-      setModalMessage("Location permissions are required. Please enable them in app settings.");
-      setModalVisible(true);
-      return false;
-    }
+    
     setModalTitle("Permission Required");
-    setModalMessage("This app needs location permissions to work properly.");
+    setModalType("warning"); // Use warning color (yellow/orange) instead of red error
+    
+    if (!canAskAgain) {
+      setModalMessage("Location permissions are required. Please enable them in app settings.");
+    } else {
+      setModalMessage("This app needs location permissions to work properly.");
+    }
+    
     setModalVisible(true);
     return false;
   } catch (error) {
     console.error("Error requesting location permissions:", error);
     setModalTitle("Error");
     setModalMessage("Failed to request location permissions.");
+    setModalType("error");
     setModalVisible(true);
     return false;
   }
@@ -447,6 +451,10 @@ export default function App() {
   const [modalVisible, setModalVisible] = useState(false);
   const [modalTitle, setModalTitle] = useState("");
   const [modalMessage, setModalMessage] = useState("");
+  
+  // ✅ FIX: Added modalType state (defaults to 'info')
+  const [modalType, setModalType] = useState("info"); 
+  
   const [verificationModalShown, setVerificationModalShown] = useState(false);
   const [loginEmail, setLoginEmail] = useState("");
   const [isInitializing, setIsInitializing] = useState(true);
@@ -594,7 +602,8 @@ export default function App() {
         const hasPermissions = await checkLocationPermissions();
         setLocationGranted(hasPermissions);
         if (!hasPermissions) {
-          const granted = await requestLocationPermissions(setModalTitle, setModalMessage, setModalVisible);
+          // ✅ FIX: Passed setModalType to requestLocationPermissions
+          const granted = await requestLocationPermissions(setModalTitle, setModalMessage, setModalVisible, setModalType);
           setLocationGranted(granted);
         }
 
@@ -690,6 +699,10 @@ export default function App() {
                 setModalTitle("Email Verification Required");
                 setModalMessage("Please verify your email to access all features.");
                 setVerificationModalShown(true);
+                
+                // ✅ FIX: Explicitly set to "info" (Blue) to avoid red error modal
+                setModalType("info");
+                
                 navigateWithAnimation("signin", { email: user.email });
               }
             } else if (isValidSession && user) {
@@ -850,6 +863,7 @@ export default function App() {
     if (!locationGranted) {
       setModalTitle("Location Required");
       setModalMessage("Please enable location services to use this feature.");
+      setModalType("warning"); // Warn instead of Error
       setModalVisible(true);
       return;
     }
@@ -946,7 +960,7 @@ export default function App() {
           <CustomModal
             title={modalTitle}
             message={modalMessage}
-            type="error"
+            type={modalType} // ✅ FIX: Pass dynamic type here (default 'info' or 'error')
             visible={modalVisible}
             onClose={() => {
               setModalVisible(false);
@@ -1157,5 +1171,4 @@ export default function App() {
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
-
 }

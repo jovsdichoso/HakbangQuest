@@ -14,7 +14,7 @@ import {
   Vibration,
   PanResponder,
 } from "react-native"
-import MapView, { Polyline, Marker, PROVIDER_GOOGLE } from "react-native-maps"
+import MapView, { Polyline, Marker, PROVIDER_GOOGLE, AnimatedRegion } from "react-native-maps"
 import * as Location from "expo-location"
 import twrnc from "twrnc"
 import CustomText from "../components/CustomText"
@@ -37,6 +37,7 @@ import { generateRoute } from "../utils/routeGenerator"
 import { PanGestureHandler, State } from "react-native-gesture-handler"
 import { LinearGradient } from "expo-linear-gradient"
 import { QuestProgressManager } from "../utils/QuestProgressManager"
+import { KalmanFilter } from "../utils/KalmanFilter"
 
 const { width, height } = Dimensions.get("window")
 const isAndroid = Platform.OS === "android"
@@ -124,8 +125,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
   const countdownIntervalRef = useRef(null);
   const timerInitializedRef = useRef(false);
 
-  console.log("MapScreen: Current selectedQuest state:", selectedQuest)
-
   const holdProgressAnim = useRef(new Animated.Value(0)).current
   const HOLD_DURATION = 2000
   const pan = useRef(new Animated.ValueXY({ x: width - 100, y: 16 })).current
@@ -153,6 +152,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
 
   // Refs
   const mapRef = useRef(null)
+  const markerRef = useRef(null)
   const intervalRef = useRef(null)
   const startTimeRef = useRef(null)
   const lastUpdateTimeRef = useRef(Date.now())
@@ -162,6 +162,18 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
   const lastCoordinateRef = useRef(null)
   const holdTimerRef = useRef(null)
   const coordinatesRef = useRef([])
+
+  // --- SMOOTHING REFS ---
+  const latKalmanRef = useRef(new KalmanFilter(3, 10))
+  const lngKalmanRef = useRef(new KalmanFilter(3, 10))
+
+  // Animated Marker for smoothness
+  const animatedCoordinate = useRef(new AnimatedRegion({
+    latitude: initialCoordinates[0]?.latitude || 37.78825,
+    longitude: initialCoordinates[0]?.longitude || -122.4324,
+    latitudeDelta: 0.005,
+    longitudeDelta: 0.005,
+  })).current
 
   const locationAccuracy =
     activityType === "running" || activityType === "jogging"
@@ -210,24 +222,16 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
   const loadUserStats = async () => {
     try {
       const user = auth.currentUser
-      if (!user) {
-        console.log("MapScreen: No user found for loading stats")
-        return
-      }
-
-      console.log("MapScreen: Loading user stats for user:", user.uid)
+      if (!user) return
       const userRef = doc(db, "users", user.uid)
       const userDoc = await getDoc(userRef)
 
       if (userDoc.exists()) {
         const userData = userDoc.data()
-        console.log("MapScreen: Loaded user data:", userData)
         setUserStats({
           level: userData.level || 1,
           totalXP: userData.totalXP || 0,
         })
-      } else {
-        console.log("MapScreen: User document does not exist, using defaults")
       }
     } catch (error) {
       console.error("MapScreen: Error loading user stats:", error)
@@ -235,7 +239,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
   }
 
   useEffect(() => {
-    console.log("MapScreen: Processing params for quest initialization:", params)
     if (params.questId || (params.title && params.description && params.goal && params.unit)) {
       const questData = {
         id: params.questId || `quest_${Date.now()}`,
@@ -299,9 +302,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
 
   useEffect(() => {
     if (selectedQuest && selectedQuest.activityType !== activityType) {
-      console.warn(
-        `MapScreen: Quest activity type (${selectedQuest.activityType}) doesn't match current activity (${activityType})`,
-      )
       showModal(
         "Quest Mismatch",
         `This quest is for ${selectedQuest.activityType}, but you're doing ${activityType}. Progress may not be tracked correctly.`,
@@ -390,37 +390,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     setSmoothedPace(0)
   }, [activityType])
 
-  const clearSuggestedRoute = () => {
-    setSuggestedRoute(null)
-    setShowSuggestedRoute(false)
-    setFollowingSuggestedRoute(false)
-    if (mapRef.current && currentLocation) {
-      mapRef.current.animateToRegion(
-        {
-          ...currentLocation,
-          latitudeDelta: 0.005,
-          longitudeDelta: 0.005,
-        },
-        1000,
-      )
-    }
-  }
-
-  const handleButtonPressIn = (scaleAnim) => {
-    Animated.spring(scaleAnim, {
-      toValue: 0.95,
-      useNativeDriver: true,
-    }).start()
-  }
-
-  const handleButtonPressOut = (scaleAnim) => {
-    Animated.spring(scaleAnim, {
-      toValue: 1,
-      friction: 5,
-      useNativeDriver: true,
-    }).start()
-  }
-
   const startIconPulseAnimation = () => {
     Animated.loop(
       Animated.sequence([
@@ -493,10 +462,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     fadeAnim.setValue(1)
   }
 
-  const animateTrackingTransition = (isStarting) => {
-    // No slide animations
-  }
-
   const animateSaveDiscardIn = () => {
     saveDiscardFadeAnim.setValue(0)
     saveDiscardSlideAnim.setValue(0)
@@ -547,12 +512,8 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
   useEffect(() => {
     if (tracking) {
       startIconPulseAnimation()
-      animateTrackingTransition(true)
     } else if (!isTrackingLoading) {
       startIconMoveAnimation()
-      if (coordinates.length > 0) {
-        animateTrackingTransition(false)
-      }
     }
 
     if (isTrackingLoading) {
@@ -583,47 +544,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     }
   }, [tracking, isPaused, coordinates.length])
 
-  const spin = spinAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ["0deg", "360deg"],
-  })
-
-  const returnToActivity = (finalStats = null, options = {}) => {
-    const safeFinalStats = finalStats || stats
-    navigateToActivity({
-      activityType,
-      coordinates: [],
-      stats: safeFinalStats,
-      isViewingPastActivity: true,
-      alreadySaved: options.alreadySaved === true,
-      ...(selectedQuest && {
-        questId: selectedQuest.id,
-        title: selectedQuest.title,
-        description: selectedQuest.description,
-        goal: selectedQuest.goal,
-        unit: selectedQuest.unit,
-        progress: selectedQuest.progress,
-        status: selectedQuest.status,
-        xpReward: selectedQuest.xpReward,
-        difficulty: selectedQuest.difficulty,
-        category: selectedQuest.category,
-      }),
-    })
-  }
-
-  const centerMap = () => {
-    if (mapRef.current && currentLocation) {
-      mapRef.current.animateToRegion(
-        {
-          ...currentLocation,
-          latitudeDelta: 0.005,
-          longitudeDelta: 0.005,
-        },
-        1000,
-      )
-    }
-  }
-
   const showModal = (title, message, options = {}, type = "info", icon = null, buttons = []) => {
     if (options === null || options === undefined) {
       options = {}
@@ -643,21 +563,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
       buttons: modalButtons,
     })
     setModalVisible(true)
-  }
-
-  const calculateMetrics = (distance, duration) => {
-    const numDistance = ensureNumeric(distance)
-    const numDuration = ensureNumeric(duration)
-
-    if (numDistance < 5 || numDuration < 5) {
-      return { pace: 0, avgSpeed: 0 }
-    }
-
-    const rawPace = calculatePace(numDistance, numDuration)
-    const smoothedPaceValue = calculateMovingAveragePace(rawPace)
-    setSmoothedPace(smoothedPaceValue)
-    const avgSpeed = numDistance / 1000 / (numDuration / 3600)
-    return { pace: smoothedPaceValue, rawPace, avgSpeed }
   }
 
   const backAction = () => {
@@ -723,7 +628,10 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         }
 
         await startLocationUpdates()
-        await startTracking()
+        // Only auto-start tracking if indicated by initial props, otherwise wait
+        if (initialTracking) {
+          await startTracking()
+        }
       } catch (err) {
         console.error("Initialization error:", err)
         setError("Failed to initialize. Please check your location settings.")
@@ -756,7 +664,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
           await locationWatchRef.current.remove?.()
         } catch { }
         locationWatchRef.current = null
-        console.log("MapScreen: Existing location watch removed before starting new one")
       }
 
       const location = await Location.getCurrentPositionAsync({
@@ -776,6 +683,8 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         mapRef.current.animateToRegion(newRegion, 1000)
       }
 
+      // Keep updating location on map even when not tracking (for the blue dot)
+      // Note: This watcher is replaced when startTracking is called
       const subscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.BestForNavigation,
@@ -783,20 +692,13 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
           timeInterval: 1000,
         },
         (loc) => {
-          const { latitude, longitude, accuracy, speed } = loc.coords
-
-          if (accuracy > 50) setGpsSignal("Poor")
-          else if (accuracy > 30) setGpsSignal("Fair")
-          else if (accuracy > 15) setGpsSignal("Good")
-          else setGpsSignal("Excellent")
-
+          const { latitude, longitude, accuracy } = loc.coords
           const region = {
             latitude,
             longitude,
             latitudeDelta: 0.005,
             longitudeDelta: 0.005,
           }
-
           setCurrentLocation(region)
         },
       )
@@ -879,8 +781,9 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     }
   }
 
+  // --- ENHANCED TRACKING LOGIC ---
   const startTracking = async () => {
-    console.log("MapScreen: Starting tracking")
+    console.log("MapScreen: Starting tracking with Speed-Based Pace")
     setIsTrackingLoading(true)
 
     if (!sessionStartRef.current) {
@@ -895,12 +798,12 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         return
       }
 
+      // Kill any existing watchers
       if (locationWatchRef.current) {
         try {
           await locationWatchRef.current.remove?.()
         } catch { }
         locationWatchRef.current = null
-        console.log("MapScreen: Existing location watch removed before tracking")
       }
 
       let initialLocation
@@ -911,6 +814,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
             longitude: currentLocation.longitude,
             accuracy: 10,
             altitude: 0,
+            speed: 0, // Ensure speed exists
           },
           timestamp: Date.now(),
         }
@@ -923,13 +827,36 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         }
       }
 
+      // Initialize Kalman Filter
+      const initialLat = initialLocation.coords.latitude;
+      const initialLng = initialLocation.coords.longitude;
+
+      latKalmanRef.current = new KalmanFilter(3, 10);
+      lngKalmanRef.current = new KalmanFilter(3, 10);
+      latKalmanRef.current.filter(initialLat, initialLocation.coords.accuracy);
+      lngKalmanRef.current.filter(initialLng, initialLocation.coords.accuracy);
+
       const initialCoord = {
-        latitude: initialLocation.coords.latitude,
-        longitude: initialLocation.coords.longitude,
+        latitude: initialLat,
+        longitude: initialLng,
         timestamp: initialLocation.timestamp,
         accuracy: initialLocation.coords.accuracy,
         speed: 0,
         altitude: initialLocation.coords.altitude || 0,
+      }
+
+      // Initialize animation
+      if (Platform.OS === 'android') {
+        if (markerRef.current) {
+          markerRef.current.animateMarkerToCoordinate(initialCoord, 0);
+        }
+      } else {
+        animatedCoordinate.setValue({
+          latitude: initialLat,
+          longitude: initialLng,
+          latitudeDelta: 0.005,
+          longitudeDelta: 0.005
+        })
       }
 
       if (coordinates.length === 0 || !isPaused) {
@@ -951,45 +878,41 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
           reps: 0,
           elevationGain: 0,
         })
-        console.log("MapScreen: Starting new tracking session with reset stats")
       } else {
         lastCoordinateRef.current = coordinates[coordinates.length - 1] || initialCoord
         startTimeRef.current = new Date(Date.now() - stats.duration * 1000)
-        console.log("MapScreen: Resuming tracking session")
       }
 
       setTracking(true)
       setIsPaused(false)
       setFollowingSuggestedRoute(followingSuggestedRoute)
-      console.log("MapScreen: Initial coordinate set:", initialCoord)
-      console.log(`MapScreen: Pace window size: ${paceWindowSizeRef.current} for ${activityType}`)
 
       if (intervalRef.current) clearInterval(intervalRef.current)
 
+      // 1. STATS TIMER (Duration Only)
+      // Removed the pace calculation from here because it caused the "100+ /km" bug
       intervalRef.current = setInterval(() => {
         setStats((prev) => {
           const duration = Math.max(0, Math.floor((Date.now() - startTimeRef.current.getTime()) / 1000))
+          // Only calculate Average Speed based on total distance/time
           const distanceKm = (prev.distance || 0) / 1000
           const avgSpeed = distanceKm > 0 && duration > 0 ? distanceKm / (duration / 3600) : 0
-          const rawPace = distanceKm > 0 ? duration / 60 / distanceKm : 0
-          const smoothed = calculateMovingAveragePace(rawPace || 0)
-          setSmoothedPace(smoothed)
-          return { ...prev, duration, avgSpeed, rawPace, pace: smoothed }
+
+          return { ...prev, duration, avgSpeed }
         })
       }, 1000)
 
+      // 2. LOCATION WATCHER (Distance & Pace)
       const subscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.BestForNavigation,
-          distanceInterval: 5,
+          distanceInterval: 2,
           timeInterval: 1000,
         },
         (loc) => {
-          // --- FIX: Removed "if (isPaused) return" to prevent stale closure bug ---
-
           const { latitude, longitude, accuracy, speed = 0, altitude = 0 } = loc.coords
 
-          if (accuracy > 50 || speed > maxSpeed) {
+          if (accuracy > 50) {
             lowAccuracyCountRef.current += 1
             if (lowAccuracyCountRef.current >= 5) setGpsSignal("Poor")
             return
@@ -1001,15 +924,34 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
           else if (accuracy <= 50) setGpsSignal("Fair")
           else setGpsSignal("Poor")
 
+          // Kalman Filter
+          const filteredLat = latKalmanRef.current.filter(latitude, accuracy);
+          const filteredLng = lngKalmanRef.current.filter(longitude, accuracy);
+
           const smoothedCoordinate = {
-            latitude: Number.parseFloat(latitude.toFixed(6)),
-            longitude: Number.parseFloat(longitude.toFixed(6)),
+            latitude: filteredLat,
+            longitude: filteredLng,
             timestamp: Date.now(),
-            accuracy: Number.parseFloat(accuracy.toFixed(1)),
-            speed: Number.parseFloat(speed.toFixed(2)),
-            altitude: Number.parseFloat(altitude.toFixed(1)),
+            accuracy: accuracy,
+            speed: parseFloat(speed.toFixed(2)),
+            altitude: parseFloat(altitude.toFixed(1)),
           }
 
+          // Animate Marker
+          if (Platform.OS === 'android') {
+            if (markerRef.current) {
+              markerRef.current.animateMarkerToCoordinate(smoothedCoordinate, 1000);
+            }
+          } else {
+            animatedCoordinate.timing({
+              latitude: filteredLat,
+              longitude: filteredLng,
+              duration: 1000,
+              useNativeDriver: false,
+            }).start();
+          }
+
+          // Calculate Distance & Pace
           const lastCoord = lastCoordinateRef.current
           if (lastCoord) {
             const nowMs = smoothedCoordinate.timestamp
@@ -1023,9 +965,25 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
               smoothedCoordinate.longitude,
             )
 
+            // Only add distance if it exceeds threshold (reduces jitter)
             const distanceIncrement = dHav >= distanceThreshold ? dHav : 0
 
-            // --- ELEVATION CALCULATION START ---
+            // --- PACE CALCULATION FIX ---
+            // Use GPS Speed (m/s) to calculate Instant Pace instead of Time/Dist
+            let instantPace = 0;
+
+            // Speed Threshold: Ignore pace if moving slower than 0.8 m/s (approx 3 km/h)
+            // This prevents "100+ min/km" when standing still.
+            if (speed > 0.8) {
+              // Convert m/s to min/km:  (1000 / speed) / 60  =>  16.6667 / speed
+              instantPace = 16.6667 / speed;
+            }
+
+            // Smooth the instantaneous pace so it doesn't jump wildly
+            const smoothedPaceVal = calculateMovingAveragePace(instantPace);
+            setSmoothedPace(smoothedPaceVal);
+
+            // Elevation
             let elevationGainIncrement = 0;
             const currentAltitude = smoothedCoordinate.altitude || 0;
             const lastAltitude = lastCoord.altitude || 0;
@@ -1036,29 +994,30 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
                 elevationGainIncrement = altDiff;
               }
             }
-            // --- ELEVATION CALCULATION END ---
 
             setStats((prevStats) => {
               const newDistance = (prevStats.distance || 0) + distanceIncrement
-              const duration = prevStats.duration || 0
-              const distanceKm = newDistance / 1000
-              const avgSpeed = duration > 0 && distanceKm > 0 ? distanceKm / (duration / 3600) : prevStats.avgSpeed || 0
-              const rawPace = distanceKm > 0 ? duration / 60 / distanceKm : 0
-              const smoothed = calculateMovingAveragePace(rawPace || 0)
-              setSmoothedPace(smoothed)
 
               return {
                 ...prevStats,
                 distance: newDistance,
-                avgSpeed,
-                rawPace,
-                pace: smoothed,
+                pace: smoothedPaceVal, // Update UI with smoothed INSTANT pace
                 elevationGain: (prevStats.elevationGain || 0) + elevationGainIncrement,
               }
             })
           }
+
           setCoordinates((prev) => [...prev, smoothedCoordinate])
           lastCoordinateRef.current = smoothedCoordinate
+
+          if (mapRef.current && tracking) {
+            mapRef.current.animateToRegion({
+              latitude: filteredLat,
+              longitude: filteredLng,
+              latitudeDelta: 0.005,
+              longitudeDelta: 0.005
+            }, 1000);
+          }
         },
       )
 
@@ -1072,37 +1031,10 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     }
   }
 
-  const smoothCoordinate = (previousCoordinates, newCoordinate) => {
-    if (previousCoordinates.length < 2) return newCoordinate
-
-    let totalWeight = 0
-    let weightedLat = 0
-    let weightedLng = 0
-
-    previousCoordinates.forEach((coord, index) => {
-      const weight = (index + 1) / (coord.accuracy || 20)
-      totalWeight += weight
-      weightedLat += coord.latitude * weight
-      weightedLng += coord.longitude * weight
-    })
-
-    const currentWeight = previousCoordinates.length / (newCoordinate.accuracy || 20)
-    totalWeight += currentWeight
-    weightedLat += newCoordinate.latitude * currentWeight
-    weightedLng += newCoordinate.longitude * currentWeight
-
-    return {
-      ...newCoordinate,
-      latitude: weightedLat / totalWeight,
-      longitude: weightedLng / totalWeight,
-    }
-  }
-
   const togglePause = () => {
     if (tracking) {
       stopTracking()
       setIsPaused(true)
-      console.log("MapScreen: Activity Paused")
       showModal(
         "Activity Paused",
         "Your activity has been paused. Tap 'Resume' to continue.",
@@ -1112,7 +1044,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
       )
     } else if (isPaused) {
       startTracking()
-      console.log("MapScreen: Activity Resumed")
     }
   }
 
@@ -1135,6 +1066,9 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
       setIsPaused(false)
       setFollowingSuggestedRoute(false)
       Vibration.vibrate(200)
+
+      // Stop marker animation if needed, or simply let it rest
+      // Return to standard location updates
       await startLocationUpdates()
     } catch (err) {
       console.error("MapScreen: Stop tracking error:", err)
@@ -1155,7 +1089,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         {
           label: "Yes, Discard",
           action: () => {
-            console.log("MapScreen: Discarding activity and resetting session progress")
             setCoordinates([])
             setStats({ distance: 0, duration: 0, pace: 0, avgSpeed: 0, steps: 0, reps: 0, elevationGain: 0 })
             setIsPaused(false)
@@ -1194,24 +1127,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     )
   }
 
-  const stopTrackingCleanly = async () => {
-    try {
-      if (locationWatchRef.current) {
-        try {
-          await locationWatchRef.current.remove?.()
-        } catch { }
-        locationWatchRef.current = null
-      }
-
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
-        intervalRef.current = null
-      }
-    } catch { }
-    lastCoordinateRef.current = null
-    lastUpdateTimeRef.current = null
-  }
-
   const resetTrackingState = () => {
     setTracking(false)
     setIsPaused(false)
@@ -1245,9 +1160,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         return;
       }
 
-      // --- FIX START: Calculate Calories Logic ---
       const calculateCalories = (type, durationInSeconds) => {
-        // Approximate MET values for different activities
         const metValues = {
           walking: 3.5,
           running: 9.8,
@@ -1256,18 +1169,13 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         };
 
         const met = metValues[type] || 3.5;
-        const weightKg = 70; // Standard average weight (or fetch from user profile if available)
+        const weightKg = 70;
         const durationHours = durationInSeconds / 3600;
-
-        // Formula: MET * weight * hours
         const calculated = Math.round(met * weightKg * durationHours);
         return calculated > 0 ? calculated : 0;
       };
 
-      // Calculate based on the duration currently in stats
       const calculatedCalories = calculateCalories(activityType, ensureNumeric(stats.duration));
-      // --- FIX END ---
-
       const coords = Array.isArray(coordinates) ? coordinates : [];
 
       const activityData = {
@@ -1281,10 +1189,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         elevationGain: ensureNumeric(stats.elevationGain),
         elevationLoss: ensureNumeric(stats.elevationLoss),
         steps: ensureNumeric(stats.steps),
-
-        // Use the calculated value here instead of stats.calories (which was 0)
         calories: calculatedCalories,
-
         coordinates: coords,
         createdAt: serverTimestamp(),
         startLocation: coords.length
@@ -1324,7 +1229,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
           distance: ensureNumeric(stats.distance),
           duration: ensureNumeric(stats.duration),
           steps: ensureNumeric(stats.steps),
-          // Ensure XP Manager also sees the calculated calories
           calories: calculatedCalories,
         },
         activityParams,
@@ -1353,7 +1257,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         `• ${formatDuration(stats.duration)} duration\n` +
         `• ${formatSpeedKmh(stats.avgSpeed)} avg speed\n` +
         `• ${stats.elevationGain?.toFixed(0) || 0}m elevation gain\n` +
-        // Show the calculated calories in the message
         `• ${calculatedCalories} calories burned` +
         (xpResult?.xpEarned
           ? `\n• ${xpResult.xpEarned} XP earned${xpResult.bonusXP ? ` (+${xpResult.bonusXP} bonus)` : ""}`
@@ -1399,49 +1302,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     }
   };
 
-
-  const isActivityIdle = !tracking && !isPaused && coordinates.length === 0
-  const isActivityTracking = tracking
-  const isActivityPaused = !tracking && isPaused
-  const isActivityEnded = !tracking && !isPaused && coordinates.length > 0
-
-  const onHoldGestureEvent = Animated.event(
-    [{ nativeEvent: { absoluteX: holdProgressAnim } }],
-    { useNativeDriver: false },
-  )
-
-  const onHoldHandlerStateChange = ({ nativeEvent }) => {
-    if (nativeEvent.state === State.BEGAN) {
-      console.log("Hold started")
-      Vibration.vibrate(50)
-      holdTimerRef.current = setTimeout(() => {
-        console.log("Hold successful, ending activity")
-        Vibration.vibrate(200)
-        stopTracking()
-      }, HOLD_DURATION)
-      Animated.timing(holdProgressAnim, {
-        toValue: 1,
-        duration: HOLD_DURATION,
-        easing: Easing.linear,
-        useNativeDriver: false,
-      }).start()
-    } else if (
-      nativeEvent.state === State.END ||
-      nativeEvent.state === State.CANCELLED ||
-      nativeEvent.state === State.FAILED
-    ) {
-      console.log("Hold ended or cancelled")
-      Vibration.vibrate(50)
-      clearTimeout(holdTimerRef.current)
-      Animated.timing(holdProgressAnim, {
-        toValue: 0,
-        duration: 200,
-        easing: Easing.linear,
-        useNativeDriver: false,
-      }).start()
-    }
-  }
-
   const openMapStylePicker = () => {
     setShowMapStylePicker(true)
   }
@@ -1466,6 +1326,11 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
       useNativeDriver: false,
     }).start()
   }
+
+  const isActivityIdle = !tracking && !isPaused && coordinates.length === 0
+  const isActivityTracking = tracking
+  const isActivityPaused = !tracking && isPaused
+  const isActivityEnded = !tracking && !isPaused && coordinates.length > 0
 
   return (
     <View style={twrnc`flex-1 bg-black`}>
@@ -1505,7 +1370,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         style={twrnc`absolute inset-0`}
         provider={PROVIDER_GOOGLE}
         initialRegion={currentLocation}
-        showsUserLocation={true}
+        showsUserLocation={false} // Disable default location dot, we are drawing our own animated one
         showsMyLocationButton={false}
         loadingEnabled={true}
         moveOnMarkerPress={false}
@@ -1513,12 +1378,13 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         mapType={currentMapStyle.mapType}
         customMapStyle={currentMapStyle.style}
       >
-        {!tracking && currentLocation && (
-          <Marker
-            coordinate={{
-              latitude: currentLocation.latitude,
-              longitude: currentLocation.longitude,
-            }}
+
+        {/* Render Animated Marker for Tracking */}
+        {(!tracking && currentLocation) || (tracking) ? (
+          <Marker.Animated
+            ref={markerRef}
+            coordinate={tracking ? animatedCoordinate : currentLocation}
+            anchor={{ x: 0.5, y: 0.5 }}
           >
             <View style={twrnc`items-center`}>
               <View
@@ -1533,8 +1399,8 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
                 style={twrnc`w-0 h-0 border-l-8 border-r-8 border-t-8 border-l-transparent border-r-transparent border-t-white -mt-0.5`}
               />
             </View>
-          </Marker>
-        )}
+          </Marker.Animated>
+        ) : null}
 
         {showSuggestedRoute && suggestedRoute && (
           <>
@@ -1767,9 +1633,8 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
               borderTopRightRadius: 28,
               borderTopWidth: 1,
               borderColor: 'rgba(255,255,255,0.08)',
-              // Use padding instead of fixed height to remove dead space
               paddingBottom: Platform.OS === 'ios' ? 34 : 24,
-              elevation: 20, // Android shadow
+              elevation: 20,
             },
           ]}
         >

@@ -14,6 +14,7 @@ import {
   Animated,
   Dimensions,
   Easing,
+  Linking, // ✅ ADDED: Required to open the email app
 } from "react-native"
 import twrnc from "twrnc"
 import CustomText from "../components/CustomText"
@@ -54,6 +55,10 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
   const [showEditProfileModal, setShowEditProfileModal] = useState(false)
   const [showHelpSupportModal, setShowHelpSupportModal] = useState(false)
   const [showPrivacySettingsModal, setShowPrivacySettingsModal] = useState(false)
+
+  const [showPrivacyPolicyModal, setShowPrivacyPolicyModal] = useState(false)
+
+  const [expandedFaqId, setExpandedFaqId] = useState(null);
 
   // CustomModal states
   const [modalVisible, setModalVisible] = useState(false)
@@ -283,21 +288,14 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
   // Fetch badges from userbadges
   const fetchBadges = async (userId) => {
     try {
-      // CHANGE THIS LINE - add underscore
-      const userBadgesRef = doc(db, "user_badges", userId) 
+      const userBadgesRef = doc(db, "user_badges", userId)
       const snapshot = await getDoc(userBadgesRef)
-
-      console.log("Fetching badges for user:", userId)
-      console.log("Badge document exists:", snapshot.exists())
 
       if (snapshot.exists()) {
         const data = snapshot.data()
-        console.log("Badge data:", data)
         const badgeList = data.badges || []
-        console.log("Badge list:", badgeList)
         setBadges(badgeList)
       } else {
-        console.log("No badge document found for user")
         setBadges([])
       }
     } catch (error) {
@@ -305,7 +303,6 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
       setBadges([])
     }
   }
-
 
   const openDrawer = () => {
     setIsDrawerOpen(true)
@@ -391,7 +388,6 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
         type: "success",
       })
 
-      // Update AsyncStorage
       try {
         const cachedUserData = await AsyncStorage.getItem("userData")
         if (cachedUserData) {
@@ -490,7 +486,6 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
         type: "success",
       })
 
-      // Update AsyncStorage
       try {
         const cachedUserData = await AsyncStorage.getItem("userData")
         if (cachedUserData) {
@@ -524,7 +519,6 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
         privacySettings: userData.privacySettings,
       })
 
-      // Update AsyncStorage
       try {
         const cachedUserData = await AsyncStorage.getItem("userData")
         if (cachedUserData) {
@@ -564,6 +558,7 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
     }))
   }
 
+  // ✅ UPDATED: Contact Support function with Linking
   const contactSupport = () => {
     showModal({
       title: "Contact Support",
@@ -579,47 +574,68 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
           label: "Email",
           style: "primary",
           action: () => {
-            showModal({
-              title: "Email Support",
-              message: "Please email us at support@hakbangquest.com",
-              type: "info",
-            })
-            return true
-          },
-        },
-        {
-          label: "FAQ",
-          style: "primary",
-          action: () => {
-            setShowHelpSupportModal(true)
-            return true
+            const email = "hakbang.quest.g7@gmail.com";
+            const subject = "Help Needed - HakbangQuest";
+            const body = `Hello Support Team,\n\nI am contacting you regarding...`;
+
+            // Construct mailto link
+            const url = `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+
+            Linking.openURL(url).catch(err => {
+              console.error("Could not open mail app", err);
+              // Fallback if mail app fails to open
+              showModal({
+                title: "Email Support",
+                message: `Please manually email us at ${email}`,
+                type: "info",
+              });
+            });
+
+            return true;
           },
         },
       ],
     })
   }
 
-  const openFAQ = (faqItem) => {
-    showModal({
-      title: faqItem.question,
-      message: faqItem.answer,
-      type: "info",
-      buttons: [
-        {
-          label: "OK",
-          style: "primary",
-          action: () => true,
-        },
-        {
-          label: "More Help",
-          style: "secondary",
-          action: () => {
-            contactSupport()
-            return true
-          },
-        },
-      ],
-    })
+  // ✅ 1. Handle Opening Privacy Policy
+  const handleOpenPrivacyPolicy = () => {
+    setShowPrivacyPolicyModal(true);
+  };
+
+  // ✅ 2. Handle Requesting Data (GDPR/Compliance)
+  const handleRequestData = () => {
+    const supportEmail = "hakbang.quest.g7@gmail.com";
+    const subject = `Data Export Request - ${userData.username}`;
+    const body = `Hello Support Team,
+
+I would like to request a copy of all personal data associated with my account.
+
+User Details:
+- Username: ${userData.username}
+- User ID: ${auth.currentUser?.uid || "N/A"}
+- Email: ${userData.email}
+
+Please let me know the next steps.
+
+Thank you.`;
+
+    // Create the mailto link
+    const url = `mailto:${supportEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+
+    Linking.openURL(url).catch((err) => {
+      console.error("Could not open mail app", err);
+      // Fallback if no mail app is installed
+      showModal({
+        title: "Request Data",
+        message: `Please email us directly at ${supportEmail} to request your data copy.`,
+        type: "info",
+      });
+    });
+  };
+
+  const toggleFaq = (id) => {
+    setExpandedFaqId(expandedFaqId === id ? null : id);
   }
 
   const fetchUserData = async () => {
@@ -634,7 +650,6 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
       return
     }
 
-    // Try to fetch from AsyncStorage first
     try {
       const cachedUserData = await AsyncStorage.getItem("userData")
       if (cachedUserData) {
@@ -653,13 +668,11 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
       console.warn("Error accessing AsyncStorage:", cacheErr)
     }
 
-    // Fetch from Firestore
     try {
       const userDoc = await getDoc(doc(db, "users", user.uid))
       if (userDoc.exists()) {
         fetchedUserData = userDoc.data()
       } else {
-        // Create initial user document
         fetchedUserData = {
           username: "User",
           email: user.email,
@@ -697,7 +710,6 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
     }
 
     if (fetchedUserData) {
-      // Format timestamps
       const formatTimestampHelper = (timestamp) => {
         if (!timestamp) return null
         const date = timestamp?.toDate ? timestamp.toDate() : timestamp instanceof Date ? timestamp : null
@@ -716,7 +728,6 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
       }))
       setEditUsername(fetchedUserData.username || "User")
 
-      // Cache the data
       try {
         await AsyncStorage.setItem("userData", JSON.stringify(fetchedUserData))
       } catch (cacheErr) {
@@ -742,7 +753,6 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
     try {
       await AsyncStorage.setItem("isLoggingOut", "true")
 
-      // Clear user data
       setUserData({
         username: "User",
         email: "user@example.com",
@@ -885,7 +895,6 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
 
             {/* Profile Card */}
             <View style={twrnc`flex-row items-center`}>
-              {/* Avatar with Edit Button */}
               <View style={twrnc`relative mr-4`}>
                 {uploading ? (
                   <View style={twrnc`w-20 h-20 rounded-full bg-[#0f172a] items-center justify-center border-2 border-[#4361EE]`}>
@@ -909,14 +918,12 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
                 )}
               </View>
 
-              {/* User Info */}
               <View style={twrnc`flex-1`}>
                 <CustomText weight="bold" style={twrnc`text-white text-lg mb-1`}>
                   {userData.username}
                 </CustomText>
                 <CustomText style={twrnc`text-gray-400 text-xs mb-2`}>{userData.email}</CustomText>
 
-                {/* Level and XP Badges */}
                 <View style={twrnc`flex-row items-center flex-wrap`}>
                   <View style={twrnc`bg-[#4361EE] rounded-full px-2.5 py-1 mr-2 mb-1`}>
                     <View style={twrnc`flex-row items-center`}>
@@ -972,7 +979,6 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
               </View>
 
               <View style={twrnc`flex-row flex-wrap -mx-1`}>
-                {/* Distance */}
                 <View style={twrnc`w-1/3 px-1 mb-3`}>
                   <View style={twrnc`bg-[#0f172a] rounded-xl p-3 items-center`}>
                     <View style={twrnc`bg-[#4361EE] bg-opacity-20 rounded-full p-2 mb-2`}>
@@ -985,7 +991,6 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
                   </View>
                 </View>
 
-                {/* Activities */}
                 <View style={twrnc`w-1/3 px-1 mb-3`}>
                   <View style={twrnc`bg-[#0f172a] rounded-xl p-3 items-center`}>
                     <View style={twrnc`bg-[#06D6A0] bg-opacity-20 rounded-full p-2 mb-2`}>
@@ -998,7 +1003,6 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
                   </View>
                 </View>
 
-                {/* Time */}
                 <View style={twrnc`w-1/3 px-1 mb-3`}>
                   <View style={twrnc`bg-[#0f172a] rounded-xl p-3 items-center`}>
                     <View style={twrnc`bg-[#FFC107] bg-opacity-20 rounded-full p-2 mb-2`}>
@@ -1011,7 +1015,6 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
                   </View>
                 </View>
 
-                {/* Reps */}
                 <View style={twrnc`w-1/3 px-1`}>
                   <View style={twrnc`bg-[#0f172a] rounded-xl p-3 items-center`}>
                     <View style={twrnc`bg-[#FF6B6B] bg-opacity-20 rounded-full p-2 mb-2`}>
@@ -1024,7 +1027,6 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
                   </View>
                 </View>
 
-                {/* Friends */}
                 <View style={twrnc`w-1/3 px-1`}>
                   <View style={twrnc`bg-[#0f172a] rounded-xl p-3 items-center`}>
                     <View style={twrnc`bg-[#9C27B0] bg-opacity-20 rounded-full p-2 mb-2`}>
@@ -1037,10 +1039,8 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
                   </View>
                 </View>
 
-                {/* Placeholder for balance */}
                 <View style={twrnc`w-1/3 px-1`}>
                   <View style={twrnc`bg-[#0f172a] bg-opacity-0 rounded-xl p-3 items-center`}>
-                    {/* Empty for grid balance */}
                   </View>
                 </View>
               </View>
@@ -1293,79 +1293,62 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
       </Modal>
 
       {/* Help & Support Modal */}
+      {/* HELP MODAL with ACCORDION & DIRECT EMAIL */}
       <Modal animationType="slide" transparent={true} visible={showHelpSupportModal} onRequestClose={() => setShowHelpSupportModal(false)}>
         <View style={twrnc`flex-1 bg-black/50 justify-end`}>
           <View style={twrnc`bg-[#1e293b] rounded-t-3xl p-5 h-4/5`}>
-            {/* Header */}
             <View style={twrnc`flex-row justify-between items-center mb-5`}>
-              <View style={twrnc`flex-row items-center`}>
-                <View style={twrnc`w-1 h-5 bg-[#FF6B35] rounded-full mr-2.5`} />
-                <CustomText weight="bold" style={twrnc`text-white text-lg`}>
-                  Help & Support
-                </CustomText>
-              </View>
-              <TouchableOpacity style={twrnc`bg-[#0f172a] p-2 rounded-xl`} onPress={() => setShowHelpSupportModal(false)}>
-                <Ionicons name="close" size={20} color="#FFFFFF" />
-              </TouchableOpacity>
+              <CustomText weight="bold" style={twrnc`text-white text-lg`}>Help & Support</CustomText>
+              <TouchableOpacity style={twrnc`bg-[#0f172a] p-2 rounded-xl`} onPress={() => setShowHelpSupportModal(false)}><Ionicons name="close" size={20} color="#FFFFFF" /></TouchableOpacity>
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false}>
-              {/* FAQs */}
-              <CustomText weight="bold" style={twrnc`text-white text-sm mb-3`}>
-                Frequently Asked Questions
-              </CustomText>
+              <CustomText weight="bold" style={twrnc`text-white text-sm mb-3`}>Frequently Asked Questions</CustomText>
 
-              {faqItems.map((item) => (
-                <TouchableOpacity
-                  key={item.id}
-                  style={twrnc`bg-[#0f172a] rounded-xl p-4 mb-3`}
-                  onPress={() => openFAQ(item)}
-                  activeOpacity={0.7}
-                >
-                  <View style={twrnc`flex-row items-center justify-between`}>
-                    <View style={twrnc`flex-1 mr-3`}>
-                      <CustomText weight="medium" style={twrnc`text-white text-xs`}>
-                        {item.question}
-                      </CustomText>
+              {/* ✅ FIXED: FAQ Accordion */}
+              {faqItems.map((item) => {
+                const isExpanded = expandedFaqId === item.id;
+                return (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={twrnc`bg-[#0f172a] rounded-xl p-4 mb-3`}
+                    onPress={() => toggleFaq(item.id)}
+                    activeOpacity={0.8}
+                  >
+                    <View style={twrnc`flex-row items-center justify-between`}>
+                      <View style={twrnc`flex-1 mr-3`}>
+                        <CustomText weight="medium" style={twrnc`text-white text-xs`}>{item.question}</CustomText>
+                      </View>
+                      <Ionicons name={isExpanded ? "chevron-down" : "chevron-forward"} size={18} color="#6B7280" />
                     </View>
-                    <Ionicons name="chevron-forward" size={18} color="#6B7280" />
-                  </View>
-                </TouchableOpacity>
-              ))}
 
-              {/* Contact Support */}
-              <CustomText weight="bold" style={twrnc`text-white text-sm mb-2 mt-4`}>
-                Contact Support
-              </CustomText>
-              <CustomText style={twrnc`text-gray-400 text-xs mb-3`}>
-                Need help with something specific? Our support team is here to help.
-              </CustomText>
+                    {/* Expanded Content */}
+                    {isExpanded && (
+                      <View style={twrnc`mt-3 pt-3 border-t border-gray-700`}>
+                        <CustomText style={twrnc`text-gray-400 text-xs leading-5`}>{item.answer}</CustomText>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+
+              <CustomText weight="bold" style={twrnc`text-white text-sm mb-2 mt-4`}>Contact Support</CustomText>
+              <CustomText style={twrnc`text-gray-400 text-xs mb-3`}>Need help? Our support team is here.</CustomText>
+
+              {/* ✅ FIXED: Direct Email Button */}
               <TouchableOpacity
                 style={twrnc`bg-[#FF6B35] rounded-xl py-3 items-center`}
-                onPress={contactSupport}
+                onPress={contactSupport} // Calls the fixed function directly
                 activeOpacity={0.8}
               >
                 <View style={twrnc`flex-row items-center`}>
                   <Ionicons name="mail-outline" size={16} color="white" style={twrnc`mr-2`} />
-                  <CustomText weight="bold" style={twrnc`text-white text-sm`}>
-                    Contact Support
-                  </CustomText>
+                  <CustomText weight="bold" style={twrnc`text-white text-sm`}>Email Support</CustomText>
                 </View>
               </TouchableOpacity>
 
-              {/* App Info */}
               <View style={twrnc`mt-6 bg-[#0f172a] rounded-xl p-4`}>
-                <CustomText weight="bold" style={twrnc`text-white text-sm mb-3`}>
-                  App Information
-                </CustomText>
-                <View style={twrnc`flex-row justify-between mb-2`}>
-                  <CustomText style={twrnc`text-gray-400 text-xs`}>Version</CustomText>
-                  <CustomText style={twrnc`text-white text-xs`}>1.0.0</CustomText>
-                </View>
-                <View style={twrnc`flex-row justify-between`}>
-                  <CustomText style={twrnc`text-gray-400 text-xs`}>Build</CustomText>
-                  <CustomText style={twrnc`text-white text-xs`}>December 2025</CustomText>
-                </View>
+                <View style={twrnc`flex-row justify-between`}><CustomText style={twrnc`text-gray-400 text-xs`}>Version</CustomText><CustomText style={twrnc`text-white text-xs`}>1.0.0</CustomText></View>
               </View>
             </ScrollView>
           </View>
@@ -1467,13 +1450,7 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
 
                 <TouchableOpacity
                   style={twrnc`border border-[#9C27B0] rounded-xl py-2.5 items-center mb-2`}
-                  onPress={() =>
-                    showModal({
-                      title: "Privacy Policy",
-                      message: "The privacy policy will open in your browser.",
-                      type: "info",
-                    })
-                  }
+                  onPress={() => setShowPrivacyPolicyModal(true)}
                   activeOpacity={0.8}
                 >
                   <CustomText style={twrnc`text-[#9C27B0] text-xs`}>View Privacy Policy</CustomText>
@@ -1481,19 +1458,92 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
 
                 <TouchableOpacity
                   style={twrnc`border border-[#9C27B0] rounded-xl py-2.5 items-center`}
-                  onPress={() =>
-                    showModal({
-                      title: "Data Request",
-                      message: "You can request a copy of your data by contacting support.",
-                      type: "info",
-                    })
-                  }
+                  onPress={handleRequestData}
                   activeOpacity={0.8}
                 >
                   <CustomText style={twrnc`text-[#9C27B0] text-xs`}>Request My Data</CustomText>
                 </TouchableOpacity>
               </View>
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ✅ NEW: INLINE PRIVACY POLICY MODAL */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={showPrivacyPolicyModal}
+        onRequestClose={() => setShowPrivacyPolicyModal(false)}
+      >
+        <View style={twrnc`flex-1 bg-black/50 justify-end`}>
+          <View style={twrnc`bg-[#1e293b] rounded-t-3xl p-5 h-5/6`}>
+            {/* Header */}
+            <View style={twrnc`flex-row justify-between items-center mb-5`}>
+              <View style={twrnc`flex-row items-center`}>
+                <View style={twrnc`w-1 h-5 bg-[#9C27B0] rounded-full mr-2.5`} />
+                <CustomText weight="bold" style={twrnc`text-white text-lg`}>
+                  Privacy Policy
+                </CustomText>
+              </View>
+              <TouchableOpacity
+                style={twrnc`bg-[#0f172a] p-2 rounded-xl`}
+                onPress={() => setShowPrivacyPolicyModal(false)}
+              >
+                <Ionicons name="close" size={20} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Scrollable Policy Content */}
+            <ScrollView showsVerticalScrollIndicator={false} style={twrnc`mb-4`}>
+              <CustomText style={twrnc`text-gray-300 text-sm mb-4 leading-6`}>
+                Last updated: February 2026
+              </CustomText>
+
+              <CustomText weight="bold" style={twrnc`text-white text-base mb-2`}>1. Introduction</CustomText>
+              <CustomText style={twrnc`text-gray-400 text-sm mb-4 leading-5`}>
+                Welcome to HakbangQuest. We are committed to protecting your personal information and your right to privacy. This Privacy Policy explains how we collect, use, and share your information when you use our fitness application.
+              </CustomText>
+
+              <CustomText weight="bold" style={twrnc`text-white text-base mb-2`}>2. Information We Collect</CustomText>
+              <CustomText style={twrnc`text-gray-400 text-sm mb-4 leading-5`}>
+                <CustomText weight="bold" style={twrnc`text-white`}>• Personal Data:</CustomText> We collect information such as your name, email address, and profile picture.{'\n'}
+                <CustomText weight="bold" style={twrnc`text-white`}>• Fitness Data:</CustomText> We track your distance, duration, and route locations to provide gameplay features.{'\n'}
+                <CustomText weight="bold" style={twrnc`text-white`}>• Device Data:</CustomText> We may collect device type and operating system info for compatibility.
+              </CustomText>
+
+              <CustomText weight="bold" style={twrnc`text-white text-base mb-2`}>3. How We Use Your Data</CustomText>
+              <CustomText style={twrnc`text-gray-400 text-sm mb-4 leading-5`}>
+                We use your data to:{'\n'}
+                • Track your fitness progress and update your stats.{'\n'}
+                • Display your position on the leaderboard (if enabled).{'\n'}
+                • Maintain your account and save your game progress.{'\n'}
+                • Improve the app functionality and user experience.
+              </CustomText>
+
+              <CustomText weight="bold" style={twrnc`text-white text-base mb-2`}>4. Data Sharing</CustomText>
+              <CustomText style={twrnc`text-gray-400 text-sm mb-4 leading-5`}>
+                We do not sell your personal data. Your data is only visible to other users if you explicitly enable "Public Profile" in your Privacy Settings.
+              </CustomText>
+
+              <CustomText weight="bold" style={twrnc`text-white text-base mb-2`}>5. Your Rights</CustomText>
+              <CustomText style={twrnc`text-gray-400 text-sm mb-4 leading-5`}>
+                You have the right to request access to your data or request deletion of your account. You can manage these preferences in the Privacy Settings menu.
+              </CustomText>
+
+              <CustomText weight="bold" style={twrnc`text-white text-base mb-2`}>6. Contact Us</CustomText>
+              <CustomText style={twrnc`text-gray-400 text-sm mb-8 leading-5`}>
+                If you have any questions about this policy, please contact us via the Help & Support section.
+              </CustomText>
+            </ScrollView>
+
+            {/* Close Button at Bottom */}
+            <TouchableOpacity
+              style={twrnc`bg-[#4361EE] rounded-xl py-3.5 items-center`}
+              onPress={() => setShowPrivacyPolicyModal(false)}
+            >
+              <CustomText weight="bold" style={twrnc`text-white text-sm`}>I Understand</CustomText>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>

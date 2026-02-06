@@ -513,10 +513,11 @@ export const getUserQuestHistory = async (userId) => {
   try {
     const questCompletionsRef = collection(db, "quest_completions");
 
+    // We don't assume 'completed' is always true or present
+    // Just fetch by userId
     const q = query(
       questCompletionsRef,
-      where("userId", "==", userId),
-      where("completed", "==", true)
+      where("userId", "==", userId)
     );
 
     const querySnapshot = await getDocs(q);

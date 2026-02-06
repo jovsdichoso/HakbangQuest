@@ -1154,7 +1154,6 @@ export const acceptChallengeInvite = async (challengeId) => {
   return { success: true, message: "Challenge accepted and stake deducted!" }
 }
 
-// FIXED: startChallenge now only updates status.
 export const startChallenge = async (challengeId) => {
   const user = auth.currentUser;
   if (!user) throw new Error("You must be signed in.");
@@ -1168,29 +1167,44 @@ export const startChallenge = async (challengeId) => {
 
     const challenge = challengeSnap.data();
 
-    // Validation
+    // --- Validation ---
+
+    // 1. Only creator can start
     if (challenge.createdBy !== user.uid) {
       throw new Error("Only the creator can start this challenge.");
     }
+
+    // 2. Check for accepted invites
+    // (Optional: You can remove this check if you want to start even if some haven't accepted yet, 
+    // but usually we wait for the Invited list to be empty or explicit participants count)
     if (challenge.invitedUsers?.length > 0) {
-      throw new Error("All invited players must accept first.");
+      // Ideally, we just check if we have ENOUGH participants below, 
+      // rather than forcing everyone invited to accept. 
+      // But if you want to enforce "Wait for everyone", keep this. 
+      // For a flexible Lobby, you might want to remove this or rely on participant count.
+      // Let's keep it strict for Duo, flexible for Lobby:
+      if (challenge.groupType === 'duo') {
+        throw new Error("All invited players must accept first.");
+      }
     }
+
     const participantCount = challenge.participants?.length || 0;
-    if (participantCount < 2 && challenge.groupType !== 'solo') {
-      throw new Error("At least two participants must join before starting.");
+
+    // 3. Minimum Player Checks
+    if (challenge.groupType === 'duo' && participantCount !== 2) {
+      throw new Error("Duo challenges require exactly 2 players to start.");
     }
-    if (challenge.maxParticipants && participantCount !== challenge.maxParticipants) {
-      throw new Error(
-        `Waiting for ${challenge.maxParticipants - participantCount} more players to start.`
-      );
+
+    if (challenge.groupType === 'lobby' && participantCount < 3) {
+      throw new Error("Lobby challenges require at least 3 players to start.");
     }
+
+    // 4. Status Check
     if (challenge.status?.global === 'active') {
       throw new Error("Challenge is already active.");
     }
 
-    // XP Deduction and Validation removed, as it's done upon joining/accepting.
-
-    // 2. WRITE PHASE - Update challenge in ONE operation
+    // --- WRITE PHASE ---
     transaction.update(challengeRef, {
       'status.global': 'active',
       startDate: serverTimestamp(),

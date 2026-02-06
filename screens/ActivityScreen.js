@@ -116,7 +116,7 @@ const ButtonSection = ({
           {/* Save Activity Button */}
           {isStrengthActivity && (
             <TouchableOpacity
-              style={twrnc`bg-06D6A0 rounded-2xl py-4 px-6 flex-row items-center justify-center ${isTrackingLoading ? "opacity-50" : ""
+              style={twrnc`bg-[#06D6A0] rounded-2xl py-4 px-6 flex-row items-center justify-center ${isTrackingLoading ? "opacity-50" : ""
                 }`}
               onPress={saveActivity}
               disabled={isTrackingLoading}
@@ -148,7 +148,7 @@ const ButtonSection = ({
 
           {/* Clear Activity Button */}
           <TouchableOpacity
-            style={twrnc`bg-1e293b border border-EF476F rounded-2xl py-4 px-6 flex-row items-center justify-center`}
+            style={twrnc`[bg-1e293b] border border-EF476F rounded-2xl py-4 px-6 flex-row items-center justify-center`}
             onPress={clearActivity}
             disabled={isTrackingLoading}
             activeOpacity={0.8}
@@ -502,7 +502,7 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params, userData =
     async (finalStats = null) => {
       setIsTrackingLoading(true);
 
-      // ✅ FIXED: Include activityType in stats
+      // ✅ FIXED: Include activityType in stats object
       const activityStatsToSave = finalStats || {
         ...stats,
         reps: stats.reps || 0,
@@ -515,6 +515,10 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params, userData =
       const strengthFlag = finalStats?.isStrengthActivity ?? isStrengthActivity;
       const isTimerChallenge = activeQuest?.mode === "time";
 
+      // ✅ NEW: Check if the quest is ALREADY finished
+      // If it is, we allow saving even if this specific session had 0 reps/distance.
+      const isQuestComplete = activeQuest && getQuestStatus(activeQuest) === "completed";
+
       try {
         const user = auth.currentUser;
         if (!user) {
@@ -523,9 +527,13 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params, userData =
           return;
         }
 
-        // Validation for strength activities
+        // =========================================================
+        // VALIDATION LOGIC (Updated to respect Quest Completion)
+        // =========================================================
+
         if (strengthFlag) {
-          if (!isTimerChallenge) {
+          // ✅ FIX: Only enforce minimum reps if the quest is NOT complete yet
+          if (!isTimerChallenge && !isQuestComplete) {
             const minReps = 5;
             if ((activityStatsToSave.reps || 0) < minReps) {
               showModal(
@@ -536,12 +544,15 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params, userData =
               return;
             }
           } else {
+            // If it is a timer challenge or quest is done, ensure reps is at least 0 (not undefined)
             if (activityStatsToSave.reps === undefined) {
               activityStatsToSave.reps = 0;
             }
           }
-        } else {
-          // Validation for cardio activities
+        } else if (!isQuestComplete) {
+          // ✅ FIX: Wrapped cardio validation in `else if (!isQuestComplete)`
+          // This allows you to finish a cardio quest without doing the minimum distance if it's already hit 100%
+
           const minDistance = 0.1;
           const minDuration = 60;
           const distanceInKm = (activityStatsToSave.distance || 0) / 1000;
@@ -565,6 +576,10 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params, userData =
           }
         }
 
+        // =========================================================
+        // PREPARE DATA
+        // =========================================================
+
         const caloriesBurned = activityStatsToSave.calories || calories || 0;
 
         const activityData = {
@@ -583,7 +598,8 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params, userData =
               steps: activityStatsToSave.steps || 0,
               coordinates: coordinates || [],
             }),
-          questCompleted: getQuestStatus(activeQuest) === "completed",
+          // Send this status to backend so it knows not to block logic either
+          questCompleted: isQuestComplete,
         };
 
         const activityId = XPManager.generateActivityId(user.uid, Date.now(), selectedActivity);
@@ -602,10 +618,12 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params, userData =
         const statsWithCalories = {
           ...activityStatsToSave,
           calories: caloriesBurned,
-          activityType: selectedActivity, // ✅ Ensure activityType is here
+          activityType: selectedActivity,
         };
 
-        // Call XP Manager
+        // =========================================================
+        // CALL XP MANAGER
+        // =========================================================
         const xpResult = await XPManager.awardXPForActivity({
           userId: user.uid,
           activityId,
@@ -626,7 +644,9 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params, userData =
           return;
         }
 
-        // Badge System
+        // =========================================================
+        // BADGE SYSTEM
+        // =========================================================
         let newBadges = [];
         try {
           const existingBadges = await loadBadgesFromFirestore(user.uid);
@@ -659,7 +679,9 @@ const ActivityScreen = ({ navigateToDashboard, navigateToMap, params, userData =
           console.error("Badge pipeline error:", badgeError);
         }
 
-        // ✅ NEW: Show sleek workout complete modal instead of text modal
+        // =========================================================
+        // SHOW SUCCESS MODAL
+        // =========================================================
         setWorkoutCompleteData({
           activityName: selectedActivity,
           stats: {

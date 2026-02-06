@@ -14,7 +14,6 @@ import twrnc from "twrnc";
 import CustomText from "../components/CustomText";
 import { doc, updateDoc } from "firebase/firestore";
 import { auth, db } from "../firebaseConfig";
-import { SafeAreaView } from "react-native-safe-area-context";
 
 const { width, height } = Dimensions.get("window");
 
@@ -70,7 +69,7 @@ const StoryScreen = ({ navigation, route }) => {
         Animated.loop(
             Animated.timing(roadAnim, {
                 toValue: 1,
-                duration: 8000, // Slower duration for the city to look massive
+                duration: 8000,
                 easing: Easing.linear,
                 useNativeDriver: true,
             })
@@ -85,11 +84,13 @@ const StoryScreen = ({ navigation, route }) => {
 
     // 4. INTERACTION
     const handlePress = () => {
+        // If still typing, finish the line immediately
         if (isTyping) {
             setDisplayedText(storyContent[currentLineIndex]);
             setIsTyping(false);
             return;
         }
+        // Move to next line or finish
         if (currentLineIndex < storyContent.length - 1) {
             setCurrentLineIndex((prev) => prev + 1);
         } else {
@@ -109,28 +110,20 @@ const StoryScreen = ({ navigation, route }) => {
         navigation.navigate("dashboard");
     };
 
-    const RetroStatBar = ({ icon, color, fill }) => (
-        <View style={twrnc`flex-row items-center bg-gray-900/80 border border-white/30 rounded px-2 py-1 mr-2`}>
-            <Ionicons name={icon} size={14} color={color} style={twrnc`mr-2`} />
-            <View style={twrnc`w-12 h-1.5 bg-gray-700 rounded-full overflow-hidden`}>
-                <View style={[twrnc`h-full`, { width: `${fill}%`, backgroundColor: color }]} />
-            </View>
-        </View>
-    );
-
     return (
-        <View style={twrnc`flex-1 bg-[#1a1b26]`}>
+        // CHANGED: Root is now TouchableOpacity so tapping ANYWHERE works
+        <TouchableOpacity
+            style={twrnc`flex-1 bg-[#1a1b26]`}
+            onPress={handlePress}
+            activeOpacity={1} // Keeps opacity solid (no flashing on tap)
+        >
             <StatusBar hidden />
 
             {/* --- GAME WORLD --- */}
             <View style={twrnc`flex-1 justify-end`}>
 
                 {/* BACKGROUND LAYER 1: THE NIGHT CITY GIF */}
-                {/* We make this take up the WHOLE screen for maximum atmosphere */}
                 <View style={twrnc`absolute top-0 left-0 w-full h-full`}>
-                    {/* If the GIF is wide, we scroll it. If it's just a scene, we just display it.
-                Assuming it's a scene, we just make it cover the screen. 
-            */}
                     <Image
                         source={require('../assets/story/city_night.gif')}
                         style={twrnc`w-full h-full opacity-60`}
@@ -138,18 +131,15 @@ const StoryScreen = ({ navigation, route }) => {
                     />
                 </View>
 
-                {/* BACKGROUND LAYER 2: SCROLLING BUILDINGS (Optional Parallax) */}
-                {/* If you want movement, we scroll a duplicate layer slightly. */}
+                {/* BACKGROUND LAYER 2: SCROLLING BUILDINGS */}
                 <View style={twrnc`absolute bottom-0 w-full h-full overflow-hidden opacity-30`}>
                     <Animated.View style={[twrnc`flex-row w-[200%] h-full`, { transform: [{ translateX }] }]}>
                         <Image source={require('../assets/story/city_night.gif')} style={twrnc`w-[${width}px] h-full`} resizeMode="cover" />
-
                     </Animated.View>
                 </View>
 
                 {/* ROAD / FLOOR */}
                 <View style={twrnc`h-20 w-full bg-[#111827] border-t-2 border-[#6366f1] z-10`}>
-                    {/* Simple road markings */}
                     <Animated.View style={[twrnc`flex-row w-[200%] h-full items-center`, { transform: [{ translateX }] }]}>
                         {[...Array(20)].map((_, i) => (
                             <View key={i} style={twrnc`w-20 h-1 bg-gray-700/50 mr-20`} />
@@ -160,7 +150,6 @@ const StoryScreen = ({ navigation, route }) => {
                 {/* --- CHARACTER --- */}
                 <View style={twrnc`absolute bottom-5 left-10 z-20`}>
                     <Image
-                        // Ensure this is a TRANSPARENT GIF
                         source={require('../assets/story/runner.gif')}
                         style={twrnc`w-50 h-50`}
                         resizeMode="contain"
@@ -169,16 +158,13 @@ const StoryScreen = ({ navigation, route }) => {
             </View>
 
             {/* --- DIALOG BOX --- */}
-            <TouchableOpacity
-                activeOpacity={0.9}
-                onPress={handlePress}
-                style={twrnc`absolute top-1/4 self-center w-[90%] z-50`}
-            >
-                <View style={[
-                    twrnc`bg-[#1F2937]/95 p-1`,
+            {/* CHANGED: This is now a View (not a Touchable) because the Root handles the tap */}
+            <View
+                style={[
+                    twrnc`absolute top-1/4 self-center w-[90%] z-50 bg-[#1F2937]/95 p-1`,
                     {
                         borderWidth: 2,
-                        borderColor: '#6366f1', // Neon Purple Border to match city
+                        borderColor: '#6366f1',
                         borderRadius: 8,
                         shadowColor: "#6366f1",
                         shadowOffset: { width: 0, height: 0 },
@@ -186,23 +172,23 @@ const StoryScreen = ({ navigation, route }) => {
                         shadowRadius: 10,
                         elevation: 10
                     }
-                ]}>
-                    <View style={twrnc`p-5 min-h-[120px]`}>
-                        <CustomText weight="bold" style={[twrnc`text-white text-base leading-6`, { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }]}>
-                            {displayedText}
-                            {isTyping && <CustomText style={twrnc`text-[#6366f1]`}>_</CustomText>}
-                        </CustomText>
-                    </View>
-
-                    {!isTyping && (
-                        <View style={twrnc`absolute bottom-2 right-4`}>
-                            <Ionicons name="caret-down" size={20} color="#6366f1" />
-                        </View>
-                    )}
+                ]}
+            >
+                <View style={twrnc`p-5 min-h-[120px]`}>
+                    <CustomText weight="bold" style={[twrnc`text-white text-base leading-6`, { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }]}>
+                        {displayedText}
+                        {isTyping && <CustomText style={twrnc`text-[#6366f1]`}>_</CustomText>}
+                    </CustomText>
                 </View>
-            </TouchableOpacity>
 
-        </View>
+                {!isTyping && (
+                    <View style={twrnc`absolute bottom-2 right-4`}>
+                        <Ionicons name="caret-down" size={20} color="#6366f1" />
+                    </View>
+                )}
+            </View>
+
+        </TouchableOpacity>
     );
 };
 

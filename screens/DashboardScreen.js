@@ -507,6 +507,26 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
     }
   }, [])
 
+  const handleClaimQuest = async (quest) => {
+    try {
+      setLoading(true); // Or local loading state for that button
+      const result = await QuestManager.claimQuestReward(userData.uid, quest.id);
+
+      if (result.success) {
+        // Show success sound/modal
+        alert(`Reward Claimed! +${result.xpEarned} XP`);
+        // Refresh dashboard data
+        fetchData();
+      } else {
+        alert("Could not claim reward.");
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     const getUserLocation = async () => {
       try {
@@ -793,14 +813,35 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
           avgDailyReps: calculatedStats.avgDailyReps,
         });
 
+        // --- QUEST LOADING ---
         try {
           console.log("[QuestManager] Cleaning up expired quests...");
           await QuestManager.cleanupExpiredQuests(userId);
 
           console.log("[QuestManager] Loading or generating daily quests...");
-          const userQuests = await QuestManager.generateDailyQuests(userId, calculatedStats);
-          setDynamicQuests(userQuests);
+          let userQuests = await QuestManager.loadUserQuests(userId);
 
+          if (userQuests.length === 0) {
+            console.log("[QuestManager] Generating new daily quests...");
+            userQuests = await QuestManager.generateDailyQuests(userId, calculatedStats);
+          }
+
+          // ✅ CRITICAL FIX: Sort quests so "Ready to Claim" appears FIRST
+          userQuests.sort((a, b) => {
+            // Priority 1: Ready to Claim
+            const aReady = a.status === 'ready_to_claim' || (calculateQuestProgress(a) >= 1 && a.status !== 'claimed');
+            const bReady = b.status === 'ready_to_claim' || (calculateQuestProgress(b) >= 1 && b.status !== 'claimed');
+
+            if (aReady && !bReady) return -1; // a first
+            if (!aReady && bReady) return 1;  // b first
+
+            // Priority 2: In Progress (highest % first)
+            const aProg = calculateQuestProgress(a);
+            const bProg = calculateQuestProgress(b);
+            return bProg - aProg;
+          });
+
+          setDynamicQuests(userQuests);
           console.log(`[QuestManager] Loaded ${userQuests.length} quests for dashboard`);
         } catch (questError) {
           console.error("[QuestManager] Error loading quests:", questError);
@@ -831,8 +872,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
             currentBadges = earnedBadgesFromFireStore;
           }
 
-          // 3. HERE IS THE FIX: Merge earned badges with the full list
-          // This ensures 'allBadges' contains locked items too
+          // 3. Merge earned badges with the full list
           const fullBadgeList = getAllBadgesWithStatus(currentBadges);
           setAllBadges(fullBadgeList);
 
@@ -847,6 +887,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
         const referenceQuest = await (async () => {
           try {
             const userQuests = await QuestManager.loadUserQuests(userId);
+            // Use the sorted list if available, otherwise fetch raw
             return userQuests[0] || null;
           } catch {
             return null;
@@ -1619,7 +1660,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
 
 
 
-          {/* ===== DAILY QUEST CARD ===== */}
+          {/* ===== DAILY QUEST CARD (PASSIVE TRACKING) ===== */}
           {todayQuest && (
             <Animated.View
               style={[
@@ -1646,14 +1687,10 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                       <View style={twrnc`bg-[#4361EE] rounded-xl p-2.5 mr-3`}>
                         <Ionicons
                           name={
-                            todayQuest.category === "endurance"
-                              ? "flash"
-                              : todayQuest.category === "fitness"
-                                ? "heart"
-                                : todayQuest.category === "strength"
-                                  ? "barbell"
-                                  : todayQuest.category === "flexibility"
-                                    ? "body"
+                            todayQuest.category === "endurance" ? "flash"
+                              : todayQuest.category === "fitness" ? "heart"
+                                : todayQuest.category === "strength" ? "barbell"
+                                  : todayQuest.category === "flexibility" ? "body"
                                     : "trophy"
                           }
                           size={20}
@@ -1686,7 +1723,6 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                       </View>
                     </View>
 
-
                     {/* Progress Bar */}
                     <View style={twrnc`h-2 bg-[#0f172a] rounded-full overflow-hidden`}>
                       <View
@@ -1694,15 +1730,17 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                           twrnc`h-full rounded-full`,
                           {
                             width: `${Math.min(calculateQuestProgress(todayQuest) * 100, 100)}%`,
-                            backgroundColor: calculateQuestProgress(todayQuest) >= 1 ? "#06D6A0" : "#4361EE",
+                            backgroundColor: getQuestStatus(todayQuest) === 'ready_to_claim' || getQuestStatus(todayQuest) === 'claimed' ? "#06D6A0" : "#4361EE",
                           },
                         ]}
                       />
                     </View>
                   </View>
 
-                  {/* Reward and Action */}
+                  {/* Reward and Action - UPDATED SECTION */}
                   <View style={twrnc`flex-row items-center justify-between`}>
+
+                    {/* Reward Badge */}
                     <View style={twrnc`bg-[#FFC107] bg-opacity-20 rounded-full px-3 py-1.5`}>
                       <View style={twrnc`flex-row items-center`}>
                         <Ionicons name="star" size={12} color="#FFC107" style={twrnc`mr-1`} />
@@ -1712,15 +1750,33 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                       </View>
                     </View>
 
-                    <TouchableOpacity
-                      style={twrnc`bg-[#4361EE] rounded-full px-5 py-2.5`}
-                      onPress={() => navigateToQuestActivity(todayQuest)}
-                      activeOpacity={0.8}
-                    >
-                      <CustomText weight="bold" style={twrnc`text-white text-xs`}>
-                        Start Quest
-                      </CustomText>
-                    </TouchableOpacity>
+                    {/* DYNAMIC ACTION LOGIC */}
+                    {getQuestStatus(todayQuest) === 'claimed' ? (
+                      // CASE 1: Completed & Claimed
+                      <View style={twrnc`bg-[#06D6A0]/20 rounded-full px-4 py-2 flex-row items-center`}>
+                        <Ionicons name="checkmark-done" size={14} color="#06D6A0" style={twrnc`mr-1.5`} />
+                        <CustomText weight="bold" style={twrnc`text-[#06D6A0] text-xs`}>Completed</CustomText>
+                      </View>
+
+                    ) : getQuestStatus(todayQuest) === 'ready_to_claim' ? (
+                      // CASE 2: Ready to Claim (Show Claim Button)
+                      <TouchableOpacity
+                        style={twrnc`bg-[#FFC107] rounded-full px-5 py-2.5 shadow-lg shadow-yellow-500/20`}
+                        onPress={() => handleClaimQuest(todayQuest)}
+                        activeOpacity={0.8}
+                      >
+                        <CustomText weight="bold" style={twrnc`text-[#0f172a] text-xs`}>Claim Reward</CustomText>
+                      </TouchableOpacity>
+
+                    ) : (
+                      // CASE 3: In Progress (Passive Mode - Just a status label, NO BUTTON)
+                      <View style={twrnc`bg-[#4361EE]/10 rounded-full px-4 py-2 flex-row items-center border border-[#4361EE]/30`}>
+                        <Ionicons name="pulse" size={14} color="#4361EE" style={twrnc`mr-1.5`} />
+                        <CustomText weight="bold" style={twrnc`text-[#4361EE] text-xs`}>
+                          In Progress
+                        </CustomText>
+                      </View>
+                    )}
                   </View>
                 </View>
               </View>
@@ -1737,11 +1793,16 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
       </ScrollView>
 
 
-      {/* ===== MODALS ===== */}
       {/* Quest List Modal */}
-      <Modal animationType="slide" transparent={true} visible={isQuestModalVisible} onRequestClose={() => setIsQuestModalVisible(false)}>
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={isQuestModalVisible}
+        onRequestClose={() => setIsQuestModalVisible(false)}
+      >
         <View style={twrnc`flex-1 bg-black/50 justify-end`}>
           <View style={twrnc`bg-[#1e293b] rounded-t-3xl p-5 h-4/5`}>
+            {/* Header */}
             <View style={twrnc`flex-row justify-between items-start mb-5`}>
               <View style={twrnc`flex-1 pr-3`}>
                 <View style={twrnc`flex-row items-center mb-1`}>
@@ -1750,9 +1811,14 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                     Daily Quests
                   </CustomText>
                 </View>
-                <CustomText style={twrnc`text-gray-400 text-xs ml-4`}>Personalized challenges based on your performance</CustomText>
+                <CustomText style={twrnc`text-gray-400 text-xs ml-4`}>
+                  Personalized challenges based on your performance
+                </CustomText>
               </View>
-              <TouchableOpacity style={twrnc`bg-[#0f172a] p-2 rounded-xl`} onPress={() => setIsQuestModalVisible(false)}>
+              <TouchableOpacity
+                style={twrnc`bg-[#0f172a] p-2 rounded-xl`}
+                onPress={() => setIsQuestModalVisible(false)}
+              >
                 <Ionicons name="close" size={20} color="#FFFFFF" />
               </TouchableOpacity>
             </View>
@@ -1760,31 +1826,30 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={twrnc`pb-3`}>
               {dynamicQuests.length > 0 ? (
                 dynamicQuests.map((quest, index) => {
-                  const progress = calculateQuestProgress(quest)
-                  const status = getQuestStatus(quest)
-                  const isCompleted = status === "completed"
+                  // Calculate status
+                  const progress = calculateQuestProgress(quest);
+                  const isClaimed = quest.status === 'claimed';
+                  const isReadyToClaim = (quest.status === 'ready_to_claim' || progress >= 1) && !isClaimed;
 
                   return (
                     <View key={quest.id || index} style={twrnc`bg-[#0f172a] rounded-2xl p-4 mb-3 shadow-lg border border-gray-700/50`}>
                       <View style={twrnc`flex-row items-start mb-3`}>
-                        <View style={[twrnc`rounded-xl p-2.5 mr-3`, isCompleted ? twrnc`bg-[#06D6A0]` : twrnc`bg-[#4361EE]`]}>
+                        <View style={[
+                          twrnc`rounded-xl p-2.5 mr-3`,
+                          isClaimed ? twrnc`bg-[#06D6A0]` : twrnc`bg-[#4361EE]`
+                        ]}>
                           <Ionicons
                             name={
-                              quest.category === "endurance"
-                                ? "flash-outline"
-                                : quest.category === "fitness"
-                                  ? "heart-outline"
-                                  : quest.category === "strength"
-                                    ? "barbell-outline"
-                                    : quest.category === "flexibility"
-                                      ? "body-outline"
+                              quest.category === "endurance" ? "flash-outline"
+                                : quest.category === "fitness" ? "heart-outline"
+                                  : quest.category === "strength" ? "barbell-outline"
+                                    : quest.category === "flexibility" ? "body-outline"
                                       : "trophy-outline"
                             }
                             size={18}
                             color="#FFFFFF"
                           />
                         </View>
-
                         <View style={twrnc`flex-1`}>
                           <View style={twrnc`flex-row items-center justify-between mb-1`}>
                             <CustomText weight="bold" style={twrnc`text-white text-sm flex-shrink mr-2`} numberOfLines={1}>
@@ -1794,11 +1859,10 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                               <CustomText style={twrnc`text-[#0f172a] text-[10px] font-bold`}>+{quest.xpReward} XP</CustomText>
                             </View>
                           </View>
-
                           <CustomText style={twrnc`text-gray-400 text-xs mb-2`} numberOfLines={2}>
                             {quest.description}
                           </CustomText>
-
+                          {/* Tags logic stays the same... */}
                           <View style={twrnc`flex-row flex-wrap gap-1.5`}>
                             <View style={twrnc`bg-[#2A2E3A] rounded-full px-2.5 py-1`}>
                               <CustomText style={twrnc`text-white text-[9px]`}>
@@ -1814,11 +1878,15 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                         </View>
                       </View>
 
+                      {/* Progress Bar */}
                       <View style={twrnc`mb-3`}>
                         <View style={twrnc`flex-row justify-between items-center mb-1.5`}>
                           <CustomText style={twrnc`text-gray-400 text-[9px]`}>Progress</CustomText>
-                          <CustomText style={[twrnc`text-[10px] font-medium`, isCompleted ? twrnc`text-[#06D6A0]` : twrnc`text-[#FFC107]`]}>
-                            {Math.round(progress * 100)}%
+                          <CustomText style={[
+                            twrnc`text-[10px] font-medium`,
+                            (isReadyToClaim || isClaimed) ? twrnc`text-[#06D6A0]` : twrnc`text-[#FFC107]`
+                          ]}>
+                            {Math.round(Math.min(progress * 100, 100))}%
                           </CustomText>
                         </View>
                         <View style={twrnc`h-1.5 bg-[#2A2E3A] rounded-full overflow-hidden`}>
@@ -1826,25 +1894,41 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                             style={[
                               twrnc`h-1.5 rounded-full`,
                               {
-                                width: `${progress * 100}%`,
-                                backgroundColor: isCompleted ? "#06D6A0" : "#4361EE",
+                                width: `${Math.min(progress * 100, 100)}%`,
+                                backgroundColor: (isReadyToClaim || isClaimed) ? "#06D6A0" : "#4361EE",
                               },
                             ]}
                           />
                         </View>
                       </View>
 
-                      <TouchableOpacity
-                        style={twrnc`rounded-xl py-3 items-center justify-center flex-row ${isCompleted ? "bg-[#06D6A0]" : "bg-[#4361EE]"
-                          }`}
-                        onPress={() => !isCompleted && navigateToQuestActivity(quest)}
-                        disabled={isCompleted}
-                      >
-                        {isCompleted && <Ionicons name="checkmark" size={16} color="#FFFFFF" style={twrnc`mr-1.5`} />}
-                        <CustomText weight="bold" style={twrnc`text-white text-xs`}>
-                          {isCompleted ? "Quest Completed" : "Start Quest"}
-                        </CustomText>
-                      </TouchableOpacity>
+                      {/* ACTION BUTTONS (Cleaned Up) */}
+                      {/* The entire spinner block is gone. If not ready, we render nothing (null). */}
+                      {(isClaimed || isReadyToClaim) && (
+                        <View style={twrnc`flex-row items-center justify-end`}>
+                          {isClaimed ? (
+                            // STATE 1: Claimed (Done)
+                            <View style={twrnc`rounded-xl py-2 px-4 items-center justify-center flex-row bg-[#06D6A0]/20`}>
+                              <Ionicons name="checkmark-done" size={16} color="#06D6A0" style={twrnc`mr-1.5`} />
+                              <CustomText weight="bold" style={twrnc`text-[#06D6A0] text-xs`}>
+                                Collected
+                              </CustomText>
+                            </View>
+                          ) : (
+                            // STATE 2: Ready to Claim
+                            <TouchableOpacity
+                              style={twrnc`rounded-xl py-2 px-4 items-center justify-center flex-row bg-[#FFC107] shadow-lg shadow-yellow-500/20`}
+                              onPress={() => handleClaimQuest(quest)}
+                              activeOpacity={0.8}
+                            >
+                              <Ionicons name="gift" size={16} color="#0f172a" style={twrnc`mr-1.5`} />
+                              <CustomText weight="bold" style={twrnc`text-[#0f172a] text-xs`}>
+                                Claim Reward
+                              </CustomText>
+                            </TouchableOpacity>
+                          )}
+                        </View>
+                      )}
                     </View>
                   )
                 })

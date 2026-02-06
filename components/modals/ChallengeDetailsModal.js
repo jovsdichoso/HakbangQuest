@@ -579,11 +579,21 @@ const ChallengeDetailsModal = ({
                                 }
                               ]}
                               onPress={() => {
-                                // For duo/lobby, check if max participants reached
-                                if (selectedChallenge.groupType !== 'solo' && currentParticipantCount < requiredParticipants) {
+                                // Logic to determine minimum players based on group type
+                                let minPlayersNeeded = 1;
+
+                                if (selectedChallenge.groupType === 'duo') {
+                                  minPlayersNeeded = 2;
+                                } else if (selectedChallenge.groupType === 'lobby') {
+                                  minPlayersNeeded = 3; // ✅ Allow start with 3, 4, or 5 players
+                                }
+
+                                // Check against MINIMUM, not MAXIMUM (requiredParticipants)
+                                if (selectedChallenge.groupType !== 'solo' && currentParticipantCount < minPlayersNeeded) {
                                   setShowStartWarning(true);
                                   return;
                                 }
+
                                 handleStartChallenge && handleStartChallenge(selectedChallenge.id);
                               }}
                               disabled={startingChallenge}
@@ -770,7 +780,12 @@ const ChallengeDetailsModal = ({
             onClose={() => setShowStartWarning(false)}
             type="warning"
             title="Waiting for Participants"
-            message={`This challenge requires ${requiredParticipants} players to start. Currently, there are ${currentParticipantCount}. Please wait for everyone to join before starting the challenge.`}
+            // 👇 THIS IS THE FIX:
+            message={
+              selectedChallenge.groupType === 'lobby'
+                ? `Lobby challenges require at least 3 players to start. Currently, there are ${currentParticipantCount}.`
+                : `This challenge requires ${requiredParticipants} players to start. Currently, there are ${currentParticipantCount}.`
+            }
             buttons={[{ label: "Got it", style: "primary", action: () => setShowStartWarning(false) }]}
           />
 

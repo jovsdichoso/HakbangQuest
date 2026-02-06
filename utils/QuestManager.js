@@ -5,16 +5,100 @@ import {
     getDocs,
     addDoc,
     updateDoc,
-    deleteDoc, // <--- ADDED THIS IMPORT
+    deleteDoc,
     collection,
     query,
     where,
     serverTimestamp,
     increment,
+    runTransaction
 } from "firebase/firestore";
 import { db } from "../firebaseConfig";
 
 export class QuestManager {
+
+    /**
+     * ✅ NEW: Claim a completed quest reward (Passive Tracking System)
+     * This handles the "Claim" button press on the Dashboard.
+     */
+    static async claimQuestReward(userId, questId) {
+        try {
+            console.log(`[QuestManager] Attempting to claim reward for quest: ${questId}`);
+
+            return await runTransaction(db, async (transaction) => {
+                const questRef = doc(db, "quests", questId);
+                const userRef = doc(db, "users", userId);
+
+                const questDoc = await transaction.get(questRef);
+                const userDoc = await transaction.get(userRef);
+
+                if (!questDoc.exists() || !userDoc.exists()) {
+                    throw new Error("Quest or User not found");
+                }
+
+                const quest = questDoc.data();
+
+                // ✅ FIX: Floating point tolerance (0.01) for distance quests
+                // Checks if status is 'ready_to_claim' OR progress is met
+                const isGoalMet = quest.progress >= (quest.goal - 0.01);
+                const isComplete = quest.status === "ready_to_claim" || isGoalMet;
+
+                // Debug log to see exactly why it might fail
+                if (!isComplete) {
+                    console.error(`[QuestManager] Validation Failed: Status=${quest.status}, Progress=${quest.progress}, Goal=${quest.goal}`);
+                    throw new Error("Quest criteria not met yet.");
+                }
+
+                if (quest.status === "claimed") {
+                    throw new Error("Reward already claimed.");
+                }
+
+                const xpReward = quest.xpReward || 50;
+                const currentXP = userDoc.data().totalXP || 0;
+                const newTotalXP = currentXP + xpReward;
+
+                // Calculate new level (Simple formula: 1000 XP per level)
+                const newLevel = Math.floor(newTotalXP / 1000) + 1;
+
+                // 1. Award XP to User
+                transaction.update(userRef, {
+                    totalXP: newTotalXP,
+                    level: newLevel,
+                    completedQuests: increment(1),
+                    lastActivityDate: serverTimestamp()
+                });
+
+                // 2. Mark Quest as Claimed
+                transaction.update(questRef, {
+                    status: "claimed",
+                    claimedAt: serverTimestamp(),
+                    updatedAt: serverTimestamp()
+                });
+
+                // 3. Log the Completion (Receipt)
+                const completionRef = doc(collection(db, "quest_completions"));
+                transaction.set(completionRef, {
+                    userId,
+                    questId,
+                    title: quest.title,
+                    xpEarned: xpReward,
+                    claimedAt: serverTimestamp(),
+                    activityType: quest.activityType
+                });
+
+                return {
+                    success: true,
+                    xpEarned: xpReward,
+                    newLevel: newLevel,
+                    title: quest.title
+                };
+            });
+        } catch (error) {
+            console.error("[QuestManager] Claim Error:", error);
+            return { success: false, error: error.message };
+        }
+    }
+
     static async generateDailyQuests(userId, userStats) {
         try {
             console.log("[QuestManager] Generating daily quests for user:", userId);
@@ -38,15 +122,12 @@ export class QuestManager {
                 });
 
             if (todaysQuests.length > 0) {
-                // --- FIX START: Deduplication Logic ---
-                // If we found quests, let's make sure they are unique. 
-                // This fixes the "18 quests" issue if it already happened.
+                // --- Deduplication Logic ---
                 const uniqueQuests = [];
                 const seenQuestTypes = new Set();
                 const duplicatesToDelete = [];
 
                 for (const quest of todaysQuests) {
-                    // Use questId (from template) or title to identify duplicates
                     const identifier = quest.questId || quest.title;
 
                     if (seenQuestTypes.has(identifier)) {
@@ -59,18 +140,14 @@ export class QuestManager {
 
                 if (duplicatesToDelete.length > 0) {
                     console.log(`[QuestManager] 🧹 Found ${duplicatesToDelete.length} duplicate quests. Cleaning up...`);
-                    // Delete duplicates in background to fix the database
                     Promise.all(duplicatesToDelete.map(id => deleteDoc(doc(db, "quests", id))))
-                        .then(() => console.log("[QuestManager] Duplicates deleted successfully"))
                         .catch(err => console.error("[QuestManager] Failed to delete duplicates", err));
                 }
 
-                console.log(`[QuestManager] Returning ${uniqueQuests.length} unique active quests (filtered from ${todaysQuests.length})`);
                 return uniqueQuests;
-                // --- FIX END ---
             }
 
-            // Generate NEW quests with FIXED goals
+            // Generate NEW quests if none exist for today
             console.log("[QuestManager] No active quests found, generating new ones...");
             const questTemplates = this.getQuestTemplates(userStats);
             const newQuests = [];
@@ -110,10 +187,11 @@ export class QuestManager {
      */
     static async loadUserQuests(userId) {
         try {
+            // Fetch 'active' AND 'ready_to_claim'
             const q = query(
                 collection(db, "quests"),
                 where("userId", "==", userId),
-                where("status", "==", "active")
+                where("status", "in", ["active", "ready_to_claim"])
             );
 
             const snapshot = await getDocs(q);
@@ -122,78 +200,11 @@ export class QuestManager {
                 ...doc.data(),
             }));
 
-            console.log(`[QuestManager] Loaded ${quests.length} active quests`);
+            console.log(`[QuestManager] Loaded ${quests.length} active/claimable quests`);
             return quests;
         } catch (error) {
             console.error("[QuestManager] Error loading quests:", error);
             return [];
-        }
-    }
-
-    /**
-     * Update quest progress after activity completion
-     */
-    static async updateQuestProgress(questId, activityData, activityId) {
-        try {
-            const questRef = doc(db, "quests", questId);
-            const questDoc = await getDoc(questRef);
-
-            if (!questDoc.exists()) {
-                console.warn("[QuestManager] Quest not found:", questId);
-                return null;
-            }
-
-            const quest = questDoc.data();
-            let valueContributed = 0;
-
-            // Calculate contribution based on unit
-            if (quest.unit === "reps") {
-                valueContributed = activityData.reps || 0;
-            } else if (quest.unit === "distance") {
-                valueContributed = (activityData.distance || 0) / 1000; // Convert to km
-            } else if (quest.unit === "duration") {
-                valueContributed = (activityData.duration || 0) / 60; // Convert to minutes
-            } else if (quest.unit === "calories") {
-                valueContributed = activityData.calories || 0;
-            } else if (quest.unit === "steps") {
-                valueContributed = activityData.steps || 0;
-            }
-
-            const newProgress = quest.progress + valueContributed;
-            const isCompleted = newProgress >= quest.goal;
-
-            // Update quest document
-            await updateDoc(questRef, {
-                progress: newProgress,
-                status: isCompleted ? "completed" : "active",
-                completedAt: isCompleted ? serverTimestamp() : null,
-                attempts: increment(1),
-                updatedAt: serverTimestamp(),
-            });
-
-            // Track this contribution in quest_progress collection
-            await addDoc(collection(db, "quest_progress"), {
-                questId: questId,
-                userId: quest.userId,
-                activityId: activityId,
-                valueContributed: valueContributed,
-                timestamp: serverTimestamp(),
-                questStatus: isCompleted ? "completed" : "active",
-            });
-
-            console.log(
-                `[QuestManager] Quest updated: ${questId}, Progress: ${newProgress}/${quest.goal}, Completed: ${isCompleted}`
-            );
-
-            return {
-                completed: isCompleted,
-                progress: newProgress,
-                goal: quest.goal,
-                quest: quest,
-            };
-        } catch (error) {
-            console.error("[QuestManager] Error updating quest progress:", error);
-            return null;
         }
     }
 
@@ -224,8 +235,7 @@ export class QuestManager {
                     expiredCount++;
                 }
             }
-
-            console.log(`[QuestManager] Expired ${expiredCount} quests`);
+            if (expiredCount > 0) console.log(`[QuestManager] Expired ${expiredCount} quests`);
         } catch (error) {
             console.error("[QuestManager] Error cleaning up expired quests:", error);
         }
@@ -240,22 +250,22 @@ export class QuestManager {
         return [
             {
                 questId: "daily_distance",
-                title: "Daily Distance Challenge",
-                description: "Reach your daily distance goal",
+                title: "Daily Distance",
+                description: "Walk or run to reach the distance goal",
                 unit: "distance",
                 goal: Math.round(Math.max(2, userStats.avgDailyDistance * 1.1) * 10) / 10,
                 difficulty: "easy",
                 xpReward: Math.round(50 * levelMultiplier),
                 category: "fitness",
-                activityType: "walking",
+                activityType: "any",
                 type: "daily",
             },
             {
                 questId: "strength_builder",
                 title: "Strength Builder",
-                description: "Complete your strength training reps",
+                description: "Complete push-ups or strength reps",
                 unit: "reps",
-                goal: Math.round(Math.max(20, userStats.avgDailyReps * 1.3)), // ✅ Whole number
+                goal: Math.round(Math.max(20, userStats.avgDailyReps * 1.3)),
                 difficulty: "hard",
                 xpReward: Math.round(80 * levelMultiplier),
                 category: "strength",
@@ -265,19 +275,19 @@ export class QuestManager {
             {
                 questId: "active_minutes",
                 title: "Stay Active",
-                description: "Maintain activity for the target duration",
+                description: "Log active minutes via any activity",
                 unit: "duration",
-                goal: Math.round(Math.max(30, userStats.avgActiveDuration * 1.15)), // ✅ Whole number
+                goal: Math.round(Math.max(30, userStats.avgActiveDuration * 1.15)),
                 difficulty: "medium",
                 xpReward: Math.round(60 * levelMultiplier),
                 category: "consistency",
-                activityType: "jogging",
+                activityType: "any",
                 type: "daily",
             },
             {
                 questId: "distance_explorer",
-                title: "Distance Explorer",
-                description: "Cover your target distance today",
+                title: "Runner's High",
+                description: "Specific goal for running activities",
                 unit: "distance",
                 goal: Math.round(Math.max(3, userStats.avgDailyDistance * 1.2) * 10) / 10,
                 difficulty: "medium",
@@ -289,25 +299,13 @@ export class QuestManager {
             {
                 questId: "cycling_adventure",
                 title: "Cycling Adventure",
-                description: "Complete a cycling session",
+                description: "Hit the road on your bike",
                 unit: "distance",
                 goal: Math.round(Math.max(5, userStats.avgDailyDistance * 1.5) * 10) / 10,
                 difficulty: "medium",
                 xpReward: Math.round(70 * levelMultiplier),
                 category: "endurance",
                 activityType: "cycling",
-                type: "daily",
-            },
-            {
-                questId: "flexibility_focus",
-                title: "Flexibility Focus",
-                description: "Complete stretching or yoga session",
-                unit: "duration",
-                goal: Math.round(Math.max(15, userStats.avgActiveDuration * 0.5)),
-                difficulty: "easy",
-                xpReward: Math.round(40 * levelMultiplier),
-                category: "flexibility",
-                activityType: "yoga",
                 type: "daily",
             },
         ];

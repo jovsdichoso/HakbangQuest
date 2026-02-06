@@ -155,7 +155,11 @@ export const BadgeModal = ({ visible, badge, onClose, onClaim }) => {
         >
           {/* Header with Pattern */}
           <View style={twrnc`bg-[#0f172a] p-5 relative overflow-hidden`}>
-            <View style={[twrnc`absolute -top-10 -right-10 w-32 h-32`, { opacity: 0.1 }]}>
+            {/* ✅ FIX: Added pointerEvents="none" so pattern doesn't block touch */}
+            <View
+              pointerEvents="none"
+              style={[twrnc`absolute -top-10 -right-10 w-32 h-32`, { opacity: 0.1 }]}
+            >
               <View style={twrnc`absolute inset-0 flex-row flex-wrap`}>
                 {[...Array(16)].map((_, i) => (
                   <View key={i} style={[twrnc`w-1/4 h-1/4 border`, { borderColor: badgeColor, transform: [{ rotate: "45deg" }] }]} />
@@ -163,10 +167,12 @@ export const BadgeModal = ({ visible, badge, onClose, onClaim }) => {
               </View>
             </View>
 
+            {/* ✅ FIX: Added hitSlop and explicit z-index */}
             <TouchableOpacity
-              style={twrnc`absolute top-3 right-3 bg-[#1e293b] p-2 rounded-xl z-10`}
+              style={twrnc`absolute top-3 right-3 bg-[#1e293b] p-2 rounded-xl z-50`}
               onPress={onClose}
               activeOpacity={0.7}
+              hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
             >
               <Ionicons name="close" size={18} color="#FFFFFF" />
             </TouchableOpacity>
@@ -351,9 +357,13 @@ export const BadgeNotification = ({ badges, visible, onClose }) => {
             },
           ]}
         >
-          <View style={twrnc`bg-gradient-to-r from-[#4361EE] to-[#06D6A0] p-6 relative overflow-hidden`}>
+          {/* ✅ FIX: Explicit hex colors to fix warnings, pointerEvents="none" for pattern */}
+          <View style={twrnc`bg-gradient-to-r bg-[#4361EE] p-6 relative overflow-hidden`}>
             {/* Pattern */}
-            <View style={[twrnc`absolute top-0 right-0 w-32 h-32`, { opacity: 0.2 }]}>
+            <View
+              pointerEvents="none"
+              style={[twrnc`absolute top-0 right-0 w-32 h-32`, { opacity: 0.2 }]}
+            >
               <View style={twrnc`absolute inset-0 flex-row flex-wrap`}>
                 {[...Array(16)].map((_, i) => (
                   <View key={i} style={[twrnc`w-1/4 h-1/4 border border-white`, { transform: [{ rotate: "45deg" }] }]} />
@@ -430,7 +440,11 @@ export const BadgeSection = ({ badges, onViewAll, onBadgePress }) => {
 
   return (
     <View style={twrnc`bg-[#1e293b] rounded-2xl p-4 mb-5 overflow-hidden relative`}>
-      <View style={[twrnc`absolute -top-10 -right-10 w-32 h-32 opacity-5`]}>
+      {/* ✅ FIX: Added pointerEvents="none" */}
+      <View
+        pointerEvents="none"
+        style={[twrnc`absolute -top-10 -right-10 w-32 h-32 opacity-5`]}
+      >
         <View style={twrnc`absolute inset-0 flex-row flex-wrap`}>
           {[...Array(16)].map((_, i) => (
             <View key={i} style={[twrnc`w-1/4 h-1/4 border border-[#FFC107]`, { transform: [{ rotate: "45deg" }] }]} />
@@ -523,7 +537,13 @@ export const AllBadgesModal = ({ visible, badges, onClose, onBadgePress }) => {
                   <CustomText style={twrnc`text-gray-400 text-xs`}>{earnedCount} badges earned</CustomText>
                 </View>
               </View>
-              <TouchableOpacity style={twrnc`bg-[#0f172a] p-2 rounded-xl`} onPress={onClose} activeOpacity={0.7}>
+              {/* ✅ FIX: Added hitSlop here as well for consistency */}
+              <TouchableOpacity
+                style={twrnc`bg-[#0f172a] p-2 rounded-xl`}
+                onPress={onClose}
+                activeOpacity={0.7}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
                 <Ionicons name="close" size={20} color="#FFFFFF" />
               </TouchableOpacity>
             </View>
