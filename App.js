@@ -1,3 +1,4 @@
+// FileName: App.js
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -11,6 +12,7 @@ import {
   ToastAndroid,
   Animated,
   Easing,
+  StyleSheet, // Added StyleSheet
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SplashScreen from "expo-splash-screen";
@@ -64,21 +66,20 @@ const formatDate = () => {
   return `${days[date.getDay()]}, ${date.getDate()} ${months[date.getMonth()]} ${date.getFullYear()}`;
 };
 
-// ✅ FIX: Added setModalType to handle permission warning colors
 const requestLocationPermissions = async (setModalTitle, setModalMessage, setModalVisible, setModalType) => {
   try {
     const { status, canAskAgain } = await Location.requestForegroundPermissionsAsync();
     if (status === "granted") return true;
-    
+
     setModalTitle("Permission Required");
-    setModalType("warning"); // Use warning color (yellow/orange) instead of red error
-    
+    setModalType("warning");
+
     if (!canAskAgain) {
       setModalMessage("Location permissions are required. Please enable them in app settings.");
     } else {
       setModalMessage("This app needs location permissions to work properly.");
     }
-    
+
     setModalVisible(true);
     return false;
   } catch (error) {
@@ -102,7 +103,8 @@ const checkLocationPermissions = async () => {
 };
 
 // Initialize user data from Firestore using UID
-const initializeUserData = async (user, setUserData) => {
+// REFACTOR: Removed setUserData side-effect. Now returns data.
+const initializeUserData = async (user) => {
   try {
     const defaultUserData = {
       username: "User",
@@ -136,30 +138,33 @@ const initializeUserData = async (user, setUserData) => {
         emailVerified: user.emailVerified,
         lastLogin: new Date().toISOString(),
       }));
-      setUserData(userData);
     } else if (sessionData?.uid && sessionData.emailVerified) {
       try {
         isValidSession = true;
         userData = await fetchUserDataFromFirestore(sessionData.uid, defaultUserData);
-        setUserData(userData);
       } catch (error) {
         console.error("Error validating cached session:", error.message);
         await AsyncStorage.removeItem("userSession");
         userData = { ...defaultUserData };
-        setUserData(userData);
       }
     } else {
       await AsyncStorage.removeItem("userSession");
       userData = { ...defaultUserData };
-      setUserData(userData);
     }
 
     return { userData, isValidSession };
   } catch (error) {
     console.error("Error in initializeUserData:", error.message);
     await AsyncStorage.removeItem("userSession");
-    setUserData({ ...defaultUserData });
-    return { userData: { ...defaultUserData }, isValidSession: false };
+    return {
+      userData: {
+        username: "User",
+        email: "user@example.com",
+        avatar: "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y",
+        level: 1,
+        totalXP: 0,
+      }, isValidSession: false
+    };
   }
 };
 
@@ -183,7 +188,7 @@ const fetchUserDataFromFirestore = async (uid, defaultUserData) => {
         avgDailyReps: firestoreData.avgDailyReps || defaultUserData.avgDailyReps,
         level: firestoreData.level || defaultUserData.level,
         totalXP: firestoreData.totalXP || defaultUserData.totalXP,
-        hasSeenIntro: firestoreData.hasSeenIntro, // Ensure this is returned
+        hasSeenIntro: firestoreData.hasSeenIntro,
       };
     } else {
       const newUserData = { ...defaultUserData, uid };
@@ -451,10 +456,8 @@ export default function App() {
   const [modalVisible, setModalVisible] = useState(false);
   const [modalTitle, setModalTitle] = useState("");
   const [modalMessage, setModalMessage] = useState("");
-  
-  // ✅ FIX: Added modalType state (defaults to 'info')
-  const [modalType, setModalType] = useState("info"); 
-  
+  const [modalType, setModalType] = useState("info");
+
   const [verificationModalShown, setVerificationModalShown] = useState(false);
   const [loginEmail, setLoginEmail] = useState("");
   const [isInitializing, setIsInitializing] = useState(true);
@@ -465,8 +468,6 @@ export default function App() {
   const responseListener = useRef();
   const notificationsUnsubscribe = useRef(null);
   const backPressedTimeRef = useRef(0);
-
-  const tabScreens = ["dashboard", "activity", "map", "Leaderboard", "community", "story"];
 
   const navigateWithAnimation = useCallback((newScreen, params = {}) => {
     if (newScreen === activeScreen) return;
@@ -592,29 +593,29 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    let userDataUnsubscribe = null; // Store the Firestore listener cleanup function
+    let userDataUnsubscribe = null;
 
     const initApp = async () => {
       try {
         const isLogoutScenario = await AsyncStorage.getItem("isLoggingOut");
-        const { userData: loadedUserData, isValidSession } = await initializeUserData(auth.currentUser, setUserData);
+        // Refactored: Call returns data, then set state
+        const { userData: loadedUserData, isValidSession } = await initializeUserData(auth.currentUser);
+        setUserData(loadedUserData);
 
         const hasPermissions = await checkLocationPermissions();
         setLocationGranted(hasPermissions);
         if (!hasPermissions) {
-          // ✅ FIX: Passed setModalType to requestLocationPermissions
           const granted = await requestLocationPermissions(setModalTitle, setModalMessage, setModalVisible, setModalType);
           setLocationGranted(granted);
         }
 
-        let authInitialized = false;
         const unsubscribe = onAuthStateChanged(auth, async (user) => {
-          authInitialized = true;
           try {
-            const { userData: loadedUserData, isValidSession } = await initializeUserData(user, setUserData);
+            const { userData: loadedUserData, isValidSession } = await initializeUserData(user);
+            setUserData(loadedUserData); // Set state here
+
             const isLogoutScenario = await AsyncStorage.getItem("isLoggingOut");
 
-            // ✅ Clean up previous listener if exists
             if (userDataUnsubscribe) {
               userDataUnsubscribe();
               userDataUnsubscribe = null;
@@ -623,7 +624,6 @@ export default function App() {
             if (user && user.emailVerified) {
               await AsyncStorage.removeItem("isLoggingOut");
 
-              // ✅ SET UP REAL-TIME LISTENER FOR USER DATA
               const userRef = doc(db, "users", user.uid);
               userDataUnsubscribe = onSnapshot(
                 userRef,
@@ -660,14 +660,10 @@ export default function App() {
                       hasSeenIntro: firestoreData.hasSeenIntro,
                     }));
 
-                    // --- CHECK FOR INTRO STORY ---
-                    // If the user hasn't seen the intro yet, redirect them to the StoryScreen
                     if (firestoreData.hasSeenIntro === false) {
                       navigateWithAnimation("story", { isIntro: true });
                     }
-                    // -----------------------------
 
-                    // Update AsyncStorage cache
                     AsyncStorage.setItem("userData", JSON.stringify(firestoreData)).catch((err) => {
                       console.warn("Could not cache user data", err);
                     });
@@ -679,7 +675,6 @@ export default function App() {
               );
 
               const lastScreen = await AsyncStorage.getItem("lastActiveScreen");
-              // Default to dashboard, but the onSnapshot listener above will redirect to "story" if needed
               const targetScreen = lastScreen && ["dashboard", "activity", "profile", "community", "Leaderboard"].includes(lastScreen)
                 ? lastScreen
                 : "dashboard";
@@ -699,16 +694,13 @@ export default function App() {
                 setModalTitle("Email Verification Required");
                 setModalMessage("Please verify your email to access all features.");
                 setVerificationModalShown(true);
-                
-                // ✅ FIX: Explicitly set to "info" (Blue) to avoid red error modal
                 setModalType("info");
-                
+
                 navigateWithAnimation("signin", { email: user.email });
               }
             } else if (isValidSession && user) {
               await AsyncStorage.removeItem("isLoggingOut");
 
-              // ✅ SET UP REAL-TIME LISTENER FOR VALID SESSION
               const userRef = doc(db, "users", user.uid);
               userDataUnsubscribe = onSnapshot(
                 userRef,
@@ -718,38 +710,13 @@ export default function App() {
 
                     setUserData((prevData) => ({
                       ...prevData,
-                      username: firestoreData.username || prevData.username,
-                      email: firestoreData.email || prevData.email,
-                      avatar: firestoreData.avatar || prevData.avatar,
-                      uid: user.uid,
-                      privacySettings: firestoreData.privacySettings || prevData.privacySettings,
-                      avgDailySteps: firestoreData.avgDailySteps || prevData.avgDailySteps,
-                      avgDailyDistance: firestoreData.avgDailyDistance || prevData.avgDailyDistance,
-                      avgActiveDuration: firestoreData.avgActiveDuration || prevData.avgActiveDuration,
-                      avgDailyReps: firestoreData.avgDailyReps || prevData.avgDailyReps,
-                      level: firestoreData.level || prevData.level,
-                      totalXP: firestoreData.totalXP || prevData.totalXP,
-                      totalDistance: firestoreData.totalDistance || 0,
-                      totalDuration: firestoreData.totalDuration || 0,
-                      totalReps: firestoreData.totalReps || 0,
-                      totalActivities: firestoreData.totalActivities || 0,
-                      totalStrengthDuration: firestoreData.totalStrengthDuration || 0,
-                      friends: firestoreData.friends || [],
-                      deviceType: firestoreData.deviceType || [],
-                      pushToken: firestoreData.pushToken || [],
-                      isOnline: firestoreData.isOnline || false,
-                      createdAt: firestoreData.createdAt || null,
-                      lastSeen: firestoreData.lastSeen || null,
-                      lastActivityDate: firestoreData.lastActivityDate || null,
-                      lastQuestCompleted: firestoreData.lastQuestCompleted || null,
+                      ...firestoreData,
                       hasSeenIntro: firestoreData.hasSeenIntro,
                     }));
 
-                    // --- CHECK FOR INTRO STORY (Session Case) ---
                     if (firestoreData.hasSeenIntro === false) {
                       navigateWithAnimation("story", { isIntro: true });
                     }
-                    // --------------------------------------------
 
                     AsyncStorage.setItem("userData", JSON.stringify(firestoreData)).catch((err) => {
                       console.warn("Could not cache user data", err);
@@ -774,7 +741,6 @@ export default function App() {
               }
               fetchNotificationCount();
             } else {
-              // User is logged out
               if (isLogoutScenario === "true") {
                 await AsyncStorage.removeItem("isLoggingOut");
                 await AsyncStorage.multiRemove(["userSession", "lastActiveScreen", "activityParams"]);
@@ -833,7 +799,6 @@ export default function App() {
         });
 
         return () => {
-          // ✅ Cleanup both auth and user data listeners
           unsubscribe();
           if (userDataUnsubscribe) {
             userDataUnsubscribe();
@@ -863,7 +828,7 @@ export default function App() {
     if (!locationGranted) {
       setModalTitle("Location Required");
       setModalMessage("Please enable location services to use this feature.");
-      setModalType("warning"); // Warn instead of Error
+      setModalType("warning");
       setModalVisible(true);
       return;
     }
@@ -945,7 +910,8 @@ export default function App() {
   if (!fontsLoaded) return null;
 
   return (
-    <GestureHandlerRootView style={twrnc`flex-1`}>
+    // FIX: Replaced twrnc`flex-1` with standard style object to prevent useInsertionEffect errors on root
+    <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <StatusBar style="light" />
         <View style={twrnc`flex-1 bg-[#0f172a]`} onLayout={onLayoutRootView}>
@@ -960,7 +926,7 @@ export default function App() {
           <CustomModal
             title={modalTitle}
             message={modalMessage}
-            type={modalType} // ✅ FIX: Pass dynamic type here (default 'info' or 'error')
+            type={modalType}
             visible={modalVisible}
             onClose={() => {
               setModalVisible(false);
@@ -1029,7 +995,7 @@ export default function App() {
                 navigate: navigateWithAnimation,
                 goBack: () => navigateWithAnimation("dashboard")
               }}
-              route={{ params: activityParams }} // Pass params here
+              route={{ params: activityParams }}
             />
           </AnimatedScreenWrapper>
 
@@ -1040,7 +1006,7 @@ export default function App() {
 
           <AnimatedScreenWrapper isActive={activeScreen === "signin"}>
             <LoginScreen
-              navigation={{ navigate: navigateWithAnimation }} // ✅ PASSED NAVIGATION PROP
+              navigation={{ navigate: navigateWithAnimation }}
               navigateToDashboard={navigateToDashboard}
               navigateToSignUp={navigateToSignUp}
               initialEmail={loginEmail}

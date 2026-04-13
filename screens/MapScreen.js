@@ -13,6 +13,8 @@ import {
   Easing,
   Vibration,
   PanResponder,
+  Image,
+  StatusBar
 } from "react-native"
 import MapView, { Polyline, Marker, PROVIDER_GOOGLE, AnimatedRegion } from "react-native-maps"
 import * as Location from "expo-location"
@@ -39,6 +41,12 @@ import { LinearGradient } from "expo-linear-gradient"
 import { QuestProgressManager } from "../utils/QuestProgressManager"
 import { KalmanFilter } from "../utils/KalmanFilter"
 
+// --- IMPORT ICONS ---
+import WalkingIcon from "../components/icons/walking.png"
+import RunningIcon from "../components/icons/running.png"
+import CyclingIcon from "../components/icons/cycling.png"
+import JoggingIcon from "../components/icons/jogging.png"
+
 const { width, height } = Dimensions.get("window")
 const isAndroid = Platform.OS === "android"
 const isSmallDevice = width < 375
@@ -56,6 +64,22 @@ const MAP_STYLES = [
   { name: "Hybrid", style: [], mapType: "hybrid" },
   { name: "Standard", style: [], mapType: "standard" },
 ]
+
+// --- HELPER: Bearing Calculation ---
+const calculateBearing = (startLat, startLng, destLat, destLng) => {
+  const startLatRad = (startLat * Math.PI) / 180;
+  const startLngRad = (startLng * Math.PI) / 180;
+  const destLatRad = (destLat * Math.PI) / 180;
+  const destLngRad = (destLng * Math.PI) / 180;
+
+  const y = Math.sin(destLngRad - startLngRad) * Math.cos(destLatRad);
+  const x =
+    Math.cos(startLatRad) * Math.sin(destLatRad) -
+    Math.sin(startLatRad) * Math.cos(destLatRad) * Math.cos(destLngRad - startLngRad);
+  const brng = Math.atan2(y, x);
+  const brngDeg = (brng * 180) / Math.PI;
+  return (brngDeg + 360) % 360; // Normalize to 0-360
+};
 
 const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {} }) => {
   console.log("MapScreen: Initialized with params:", params)
@@ -100,9 +124,15 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
   })
   const [suggestedRoute, setSuggestedRoute] = useState(null)
   const [showSuggestedRoute, setShowSuggestedRoute] = useState(false)
-  const [isGeneratingRoute, setIsGeneratingRoute] = useState(false)
   const [followingSuggestedRoute, setFollowingSuggestedRoute] = useState(false)
   const [modalVisible, setModalVisible] = useState(false)
+
+  // --- CAMERA & HEADING STATES ---
+  const [heading, setHeading] = useState(0);
+  const [mapRotationEnabled, setMapRotationEnabled] = useState(true); // Default to rotation enabled (Nav mode)
+  const headingRef = useRef(0);
+  const [isFollowingUser, setIsFollowingUser] = useState(true);
+  const isFollowingUserRef = useRef(true);
 
   const [modalContent, setModalContent] = useState({
     title: "",
@@ -125,16 +155,11 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
   const countdownIntervalRef = useRef(null);
   const timerInitializedRef = useRef(false);
 
-  const holdProgressAnim = useRef(new Animated.Value(0)).current
-  const HOLD_DURATION = 2000
   const pan = useRef(new Animated.ValueXY({ x: width - 100, y: 16 })).current
   const recentPacesRef = useRef([])
   const paceWindowSizeRef = useRef(PACE_WINDOW_SIZES[activityType] || 5)
 
   // Animation refs
-  const buttonScaleAnim = useRef(new Animated.Value(1)).current
-  const saveButtonScaleAnim = useRef(new Animated.Value(1)).current
-  const discardButtonScaleAnim = useRef(new Animated.Value(1)).current
   const iconPulseAnim = useRef(new Animated.Value(1)).current
   const iconMoveAnim = useRef(new Animated.Value(0)).current
   const spinAnim = useRef(new Animated.Value(0)).current
@@ -159,9 +184,10 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
   const lowAccuracyCountRef = useRef(0)
   const rawCoordinatesRef = useRef([])
   const locationWatchRef = useRef(null)
+  const headingWatchRef = useRef(null)
   const lastCoordinateRef = useRef(null)
-  const holdTimerRef = useRef(null)
   const coordinatesRef = useRef([])
+  const lastMovementTimeRef = useRef(Date.now()) // Track last movement for pace smoothing
 
   // --- SMOOTHING REFS ---
   const latKalmanRef = useRef(new KalmanFilter(3, 10))
@@ -180,44 +206,74 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
       ? Location.Accuracy.BestForNavigation
       : Location.Accuracy.High
 
-  const locationDistanceInterval = 5
-  const locationTimeInterval = activityType === "cycling" ? 1000 : 500
-
+  // --- UPDATED CONFIG WITH IMAGES ---
   const activityConfigs = {
-    walking: { icon: "walk", color: "#4361EE", strokeColor: "#4361EE", darkColor: "#3651D4" },
-    running: { icon: "running", color: "#EF476F", strokeColor: "#EF476F", darkColor: "#D43E63" },
-    cycling: { icon: "bicycle", color: "#06D6A0", strokeColor: "#06D6A0", darkColor: "#05C090" },
-    jogging: { icon: "running", color: "rgb(255, 193, 7)", strokeColor: "rgb(255, 193, 7)", darkColor: "#E6BC5C" },
+    walking: { icon: WalkingIcon, color: "#4361EE", strokeColor: "#4361EE", darkColor: "#3651D4" },
+    running: { icon: RunningIcon, color: "#EF476F", strokeColor: "#EF476F", darkColor: "#D43E63" },
+    cycling: { icon: CyclingIcon, color: "#06D6A0", strokeColor: "#06D6A0", darkColor: "#05C090" },
+    jogging: { icon: JoggingIcon, color: "rgb(255, 193, 7)", strokeColor: "rgb(255, 193, 7)", darkColor: "#E6BC5C" },
   }
 
   const currentActivity = activityConfigs[activityType] || activityConfigs.walking
-  const maxSpeed = activityType === "cycling" ? 20 : 8
+
+  // --- CAMERA CONTROL FUNCTION ---
+  const updateCamera = (location, headingValue) => {
+    if (!mapRef.current || !isFollowingUserRef.current) return;
+
+    const cameraConfig = {
+      center: {
+        latitude: location.latitude,
+        longitude: location.longitude,
+      },
+      // If rotation is enabled, use heading and pitch (3D view)
+      // If disabled, 0 heading (North Up) and 0 pitch (Flat view)
+      heading: mapRotationEnabled ? headingValue : 0,
+      pitch: mapRotationEnabled ? 50 : 0,
+      altitude: mapRotationEnabled ? 200 : 1000, // Zoom closer in navigation mode
+      zoom: mapRotationEnabled ? 18 : 16,
+    };
+
+    mapRef.current.animateCamera(cameraConfig, { duration: 1000 });
+  };
+
+  const toggleMapRotation = () => {
+    const newStatus = !mapRotationEnabled;
+    setMapRotationEnabled(newStatus);
+
+    // Immediately update camera to reflect preference
+    if (currentLocation) {
+      if (mapRef.current) {
+        mapRef.current.animateCamera({
+          center: currentLocation,
+          heading: newStatus ? headingRef.current : 0,
+          pitch: newStatus ? 50 : 0,
+          zoom: newStatus ? 18 : 16
+        }, { duration: 600 });
+      }
+    }
+  };
+
+  const recenterMap = () => {
+    setIsFollowingUser(true);
+    isFollowingUserRef.current = true;
+    if (currentLocation) {
+      updateCamera(currentLocation, headingRef.current);
+    }
+  };
+
+  // --- HELPER: Handle Manual Drag ---
+  const handleManualDrag = () => {
+    if (isFollowingUserRef.current) {
+      setIsFollowingUser(false);
+      isFollowingUserRef.current = false;
+    }
+  };
 
   const formatTime = useCallback((seconds) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   }, []);
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onPanResponderGrant: () => {
-        pan.setOffset({
-          x: pan.x._value,
-          y: pan.y._value,
-        })
-      },
-      onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], { useNativeDriver: false }),
-      onPanResponderRelease: () => {
-        pan.flattenOffset()
-        setGpsIndicatorPosition({
-          x: pan.x._value,
-          y: pan.y._value,
-        })
-      },
-    }),
-  ).current
 
   const loadUserStats = async () => {
     try {
@@ -301,18 +357,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
   }, [selectedQuest, questPulseAnim])
 
   useEffect(() => {
-    if (selectedQuest && selectedQuest.activityType !== activityType) {
-      showModal(
-        "Quest Mismatch",
-        `This quest is for ${selectedQuest.activityType}, but you're doing ${activityType}. Progress may not be tracked correctly.`,
-        null,
-        "warning",
-        "exclamation-triangle",
-      )
-    }
-  }, [selectedQuest, activityType])
-
-  useEffect(() => {
     return () => {
       if (countdownIntervalRef.current) {
         clearInterval(countdownIntervalRef.current);
@@ -378,10 +422,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     const sum = recentPacesRef.current.reduce((acc, val) => acc + val, 0)
     return sum / recentPacesRef.current.length
   }
-
-  useEffect(() => {
-    pan.setValue({ x: gpsIndicatorPosition.x, y: gpsIndicatorPosition.y })
-  }, [])
 
   useEffect(() => {
     setDistanceThreshold(MINIMUM_DISTANCE_THRESHOLDS[activityType] || 1.5)
@@ -618,13 +658,33 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
           return
         }
 
+        // START WATCHING HEADING (COMPASS)
+        // Primary source of heading. Use trueHeading if available, else magHeading.
+        headingWatchRef.current = await Location.watchHeadingAsync((obj) => {
+          const newHeading = obj.trueHeading || obj.magHeading || 0;
+          setHeading(newHeading);
+          headingRef.current = newHeading;
+
+          // Smoothly animate camera rotation if in Follow Mode + Not Moving Fast (GPS takes over when moving)
+          // or simply update heading for next camera frame
+          if (isFollowingUserRef.current && mapRotationEnabled && (!lastCoordinateRef.current || !lastCoordinateRef.current.speed || lastCoordinateRef.current.speed < 1)) {
+            if (mapRef.current && currentLocation) {
+              // Subtle update for compass rotation while standing still
+              mapRef.current.animateCamera({
+                heading: newHeading
+              }, { duration: 500 });
+            }
+          }
+        });
+
         if (!currentLocation) {
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
           setCurrentLocation({
-            latitude: 37.78825,
-            longitude: -122.4324,
+            latitude: loc.coords.latitude,
+            longitude: loc.coords.longitude,
             latitudeDelta: 0.005,
             longitudeDelta: 0.005,
-          })
+          });
         }
 
         await startLocationUpdates()
@@ -653,10 +713,13 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     return () => {
       subscription?.remove()
       if (locationWatchRef.current) locationWatchRef.current.remove()
+      if (headingWatchRef.current) headingWatchRef.current.remove()
       if (intervalRef.current) clearInterval(intervalRef.current)
     }
   }, [])
 
+  // --- IDLE STATE TRACKING ---
+  // Keeps the marker moving even when not recording a run.
   const startLocationUpdates = async () => {
     try {
       if (locationWatchRef.current) {
@@ -678,18 +741,29 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         longitudeDelta: 0.005,
       }
 
-      setCurrentLocation(newRegion)
-      if (mapRef.current) {
-        mapRef.current.animateToRegion(newRegion, 1000)
+      // Initialize the animated coordinate for the marker
+      if (Platform.OS === 'android' && markerRef.current) {
+        markerRef.current.animateMarkerToCoordinate(location.coords, 0);
+      } else {
+        animatedCoordinate.setValue({
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+          latitudeDelta: 0.005,
+          longitudeDelta: 0.005
+        });
       }
 
-      // Keep updating location on map even when not tracking (for the blue dot)
-      // Note: This watcher is replaced when startTracking is called
+      setCurrentLocation(newRegion)
+
+      // Initial Camera Set
+      updateCamera(location.coords, headingRef.current);
+
+      // Keep updating location on map even when not tracking
       const subscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.BestForNavigation,
-          distanceInterval: 5,
-          timeInterval: 1000,
+          distanceInterval: 1, // High sensitivity for smooth movement
+          timeInterval: 500,
         },
         (loc) => {
           const { latitude, longitude, accuracy } = loc.coords
@@ -700,6 +774,45 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
             longitudeDelta: 0.005,
           }
           setCurrentLocation(region)
+
+          // --- ROBUST HEADING FALLBACK ---
+          // 1. Try GPS Course (heading) if available and moving
+          if (loc.coords.heading !== undefined && loc.coords.heading !== null && loc.coords.speed > 0.5) {
+            setHeading(loc.coords.heading);
+            headingRef.current = loc.coords.heading;
+          }
+          // 2. Fallback to Manual Bearing Calculation if no GPS course but moving
+          else if (lastCoordinateRef.current && loc.coords.speed > 0.5) {
+            const bearing = calculateBearing(
+              lastCoordinateRef.current.latitude,
+              lastCoordinateRef.current.longitude,
+              latitude,
+              longitude
+            );
+            setHeading(bearing);
+            headingRef.current = bearing;
+          }
+
+          lastCoordinateRef.current = { latitude, longitude, speed: loc.coords.speed };
+
+          // --- ANIMATE MARKER ---
+          if (Platform.OS === 'android') {
+            if (markerRef.current) {
+              markerRef.current.animateMarkerToCoordinate({ latitude, longitude }, 500);
+            }
+          } else {
+            animatedCoordinate.timing({
+              latitude,
+              longitude,
+              duration: 500,
+              useNativeDriver: false,
+            }).start();
+          }
+
+          // Auto-Center if Follow Mode is active
+          if (isFollowingUserRef.current) {
+            updateCamera({ latitude, longitude }, headingRef.current);
+          }
         },
       )
 
@@ -770,7 +883,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
 
       setCurrentLocation(newRegion)
       if (mapRef.current) {
-        mapRef.current.animateToRegion(newRegion, 1000)
+        updateCamera(location.coords, headingRef.current);
       }
 
       return location
@@ -785,6 +898,9 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
   const startTracking = async () => {
     console.log("MapScreen: Starting tracking with Speed-Based Pace")
     setIsTrackingLoading(true)
+
+    // Reset last movement time on start
+    lastMovementTimeRef.current = Date.now();
 
     if (!sessionStartRef.current) {
       sessionStartRef.current = Date.now()
@@ -887,10 +1003,12 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
       setIsPaused(false)
       setFollowingSuggestedRoute(followingSuggestedRoute)
 
+      // Auto-enable map rotation for immersive tracking experience
+      setMapRotationEnabled(true);
+
       if (intervalRef.current) clearInterval(intervalRef.current)
 
       // 1. STATS TIMER (Duration Only)
-      // Removed the pace calculation from here because it caused the "100+ /km" bug
       intervalRef.current = setInterval(() => {
         setStats((prev) => {
           const duration = Math.max(0, Math.floor((Date.now() - startTimeRef.current.getTime()) / 1000))
@@ -906,7 +1024,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
       const subscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.BestForNavigation,
-          distanceInterval: 2,
+          distanceInterval: 1, // Reduced for smoother camera
           timeInterval: 1000,
         },
         (loc) => {
@@ -937,6 +1055,22 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
             altitude: parseFloat(altitude.toFixed(1)),
           }
 
+          // Fallback Heading Calculation (IMPORTANT FOR BEAM)
+          const lastCoord = lastCoordinateRef.current
+          if (lastCoord) {
+            // Override heading if we are moving significantly (GPS is more reliable than compass for direction when moving)
+            if (speed > 1) {
+              if (loc.coords.heading !== undefined && loc.coords.heading !== null) {
+                setHeading(loc.coords.heading);
+                headingRef.current = loc.coords.heading;
+              } else {
+                const bearing = calculateBearing(lastCoord.latitude, lastCoord.longitude, filteredLat, filteredLng);
+                setHeading(bearing);
+                headingRef.current = bearing;
+              }
+            }
+          }
+
           // Animate Marker
           if (Platform.OS === 'android') {
             if (markerRef.current) {
@@ -952,7 +1086,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
           }
 
           // Calculate Distance & Pace
-          const lastCoord = lastCoordinateRef.current
           if (lastCoord) {
             const nowMs = smoothedCoordinate.timestamp
             const lastMs = lastUpdateTimeRef.current || nowMs
@@ -968,19 +1101,28 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
             // Only add distance if it exceeds threshold (reduces jitter)
             const distanceIncrement = dHav >= distanceThreshold ? dHav : 0
 
-            // --- PACE CALCULATION FIX ---
-            // Use GPS Speed (m/s) to calculate Instant Pace instead of Time/Dist
-            let instantPace = 0;
+            // --- MOTION-AWARE PACE SMOOTHING ---
+            let smoothedPaceVal = 0;
 
-            // Speed Threshold: Ignore pace if moving slower than 0.8 m/s (approx 3 km/h)
-            // This prevents "100+ min/km" when standing still.
+            // Threshold: 0.8 m/s is approx 2.9 km/h (slow walk)
             if (speed > 0.8) {
-              // Convert m/s to min/km:  (1000 / speed) / 60  =>  16.6667 / speed
-              instantPace = 16.6667 / speed;
+              lastMovementTimeRef.current = Date.now();
+              const instantPace = 16.6667 / speed;
+              smoothedPaceVal = calculateMovingAveragePace(instantPace);
+            } else {
+              // Check inactivity duration
+              const timeSinceLastMove = Date.now() - lastMovementTimeRef.current;
+
+              if (timeSinceLastMove > 3000) { // 3 seconds inactivity threshold
+                // Force stop
+                smoothedPaceVal = 0;
+                recentPacesRef.current = []; // Clear buffer to ensure immediate 0 and fresh start
+              } else {
+                // Decelerating phase - feed 0 into average to smooth down
+                smoothedPaceVal = calculateMovingAveragePace(0);
+              }
             }
 
-            // Smooth the instantaneous pace so it doesn't jump wildly
-            const smoothedPaceVal = calculateMovingAveragePace(instantPace);
             setSmoothedPace(smoothedPaceVal);
 
             // Elevation
@@ -1001,7 +1143,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
               return {
                 ...prevStats,
                 distance: newDistance,
-                pace: smoothedPaceVal, // Update UI with smoothed INSTANT pace
+                pace: smoothedPaceVal, // Update UI with smoothed pace
                 elevationGain: (prevStats.elevationGain || 0) + elevationGainIncrement,
               }
             })
@@ -1010,13 +1152,9 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
           setCoordinates((prev) => [...prev, smoothedCoordinate])
           lastCoordinateRef.current = smoothedCoordinate
 
-          if (mapRef.current && tracking) {
-            mapRef.current.animateToRegion({
-              latitude: filteredLat,
-              longitude: filteredLng,
-              latitudeDelta: 0.005,
-              longitudeDelta: 0.005
-            }, 1000);
+          // --- STRICT CAMERA FOLLOW ---
+          if (isFollowingUserRef.current) {
+            updateCamera({ latitude: filteredLat, longitude: filteredLng }, headingRef.current);
           }
         },
       )
@@ -1067,8 +1205,9 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
       setFollowingSuggestedRoute(false)
       Vibration.vibrate(200)
 
-      // Stop marker animation if needed, or simply let it rest
-      // Return to standard location updates
+      // Revert to non-tilted view when stopped
+      setMapRotationEnabled(false);
+
       await startLocationUpdates()
     } catch (err) {
       console.error("MapScreen: Stop tracking error:", err)
@@ -1178,13 +1317,21 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
       const calculatedCalories = calculateCalories(activityType, ensureNumeric(stats.duration));
       const coords = Array.isArray(coordinates) ? coordinates : [];
 
+      let finalAveragePace = 0;
+      if (ensureNumeric(stats.distance) > 0) {
+        finalAveragePace = (ensureNumeric(stats.duration) / 60) / (ensureNumeric(stats.distance) / 1000);
+      }
+      if (!isFinite(finalAveragePace) || finalAveragePace > 60) {
+        finalAveragePace = 0;
+      }
+
       const activityData = {
         userId: user.uid,
         activityType,
         distance: ensureNumeric(stats.distance),
         duration: ensureNumeric(stats.duration),
         avgSpeed: ensureNumeric(stats.avgSpeed),
-        pace: ensureNumeric(stats.pace),
+        pace: finalAveragePace,
         maxSpeed: ensureNumeric(stats.maxSpeed),
         elevationGain: ensureNumeric(stats.elevationGain),
         elevationLoss: ensureNumeric(stats.elevationLoss),
@@ -1302,10 +1449,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
     }
   };
 
-  const openMapStylePicker = () => {
-    setShowMapStylePicker(true)
-  }
-
   const handleMapStyleSelect = (index) => {
     setCurrentMapStyleIndex(index)
     setShowMapStylePicker(false)
@@ -1334,6 +1477,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
 
   return (
     <View style={twrnc`flex-1 bg-black`}>
+      <StatusBar barStyle="light-content" />
       {/* Modal */}
       <CustomModal
         visible={modalVisible}
@@ -1370,21 +1514,26 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
         style={twrnc`absolute inset-0`}
         provider={PROVIDER_GOOGLE}
         initialRegion={currentLocation}
-        showsUserLocation={false} // Disable default location dot, we are drawing our own animated one
+        showsUserLocation={false}
         showsMyLocationButton={false}
+        showsCompass={false}
         loadingEnabled={true}
         moveOnMarkerPress={false}
         toolbarEnabled={false}
+        pitchEnabled={true}
+        rotateEnabled={true}
         mapType={currentMapStyle.mapType}
         customMapStyle={currentMapStyle.style}
+        onPanDrag={handleManualDrag} // Stops following when user drags
       >
 
-        {/* Render Animated Marker for Tracking */}
-        {(!tracking && currentLocation) || (tracking) ? (
+        {/* Dynamic Activity Icon Marker */}
+        {currentLocation && (
           <Marker.Animated
             ref={markerRef}
-            coordinate={tracking ? animatedCoordinate : currentLocation}
+            coordinate={animatedCoordinate}
             anchor={{ x: 0.5, y: 0.5 }}
+            style={{ zIndex: 999 }}
           >
             <View style={twrnc`items-center`}>
               <View
@@ -1393,14 +1542,19 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
                   { backgroundColor: currentActivity.color },
                 ]}
               >
-                <Ionicons name={currentActivity.icon} size={18} color="white" />
+                <Image
+                  source={currentActivity.icon}
+                  style={{ width: 20, height: 20, tintColor: 'white' }}
+                  resizeMode="contain"
+                />
               </View>
+              {/* Pointer Triangle */}
               <View
                 style={twrnc`w-0 h-0 border-l-8 border-r-8 border-t-8 border-l-transparent border-r-transparent border-t-white -mt-0.5`}
               />
             </View>
           </Marker.Animated>
-        ) : null}
+        )}
 
         {showSuggestedRoute && suggestedRoute && (
           <>
@@ -1408,7 +1562,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
               coordinates={suggestedRoute.coordinates}
               strokeColor={followingSuggestedRoute ? currentActivity.strokeColor : "#3B82F6"}
               strokeWidth={followingSuggestedRoute ? 12 : 10}
-              lineDashPattern={null}
               lineCap="round"
               lineJoin="round"
               geodesic={true}
@@ -1418,7 +1571,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
               coordinates={suggestedRoute.coordinates}
               strokeColor={followingSuggestedRoute ? currentActivity.strokeColor : "#3B82F6"}
               strokeWidth={followingSuggestedRoute ? 8 : 6}
-              lineDashPattern={null}
               lineCap="round"
               lineJoin="round"
               geodesic={true}
@@ -1436,6 +1588,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
               }}
             />
 
+            {/* Start/End Waypoints */}
             {suggestedRoute.waypoints.map((waypoint, index) => (
               <Marker
                 key={`waypoint-${index}`}
@@ -1443,8 +1596,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
                   latitude: waypoint.latitude,
                   longitude: waypoint.longitude,
                 }}
-                title={waypoint.name}
-                description={waypoint.type}
               >
                 <View style={twrnc`items-center`}>
                   <View
@@ -1462,9 +1613,6 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
                       color="white"
                     />
                   </View>
-                  <View
-                    style={twrnc`w-0 h-0 border-l-8 border-r-8 border-t-8 border-l-transparent border-r-transparent border-t-white -mt-0.5`}
-                  />
                 </View>
               </Marker>
             ))}
@@ -1482,148 +1630,111 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
               geodesic={true}
             />
 
-            {coordinates.length > 1 && !followingSuggestedRoute && (
-              <>
-                <Marker coordinate={coordinates[0]}>
-                  <View style={twrnc`items-center`}>
-                    <View style={twrnc`bg-green-500 p-2.5 rounded-full border-3 border-white shadow-lg`}>
-                      <FontAwesome name="flag" size={16} color="white" />
-                    </View>
-                    <View
-                      style={twrnc`w-0 h-0 border-l-8 border-r-8 border-t-8 border-l-transparent border-r-transparent border-t-white -mt-0.5`}
-                    />
+            {!followingSuggestedRoute && (
+              <Marker coordinate={coordinates[0]}>
+                <View style={twrnc`items-center`}>
+                  <View style={twrnc`bg-green-500 p-2.5 rounded-full border-3 border-white shadow-lg`}>
+                    <FontAwesome name="flag" size={16} color="white" />
                   </View>
-                </Marker>
-                <Marker coordinate={coordinates[coordinates.length - 1]}>
-                  <View style={twrnc`items-center`}>
-                    <View style={twrnc`bg-red-500 p-2.5 rounded-full border-3 border-white shadow-lg`}>
-                      <FontAwesome name="flag" size={16} color="white" />
-                    </View>
-                    <View
-                      style={twrnc`w-0 h-0 border-l-8 border-r-8 border-t-8 border-l-transparent border-r-transparent border-t-white -mt-0.5`}
-                    />
+                </View>
+              </Marker>
+            )}
+
+            {!tracking && !isPaused && coordinates.length > 1 && !followingSuggestedRoute && (
+              <Marker coordinate={coordinates[coordinates.length - 1]}>
+                <View style={twrnc`items-center`}>
+                  <View style={twrnc`bg-red-500 p-2.5 rounded-full border-3 border-white shadow-lg`}>
+                    <FontAwesome name="flag" size={16} color="white" />
                   </View>
-                </Marker>
-              </>
+                </View>
+              </Marker>
             )}
           </>
         )}
       </MapView>
 
-      {/* Timer and Challenge Display - Always visible on top */}
-      <View style={twrnc`absolute top-12 left-0 right-0 flex-row justify-center items-center z-50 gap-4 px-4`}>
-        {remainingSecs !== null && (
-          <View style={twrnc`bg-purple-600 rounded-2xl border-2 border-purple-300 shadow-lg px-4 py-2`}>
-            <CustomText weight="bold" style={twrnc`text-white text-lg`}>
-              {formatTime(remainingSecs)}
-            </CustomText>
-          </View>
-        )}
-
-        {selectedQuest?.stakeXP && selectedQuest.stakeXP > 0 && (
-          <View style={twrnc`bg-amber-600 rounded-2xl border-2 border-amber-300 shadow-lg px-4 py-2`}>
-            <CustomText weight="bold" style={twrnc`text-white text-sm`}>
-              {selectedQuest.stakeXP} XP
-            </CustomText>
-          </View>
-        )}
-      </View>
-
-      {/* Fullscreen mode overlays */}
-      {isMapFullscreen && (
-        <>
-          {/* Stats overlay in top-left */}
-          <View style={twrnc`absolute top-24 left-4 bg-black bg-opacity-70 rounded-2xl p-4 z-40`}>
-            <View style={twrnc`flex-row items-center mb-2`}>
-              <CustomText weight="bold" style={twrnc`text-white text-2xl mr-2`}>
-                {(stats.distance / 1000).toFixed(2)}
+      {/* TOP CONTROLS & INFO */}
+      <View style={twrnc`absolute top-12 left-0 right-0 z-50 px-4`}>
+        {/* Timer and XP Badge */}
+        <View style={twrnc`flex-row justify-center items-center gap-4 mb-4`}>
+          {remainingSecs !== null && (
+            <View style={twrnc`bg-purple-600 rounded-full border border-purple-400/50 shadow-lg px-4 py-1.5`}>
+              <CustomText weight="bold" style={twrnc`text-white text-base font-mono`}>
+                {formatTime(remainingSecs)}
               </CustomText>
-              <CustomText style={twrnc`text-gray-300 text-sm`}>km</CustomText>
             </View>
-            <View style={twrnc`flex-row items-center mb-2`}>
-              <CustomText weight="bold" style={twrnc`text-white text-lg mr-2`}>
-                {stats.avgSpeed.toFixed(1)}
-              </CustomText>
-              <CustomText style={twrnc`text-gray-300 text-sm`}>km/h</CustomText>
-            </View>
-            <View style={twrnc`flex-row items-center`}>
-              <CustomText weight="bold" style={twrnc`text-white text-lg mr-2`}>
-                {formatDuration(stats.duration)}
-              </CustomText>
-              <CustomText style={twrnc`text-gray-300 text-sm`}>time</CustomText>
-            </View>
-          </View>
+          )}
 
-          {/* Close fullscreen button */}
+          {selectedQuest?.stakeXP && selectedQuest.stakeXP > 0 && (
+            <View style={twrnc`bg-amber-600 rounded-full border border-amber-400/50 shadow-lg px-4 py-1.5`}>
+              <CustomText weight="bold" style={twrnc`text-white text-xs`}>
+                {selectedQuest.stakeXP} XP Stake
+              </CustomText>
+            </View>
+          )}
+        </View>
+
+        {/* Right Side Map Controls */}
+        <View style={twrnc`absolute top-0 right-4 flex-col gap-3`}>
+          {/* Compass / Orientation Toggle */}
           <TouchableOpacity
-            onPress={toggleMapView}
-            style={twrnc`absolute top-24 right-4 bg-black bg-opacity-70 rounded-full p-3 z-40`}
+            style={[
+              twrnc`w-10 h-10 rounded-full items-center justify-center shadow-lg border border-white/20`,
+              { backgroundColor: mapRotationEnabled ? currentActivity.color : 'rgba(30, 41, 59, 0.8)' }
+            ]}
+            onPress={toggleMapRotation}
           >
-            <Ionicons name="close" size={24} color="white" />
+            <Ionicons
+              name={mapRotationEnabled ? "compass" : "compass-outline"}
+              size={22}
+              color="white"
+            />
           </TouchableOpacity>
 
-          {/* Control buttons at bottom */}
-          {(isActivityTracking || isActivityPaused) && (
-            <View style={twrnc`absolute bottom-8 left-0 right-0 flex-row items-center justify-center gap-6 z-40`}>
-              <TouchableOpacity
-                style={[
-                  twrnc`w-16 h-16 rounded-full items-center justify-center shadow-xl ${isAndroid ? "elevation-8" : ""}`,
-                  { backgroundColor: isPaused ? "#10B981" : "#FFC107" },
-                ]}
-                onPress={togglePause}
-              >
-                <Ionicons name={isPaused ? "play" : "pause"} size={28} color="white" />
-              </TouchableOpacity>
-
-              {isActivityPaused && (
-                <TouchableOpacity
-                  style={[
-                    twrnc`w-16 h-16 rounded-full items-center justify-center shadow-xl ${isAndroid ? "elevation-8" : ""}`,
-                    { backgroundColor: "#EF476F" },
-                  ]}
-                  onPress={() => stopTracking()}
-                >
-                  <Ionicons name="stop" size={28} color="white" />
-                </TouchableOpacity>
-              )}
-            </View>
+          {/* Recenter Button (only shows when user dragged away) */}
+          {!isFollowingUser && (
+            <TouchableOpacity
+              style={twrnc`w-10 h-10 bg-white rounded-full items-center justify-center shadow-lg`}
+              onPress={recenterMap}
+            >
+              <Ionicons name="locate" size={22} color={currentActivity.color} />
+            </TouchableOpacity>
           )}
 
-          {isActivityEnded && (
-            <View style={twrnc`absolute bottom-8 left-0 right-0 flex-row items-center justify-center gap-4 px-6 z-40`}>
-              <TouchableOpacity
-                style={twrnc`flex-1 bg-emerald-600 py-4 rounded-2xl items-center justify-center shadow-xl`}
-                onPress={saveActivity}
-                disabled={isTrackingLoading}
-              >
-                {isTrackingLoading ? (
-                  <ActivityIndicator size="small" color="white" />
-                ) : (
-                  <>
-                    <Ionicons name="checkmark-circle" size={24} color="white" />
-                    <CustomText weight="bold" style={twrnc`text-white text-sm mt-1`}>
-                      Save
-                    </CustomText>
-                  </>
-                )}
-              </TouchableOpacity>
+          {/* Fullscreen Toggle */}
+          <TouchableOpacity
+            style={twrnc`w-10 h-10 bg-[#1e293b]/80 rounded-full items-center justify-center border border-white/20`}
+            onPress={toggleMapView}
+          >
+            <Ionicons name={isMapFullscreen ? "contract" : "expand"} size={20} color="white" />
+          </TouchableOpacity>
+        </View>
+      </View>
 
-              <TouchableOpacity
-                style={twrnc`flex-1 bg-red-600 py-4 rounded-2xl items-center justify-center shadow-xl`}
-                onPress={handleDiscard}
-                disabled={isTrackingLoading}
-              >
-                <Ionicons name="trash" size={24} color="white" />
-                <CustomText weight="bold" style={twrnc`text-white text-sm mt-1`}>
-                  Discard
-                </CustomText>
-              </TouchableOpacity>
-            </View>
-          )}
-        </>
+      {/* FULLSCREEN STATS OVERLAY */}
+      {isMapFullscreen && (
+        <View style={twrnc`absolute top-28 left-4 bg-black/70 rounded-2xl p-4 z-40 border border-white/10`}>
+          <View style={twrnc`flex-row items-center mb-2`}>
+            <CustomText weight="bold" style={twrnc`text-white text-2xl mr-2`}>
+              {(stats.distance / 1000).toFixed(2)}
+            </CustomText>
+            <CustomText style={twrnc`text-gray-300 text-xs uppercase`}>km</CustomText>
+          </View>
+          <View style={twrnc`flex-row items-center mb-2`}>
+            <CustomText weight="bold" style={twrnc`text-white text-lg mr-2`}>
+              {stats.avgSpeed.toFixed(1)}
+            </CustomText>
+            <CustomText style={twrnc`text-gray-300 text-xs uppercase`}>km/h</CustomText>
+          </View>
+          <View style={twrnc`flex-row items-center`}>
+            <CustomText weight="bold" style={twrnc`text-white text-lg mr-2 font-mono`}>
+              {formatDuration(stats.duration)}
+            </CustomText>
+          </View>
+        </View>
       )}
 
-      {/* Stats Panel (Slide Up Drawer) */}
+      {/* BOTTOM SLIDE-UP DRAWER (Standard View) */}
       {!isMapFullscreen && (
         <Animated.View
           style={[
@@ -1638,10 +1749,10 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
             },
           ]}
         >
-          {/* 1. Drawer Handle (Visual Indicator) */}
-          <View style={twrnc`w-12 h-1.5 bg-gray-700/50 rounded-full self-center mt-3 mb-2`} />
+          {/* Handle */}
+          <View style={twrnc`w-12 h-1 bg-gray-700/50 rounded-full self-center mt-3 mb-2`} />
 
-          {/* 2. Quest Banner (Floating style, integrated into flow) */}
+          {/* Quest Banner */}
           {selectedQuest && (
             <Animated.View
               style={[
@@ -1672,37 +1783,27 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
                       <CustomText weight="bold" numberOfLines={1} style={twrnc`text-white text-sm`}>
                         {selectedQuest.title}
                       </CustomText>
-
-                      {/* Progress Bar (Compact) */}
                       {selectedQuest.category !== 'challenge' && (
                         <View style={twrnc`flex-row items-center mt-1`}>
-                          <View style={twrnc`flex-1 h-1.5 bg-black/20 rounded-full overflow-hidden mr-2`}>
+                          <View style={twrnc`flex-1 h-1 bg-black/20 rounded-full overflow-hidden mr-2`}>
                             <View style={[
                               twrnc`h-full rounded-full bg-white`,
                               { width: `${Math.min(getDisplayQuestProgress(selectedQuest) * 100, 100)}%` }
                             ]} />
                           </View>
-                          <CustomText style={twrnc`text-white/90 text-[10px] font-mono`}>
-                            {Math.round(getDisplayQuestProgress(selectedQuest) * 100)}%
-                          </CustomText>
                         </View>
                       )}
                     </View>
                   </View>
-
-                  {/* Close Button */}
-                  <TouchableOpacity
-                    onPress={() => setSelectedQuest(null)}
-                    style={twrnc`bg-black/10 p-1.5 rounded-full ml-2`}
-                  >
-                    <FontAwesome name="times" size={10} color="#FFFFFF" />
+                  <TouchableOpacity onPress={() => setSelectedQuest(null)} style={twrnc`ml-2`}>
+                    <FontAwesome name="times" size={12} color="white" />
                   </TouchableOpacity>
                 </View>
               </LinearGradient>
             </Animated.View>
           )}
 
-          {/* 3. Stats Grid - Modern 2x2 Layout */}
+          {/* Stats Grid */}
           <View style={twrnc`px-5 mb-6`}>
             <View style={twrnc`flex-row flex-wrap justify-between gap-3`}>
 
@@ -1764,10 +1865,9 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
             </View>
           </View>
 
-          {/* 4. Controls Section (Integrated Flow - No Absolute Positioning) */}
+          {/* Action Buttons */}
           <View style={twrnc`px-6 flex-row items-center justify-center gap-6`}>
-
-            {/* START BUTTON (When Idle) */}
+            {/* START */}
             {isActivityIdle && (
               <TouchableOpacity
                 style={[
@@ -1785,7 +1885,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
               </TouchableOpacity>
             )}
 
-            {/* ACTIVE CONTROLS (Pause/Resume/Stop) */}
+            {/* PAUSE / RESUME / STOP */}
             {(isActivityTracking || isActivityPaused) && (
               <>
                 <TouchableOpacity
@@ -1812,7 +1912,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
               </>
             )}
 
-            {/* ENDED CONTROLS (Save/Discard) */}
+            {/* SAVE / DISCARD */}
             {isActivityEnded && (
               <View style={twrnc`flex-row flex-1 gap-4`}>
                 <TouchableOpacity
@@ -1825,7 +1925,7 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
                   ) : (
                     <View style={twrnc`flex-row items-center`}>
                       <Ionicons name="checkmark-circle" size={20} color="white" style={twrnc`mr-2`} />
-                      <CustomText weight="bold" style={twrnc`text-white`}>Save Activity</CustomText>
+                      <CustomText weight="bold" style={twrnc`text-white`}>Save</CustomText>
                     </View>
                   )}
                 </TouchableOpacity>
@@ -1840,24 +1940,15 @@ const MapScreen = ({ navigateToActivity, route, navigateToDashboard, params = {}
               </View>
             )}
           </View>
-
-          {/* Fullscreen Toggle (Top Right) */}
-          <TouchableOpacity
-            style={twrnc`absolute top-4 right-5 bg-[#1e293b] p-2 rounded-full border border-white/10`}
-            onPress={toggleMapView}
-          >
-            <Ionicons name="expand-outline" size={18} color="white" />
-          </TouchableOpacity>
-
-          {/* Overlays (Loading/Error) - Kept relative to this container */}
-          {loading && (
-            <View style={twrnc`absolute inset-0 bg-[#0f172a]/95 items-center justify-center z-50 rounded-t-3xl`}>
-              <ActivityIndicator size="large" color="#FFC107" />
-              <CustomText style={twrnc`text-white mt-4`}>Acquiring GPS...</CustomText>
-            </View>
-          )}
-
         </Animated.View>
+      )}
+
+      {/* Loading Overlay */}
+      {loading && (
+        <View style={twrnc`absolute inset-0 bg-black/80 items-center justify-center z-50`}>
+          <ActivityIndicator size="large" color={currentActivity.color} />
+          <CustomText style={twrnc`text-white mt-4 font-bold`}>Locating Satellites...</CustomText>
+        </View>
       )}
 
     </View>

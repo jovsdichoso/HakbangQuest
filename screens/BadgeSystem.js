@@ -10,11 +10,12 @@ import {
   getDocs,
   setDoc,
   serverTimestamp,
-  increment, // Added increment for atomic XP updates
+  increment,
 } from "firebase/firestore"
 import { db, auth } from "../firebaseConfig"
 
-// Badge definitions with conditions AND REWARDS
+// Badge definitions with TRACKING METADATA
+// ✅ REMOVED: All "Step" based badges since we don't track steps.
 export const BADGE_DEFINITIONS = [
   // Quest Completion Badges
   {
@@ -24,8 +25,11 @@ export const BADGE_DEFINITIONS = [
     icon: "trophy-outline",
     category: "milestone",
     condition: (stats) => stats.totalQuestsCompleted >= 1,
+    progressTarget: 1,
+    progressKey: "totalQuestsCompleted",
+    unit: "Quest",
     rarity: "common",
-    xpReward: 100, // Reward Added
+    xpReward: 100,
   },
   {
     id: "quest_warrior",
@@ -34,8 +38,11 @@ export const BADGE_DEFINITIONS = [
     icon: "shield-checkmark",
     category: "quest",
     condition: (stats) => stats.totalQuestsCompleted >= 10,
+    progressTarget: 10,
+    progressKey: "totalQuestsCompleted",
+    unit: "Quests",
     rarity: "uncommon",
-    xpReward: 250, // Reward Added
+    xpReward: 250,
   },
   {
     id: "quest_master",
@@ -44,8 +51,11 @@ export const BADGE_DEFINITIONS = [
     icon: "medal",
     category: "quest",
     condition: (stats) => stats.totalQuestsCompleted >= 50,
+    progressTarget: 50,
+    progressKey: "totalQuestsCompleted",
+    unit: "Quests",
     rarity: "rare",
-    xpReward: 1000, // Reward Added
+    xpReward: 1000,
   },
 
   // Strength Badges
@@ -56,6 +66,9 @@ export const BADGE_DEFINITIONS = [
     icon: "barbell-outline",
     category: "strength",
     condition: (stats) => stats.strengthQuestsCompleted >= 5,
+    progressTarget: 5,
+    progressKey: "strengthQuestsCompleted",
+    unit: "Quests",
     rarity: "common",
     xpReward: 100,
   },
@@ -66,6 +79,9 @@ export const BADGE_DEFINITIONS = [
     icon: "barbell",
     category: "strength",
     condition: (stats) => stats.strengthQuestsCompleted >= 25,
+    progressTarget: 25,
+    progressKey: "strengthQuestsCompleted",
+    unit: "Quests",
     rarity: "uncommon",
     xpReward: 250,
   },
@@ -76,40 +92,11 @@ export const BADGE_DEFINITIONS = [
     icon: "fitness",
     category: "strength",
     condition: (stats) => stats.totalReps >= 1000,
+    progressTarget: 1000,
+    progressKey: "totalReps",
+    unit: "Reps",
     rarity: "rare",
     xpReward: 500,
-  },
-
-  // Step Badges
-  {
-    id: "step_counter",
-    title: "Step Counter",
-    description: "Take 10,000 steps in one day",
-    icon: "footsteps",
-    category: "fitness",
-    condition: (stats) => stats.maxDailySteps >= 10000,
-    rarity: "common",
-    xpReward: 100,
-  },
-  {
-    id: "marathon_walker",
-    title: "Marathon Walker",
-    description: "Take 50,000 steps in one day",
-    icon: "walk",
-    category: "fitness",
-    condition: (stats) => stats.maxDailySteps >= 50000,
-    rarity: "epic",
-    xpReward: 1000,
-  },
-  {
-    id: "step_millionaire",
-    title: "Step Millionaire",
-    description: "Take 1,000,000 steps total",
-    icon: "trending-up",
-    category: "milestone",
-    condition: (stats) => stats.totalSteps >= 1000000,
-    rarity: "legendary",
-    xpReward: 5000,
   },
 
   // Distance Badges
@@ -120,6 +107,9 @@ export const BADGE_DEFINITIONS = [
     icon: "location",
     category: "endurance",
     condition: (stats) => stats.maxDailyDistance >= 10,
+    progressTarget: 10,
+    progressKey: "maxDailyDistance",
+    unit: "km",
     rarity: "common",
     xpReward: 100,
   },
@@ -130,6 +120,9 @@ export const BADGE_DEFINITIONS = [
     icon: "speedometer",
     category: "endurance",
     condition: (stats) => stats.maxDailyDistance >= 50,
+    progressTarget: 50,
+    progressKey: "maxDailyDistance",
+    unit: "km",
     rarity: "epic",
     xpReward: 1000,
   },
@@ -142,6 +135,9 @@ export const BADGE_DEFINITIONS = [
     icon: "calendar",
     category: "consistency",
     condition: (stats) => stats.longestStreak >= 7,
+    progressTarget: 7,
+    progressKey: "longestStreak",
+    unit: "Days",
     rarity: "uncommon",
     xpReward: 300,
   },
@@ -152,6 +148,9 @@ export const BADGE_DEFINITIONS = [
     icon: "flame",
     category: "consistency",
     condition: (stats) => stats.longestStreak >= 30,
+    progressTarget: 30,
+    progressKey: "longestStreak",
+    unit: "Days",
     rarity: "epic",
     xpReward: 1500,
   },
@@ -164,6 +163,9 @@ export const BADGE_DEFINITIONS = [
     icon: "arrow-up-circle",
     category: "milestone",
     condition: (stats) => stats.level >= 5,
+    progressTarget: 5,
+    progressKey: "level",
+    unit: "Lvl",
     rarity: "common",
     xpReward: 100,
   },
@@ -174,6 +176,9 @@ export const BADGE_DEFINITIONS = [
     icon: "star",
     category: "milestone",
     condition: (stats) => stats.level >= 20,
+    progressTarget: 20,
+    progressKey: "level",
+    unit: "Lvl",
     rarity: "rare",
     xpReward: 500,
   },
@@ -184,6 +189,9 @@ export const BADGE_DEFINITIONS = [
     icon: "diamond",
     category: "milestone",
     condition: (stats) => stats.level >= 50,
+    progressTarget: 50,
+    progressKey: "level",
+    unit: "Lvl",
     rarity: "legendary",
     xpReward: 5000,
   },
@@ -205,10 +213,8 @@ export const calculateBadgeStats = (activitiesData, questHistory = []) => {
     strengthQuestsCompleted: questHistory.filter((q) => q.category === "strength").length,
     enduranceQuestsCompleted: questHistory.filter((q) => q.category === "endurance").length,
     fitnessQuestsCompleted: questHistory.filter((q) => q.category === "fitness").length,
-    totalSteps: activitiesData.reduce((sum, act) => sum + (act.steps || 0), 0),
     totalDistance: activitiesData.reduce((sum, act) => sum + (act.distance || 0) / 1000, 0),
     totalReps: activitiesData.reduce((sum, act) => sum + (act.reps || 0), 0),
-    maxDailySteps: Math.max(...activitiesData.map((act) => act.steps || 0), 0),
     maxDailyDistance: Math.max(...activitiesData.map((act) => (act.distance || 0) / 1000), 0),
     maxDailyReps: Math.max(...activitiesData.map((act) => act.reps || 0), 0),
     longestStreak: calculateLongestStreak(questHistory),
@@ -322,38 +328,45 @@ export const saveBadgesToFirestore = async (userId, badges) => {
   }
 };
 
-export const getAllBadgesWithStatus = (earnedBadges) => {
+// ==========================================================
+// ✅ UPDATED: MERGE STATS SO WE CAN SHOW PROGRESS (4/10)
+// ==========================================================
+export const getAllBadgesWithStatus = (earnedBadges, userStats = {}) => {
   return BADGE_DEFINITIONS.map((def) => {
-    // Check if the user has earned this specific badge definition
     const earnedBadge = earnedBadges.find((b) => b.id === def.id);
 
+    // Calculate Progress
+    const currentValue = userStats[def.progressKey] || 0;
+    const targetValue = def.progressTarget || 1;
+    const progress = Math.min(currentValue / targetValue, 1);
+
     if (earnedBadge) {
-      // User has it: Use the firestore data (includes date, claimed status, etc.)
-      return { ...def, ...earnedBadge, locked: false };
+      return {
+        ...def,
+        ...earnedBadge,
+        locked: false,
+        currentValue, // Pass these through
+        targetValue,
+        progress: 1
+      };
     } else {
-      // User does NOT have it: Return definition but mark as locked
       return {
         ...def,
         locked: true,
         earnedAt: null,
         claimed: false,
-        // Ensure the description (the "needs") is visible
-        description: def.description
+        currentValue, // Pass these through
+        targetValue,
+        progress
       };
     }
   });
 };
 
-/**
- * Load badges from Firestore
- */
 export const loadBadgesFromFirestore = async (userId) => {
   try {
     const user = auth.currentUser;
-    if (!user) {
-      console.warn("[Badge System] No authenticated user");
-      return [];
-    }
+    if (!user) return [];
 
     const userBadgesRef = doc(db, "user_badges", user.uid);
     const userBadgesDoc = await getDoc(userBadgesRef);
@@ -364,23 +377,16 @@ export const loadBadgesFromFirestore = async (userId) => {
 
       // --- DATA MIGRATION LOGIC ---
       let needsUpdate = false;
-
       const updatedBadges = badges.map((storedBadge) => {
-        // 1. Find the code definition for this stored badge
         const definition = BADGE_DEFINITIONS.find(def => def.id === storedBadge.id);
-
-        // 2. If the stored badge is missing xpReward or claimed status, fix it
         if (definition) {
           const missingReward = storedBadge.xpReward === undefined;
           const missingClaimed = storedBadge.claimed === undefined;
-
           if (missingReward || missingClaimed) {
             needsUpdate = true;
             return {
               ...storedBadge,
-              // Backfill the reward from your code definition
               xpReward: definition.xpReward || 0,
-              // Default old badges to "unclaimed" so users can enjoy clicking them
               claimed: storedBadge.claimed || false,
             };
           }
@@ -388,77 +394,56 @@ export const loadBadgesFromFirestore = async (userId) => {
         return storedBadge;
       });
 
-      // 3. If we fixed any data, save it back to Firestore immediately
       if (needsUpdate) {
-        console.log("⚠️ [Badge System] Detected legacy badge data. Migrating...");
+        console.log("⚠️ [Badge System] Migrating legacy badge data...");
         await updateDoc(userBadgesRef, {
           badges: updatedBadges,
           lastUpdated: serverTimestamp()
         });
-        console.log("✅ [Badge System] Legacy data fixed and saved.");
-        return updatedBadges;
       }
 
-      console.log(`✅ [Badge System] Loaded ${badges.length} badges from Firestore`);
       return badges;
     }
-
-    console.log("[Badge System] No badges found, returning empty array");
     return [];
   } catch (error) {
-    console.error("❌ Error loading badges from Firestore:", error);
+    console.error("❌ Error loading badges:", error);
     return [];
   }
 };
 
-/**
- * Claim Badge Reward
- * Marks badge as claimed and increments user XP atomically
- */
 export const claimBadgeReward = async (userId, badgeId) => {
   try {
     const userBadgesRef = doc(db, "user_badges", userId);
     const userDocRef = doc(db, "users", userId);
 
     const docSnap = await getDoc(userBadgesRef);
-
-    if (!docSnap.exists()) {
-      throw new Error("No badges found");
-    }
+    if (!docSnap.exists()) throw new Error("No badges found");
 
     const data = docSnap.data();
     let badges = data.badges || [];
     let rewardAmount = 0;
     let badgeFound = false;
 
-    // Find and update the specific badge
     const updatedBadges = badges.map(b => {
       if (b.id === badgeId) {
-        if (b.claimed) {
-          throw new Error("Reward already claimed");
-        }
+        if (b.claimed) throw new Error("Reward already claimed");
         badgeFound = true;
         rewardAmount = b.xpReward || 0;
-        return { ...b, claimed: true }; // Mark as claimed
+        return { ...b, claimed: true };
       }
       return b;
     });
 
     if (!badgeFound) throw new Error("Badge not found");
 
-    // 1. Update the badges array in Firestore
-    await updateDoc(userBadgesRef, {
-      badges: updatedBadges
-    });
+    await updateDoc(userBadgesRef, { badges: updatedBadges });
 
-    // 2. Increment User XP atomically
     if (rewardAmount > 0) {
       await updateDoc(userDocRef, {
         totalXP: increment(rewardAmount),
       });
     }
 
-    console.log(`✅ Claimed ${rewardAmount} XP for badge ${badgeId}`);
     return { success: true, rewardAmount, updatedBadges };
   } catch (error) {
     console.error("Error claiming reward:", error);
@@ -466,68 +451,26 @@ export const claimBadgeReward = async (userId, badgeId) => {
   }
 };
 
-// Complete quest and check for badges (Kept same)
-export const completeQuest = async (questId, questData, activityData) => {
-  try {
-    const user = auth.currentUser
-    if (!user) throw new Error("User not authenticated")
-
-    const questCompletionData = {
-      questId,
-      userId: user.uid,
-      completed: true,
-      completedAt: new Date(),
-      category: questData.category || "unknown",
-      type: questData.activityType,
-      xpEarned: questData.xpReward,
-      goalAchieved: activityData.value >= questData.goal,
-      actualValue: activityData.value,
-      targetValue: questData.goal,
-    }
-
-    await addDoc(collection(db, "quest_completions"), questCompletionData)
-
-    const userRef = doc(db, "users", user.uid)
-    const userDoc = await getDoc(userRef)
-
-    if (userDoc.exists()) {
-      const currentData = userDoc.data()
-      const newXP = (currentData.totalXP || 0) + questData.xpReward
-      const newLevel = Math.max(1, Math.floor(newXP / 1000) + 1)
-
-      await updateDoc(userRef, {
-        totalXP: newXP,
-        level: newLevel,
-        lastQuestCompleted: new Date(),
-      })
-    }
-
-    return questCompletionData
-  } catch (error) {
-    console.error("Error completing quest:", error)
-    throw error
-  }
-}
-
+// ===============================================================
+// ✅ FIX: FETCH HISTORY FROM BOTH COLLECTIONS
+// ===============================================================
 export const getUserQuestHistory = async (userId) => {
   try {
-    const questCompletionsRef = collection(db, "quest_completions");
+    // 1. Fetch legacy/active completions
+    const completionsRef = collection(db, "quest_completions");
+    // 2. Fetch new passive history
+    const historyRef = collection(db, "quest_history");
 
-    // We don't assume 'completed' is always true or present
-    // Just fetch by userId
-    const q = query(
-      questCompletionsRef,
-      where("userId", "==", userId)
-    );
+    const [completionsSnap, historySnap] = await Promise.all([
+      getDocs(query(completionsRef, where("userId", "==", userId))),
+      getDocs(query(historyRef, where("userId", "==", userId)))
+    ]);
 
-    const querySnapshot = await getDocs(q);
+    const completions = completionsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const history = historySnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-    const questHistory = querySnapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    }));
-
-    return questHistory;
+    // Merge them so Badge stats count ALL quests ever done
+    return [...completions, ...history];
   } catch (error) {
     console.error("Error fetching quest history:", error);
     return [];

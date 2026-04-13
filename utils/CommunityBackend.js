@@ -2194,13 +2194,11 @@ export const finalizeChallengeImmediate = async (transaction, challengeRef, chal
 
   const { participants, progress, stakeXP, groupType } = challengeData;
 
-  // Validate it's a duo challenge
   if (groupType !== "duo" || participants.length !== 2) {
     console.warn("CommunityBackend: Not a duo challenge, skipping immediate finalization");
     return { success: false, reason: "Not a duo challenge" };
   }
 
-  // Determine winner based on progress
   const participant1 = participants[0];
   const participant2 = participants[1];
   const progress1 = progress?.[participant1] || 0;
@@ -2223,7 +2221,6 @@ export const finalizeChallengeImmediate = async (transaction, challengeRef, chal
     winnerId = participant2;
     loserId = participant1;
   } else {
-    // It's a tie
     console.log("CommunityBackend: Challenge ended in a tie");
     transaction.update(challengeRef, {
       "status.global": "completed",
@@ -2235,12 +2232,10 @@ export const finalizeChallengeImmediate = async (transaction, challengeRef, chal
 
   console.log("CommunityBackend: Winner determined", { winnerId, loserId });
 
-  // ✅ XP TRANSFER - Duo only
   if (stakeXP && stakeXP > 0) {
     const winnerRef = doc(db, "users", winnerId);
     const loserRef = doc(db, "users", loserId);
 
-    // Get current user data within transaction
     const winnerSnap = await transaction.get(winnerRef);
     const loserSnap = await transaction.get(loserRef);
 
@@ -2253,10 +2248,8 @@ export const finalizeChallengeImmediate = async (transaction, challengeRef, chal
 
     const winnerXP = winnerData.totalXP || 0;
     const loserXP = loserData.totalXP || 0;
-
-    // Calculate new XP
     const newWinnerXP = winnerXP + stakeXP;
-    const newLoserXP = Math.max(0, loserXP - stakeXP); // ✅ Can't go negative
+    const newLoserXP = Math.max(0, loserXP - stakeXP); 
 
     console.log("CommunityBackend: XP Transfer", {
       winnerId,
@@ -2268,7 +2261,6 @@ export const finalizeChallengeImmediate = async (transaction, challengeRef, chal
       stakeXP,
     });
 
-    // Update both users atomically
     transaction.update(winnerRef, {
       totalXP: newWinnerXP,
       updatedAt: serverTimestamp(),
@@ -2279,7 +2271,6 @@ export const finalizeChallengeImmediate = async (transaction, challengeRef, chal
     });
   }
 
-  // Update challenge status
   transaction.update(challengeRef, {
     "status.global": "completed",
     winnerId: winnerId,

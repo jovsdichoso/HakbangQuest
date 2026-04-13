@@ -1,3 +1,4 @@
+// FileName: LeaderboardScreen.js
 "use client"
 
 import { useState, useEffect, useRef } from "react"
@@ -6,35 +7,35 @@ import twrnc from "twrnc"
 import CustomText from "../components/CustomText"
 import { Ionicons } from "@expo/vector-icons"
 import { db, auth } from "../firebaseConfig"
-import { collection, query, getDocs, doc, updateDoc } from "firebase/firestore" // Added updateDoc, doc
+import { collection, query, getDocs, doc, updateDoc, orderBy, limit, startAfter, where } from "firebase/firestore"
 import { onAuthStateChanged } from "firebase/auth"
-import * as Location from "expo-location" // Import Location
+import * as Location from "expo-location"
 
-// Define the collections that hold trackable user activities
-const ACTIVITY_COLLECTIONS = [
-  "normal_activities",
-  "quest_activities",
-  "challenge_activities",
-]
+const PAGE_SIZE = 10;
 
 const LeaderboardScreen = ({ navigateToDashboard }) => {
   const [leaderboardData, setLeaderboardData] = useState([])
   const [loading, setLoading] = useState(true)
-  const [sortMetric, setSortMetric] = useState("challengeWins")
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [lastVisible, setLastVisible] = useState(null)
+  const [hasMore, setHasMore] = useState(true)
+
+  // Mapping UI sort keys to Firestore field keys
+  // Note: XPManager updates 'completedChallenges', so we use that for wins/completions
+  const [sortMetric, setSortMetric] = useState("totalDistance") // Firestore field: totalDistance
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
 
-  // --- NEW STATE FOR LOCATION ---
+  // Location State
   const [filterMode, setFilterMode] = useState("global") // "global" | "city"
-  const [userLocation, setUserLocation] = useState(null) // { city: "Naga City", country: "Philippines" }
+  const [userLocation, setUserLocation] = useState(null)
   const [locationPermission, setLocationPermission] = useState(false)
 
-  // Animation ref - EXACTLY LIKE DASHBOARD
   const patternAnim = useRef(new Animated.Value(0)).current
 
   const metrics = [
     {
-      id: "totalDistance",
+      id: "totalDistance", // Matches Firestore field on user doc
       label: "Distance",
       icon: "map-outline",
       color: "#4361EE",
@@ -42,7 +43,7 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
       unit: "km",
     },
     {
-      id: "totalActivities",
+      id: "totalActivities", // Matches Firestore field on user doc
       label: "Activities",
       icon: "fitness-outline",
       color: "#06D6A0",
@@ -50,8 +51,8 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
       unit: "",
     },
     {
-      id: "challengeWins",
-      label: "Challenge Wins",
+      id: "completedChallenges", // Matches Firestore field on user doc
+      label: "Challenges",
       icon: "trophy-outline",
       color: "#FFC107",
       bgColor: "#FFC10720",
@@ -59,7 +60,7 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
     },
   ]
 
-  // Animate pattern on mount
+  // Animation
   useEffect(() => {
     Animated.loop(
       Animated.timing(patternAnim, {
@@ -76,7 +77,7 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
     outputRange: ["0deg", "360deg"],
   })
 
-  // --- 1. INITIALIZE LOCATION ---
+  // 1. Initialize Location
   useEffect(() => {
     const initializeLocation = async () => {
       try {
@@ -87,29 +88,25 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
         }
         setLocationPermission(true)
 
-        // Get coordinates
         const location = await Location.getCurrentPositionAsync({})
-        // Reverse Geocode to get City/Region
         const address = await Location.reverseGeocodeAsync(location.coords)
 
         if (address.length > 0) {
           const { city, region, country, isoCountryCode } = address[0]
           const locationData = {
-            city: city || region, // Fallback to region if city is null
+            city: city || region,
             country,
             isoCountryCode
           }
           setUserLocation(locationData)
 
-          // Update Firestore User Profile so others can see me in Local Leaderboard
           if (auth.currentUser) {
             const userRef = doc(db, "users", auth.currentUser.uid)
-            // We update silently without blocking UI
             updateDoc(userRef, { location: locationData }).catch(e => console.log("Loc update failed", e))
           }
         }
       } catch (err) {
-        console.log("Error getting location for leaderboard:", err)
+        console.log("Error getting location:", err)
       }
     }
 
@@ -122,120 +119,140 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setIsAuthenticated(!!user)
       if (!user) {
-        Alert.alert("Authentication Required", "Please sign in to view the leaderboard.", [
-          { text: "OK", onPress: navigateToDashboard },
-        ])
+        Alert.alert("Authentication Required", "Please sign in.", [{ text: "OK", onPress: navigateToDashboard }])
         setLoading(false)
       }
     })
     return () => unsubscribe()
   }, [navigateToDashboard])
 
-  const fetchData = async (isRefresh = false) => {
-    if (!isAuthenticated) return
+  // --- 2. FETCH DATA (Server-Side Pagination) ---
+  const fetchData = async (reset = false) => {
+    if (!isAuthenticated) return;
+    if (loadingMore) return; // Prevent double fetch
+
     try {
-      if (!isRefresh) setLoading(true)
-      else setRefreshing(true)
-
-      // Fetch user data INCLUDING LOCATION
-      const usersQuery = query(collection(db, "users"))
-      const usersSnapshot = await getDocs(usersQuery)
-      const users = usersSnapshot.docs.map((doc) => ({
-        uid: doc.id,
-        username: doc.data().displayName || doc.data().username || "User",
-        avatar: doc.data().avatar || "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y",
-        location: doc.data().location || null, // Fetch stored location
-      }))
-
-      // Initialize user stats
-      const userStats = {}
-      users.forEach(user => {
-        userStats[user.uid] = {
-          totalDistance: 0,
-          totalActivities: 0,
-          longestRun: 0,
-          challengeWins: 0,
-        }
-      })
-
-      // Fetch activities (Existing logic...)
-      const fetchActivitiesPromises = ACTIVITY_COLLECTIONS.map(collectionName =>
-        getDocs(query(collection(db, collectionName)))
-      )
-      const allActivitiesSnapshots = await Promise.all(fetchActivitiesPromises)
-
-      allActivitiesSnapshots.forEach(activitiesSnapshot => {
-        activitiesSnapshot.forEach((doc) => {
-          const activity = doc.data()
-          const userId = activity.userId
-          if (userStats[userId]) {
-            const distanceInMeters = (activity.distance || 0)
-            const distanceInKm = distanceInMeters / 1000
-            const validDistance = activity.activityType === 'pushup' ? 0 : distanceInKm
-            userStats[userId].totalDistance += validDistance
-            userStats[userId].totalActivities += 1
-            userStats[userId].longestRun = Math.max(userStats[userId].longestRun, validDistance)
-          }
-        })
-      })
-
-      // Fetch challenge wins
-      const challengesQuery = query(collection(db, "challenges"))
-      const challengesSnapshot = await getDocs(challengesQuery)
-      challengesSnapshot.forEach((doc) => {
-        const challenge = doc.data()
-        const winnerId = challenge.winnerId
-        if (winnerId && userStats[winnerId]) {
-          userStats[winnerId].challengeWins += 1
-        }
-      })
-
-      // Combine
-      let leaderboard = users
-        .map((user) => ({
-          uid: user.uid,
-          username: user.username,
-          avatar: user.avatar,
-          location: user.location, // Include location in final object
-          ...userStats[user.uid],
-        }))
-        .filter((user) => user.totalActivities > 0)
-
-      // --- 2. APPLY LOCATION FILTER ---
-      if (filterMode === 'city' && userLocation?.city) {
-        leaderboard = leaderboard.filter(user =>
-          user.location?.city === userLocation.city
-        )
+      if (reset) {
+        setLoading(true);
+        setHasMore(true);
+      } else {
+        setLoadingMore(true);
       }
 
-      // Sort
-      leaderboard.sort((a, b) => b[sortMetric] - a[sortMetric])
+      const usersRef = collection(db, "users");
+      let q;
 
-      setLeaderboardData(leaderboard)
+      // Determine Sort Field
+      // 'totalDistance', 'totalActivities', 'completedChallenges' are fields managed by XPManager
+      const orderByField = sortMetric;
+
+      if (filterMode === 'city' && userLocation?.city) {
+        // LOCAL FILTER
+        // NOTE: This requires a composite index in Firestore: location.city ASC + [orderByField] DESC
+        if (reset) {
+          q = query(
+            usersRef,
+            where("location.city", "==", userLocation.city),
+            orderBy(orderByField, "desc"),
+            limit(PAGE_SIZE)
+          );
+        } else if (lastVisible) {
+          q = query(
+            usersRef,
+            where("location.city", "==", userLocation.city),
+            orderBy(orderByField, "desc"),
+            startAfter(lastVisible),
+            limit(PAGE_SIZE)
+          );
+        }
+      } else {
+        // GLOBAL FILTER
+        if (reset) {
+          q = query(
+            usersRef,
+            orderBy(orderByField, "desc"),
+            limit(PAGE_SIZE)
+          );
+        } else if (lastVisible) {
+          q = query(
+            usersRef,
+            orderBy(orderByField, "desc"),
+            startAfter(lastVisible),
+            limit(PAGE_SIZE)
+          );
+        }
+      }
+
+      // If query is undefined (e.g. no location yet), abort
+      if (!q) {
+        setLoading(false);
+        setLoadingMore(false);
+        return;
+      }
+
+      const snapshot = await getDocs(q);
+
+      if (snapshot.empty) {
+        setHasMore(false);
+        if (reset) setLeaderboardData([]);
+      } else {
+        const newUsers = snapshot.docs.map(doc => {
+          const data = doc.data();
+          return {
+            uid: doc.id,
+            username: data.displayName || data.username || "User",
+            avatar: data.avatar || "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y",
+            location: data.location,
+            totalDistance: data.totalDistance || 0,
+            totalActivities: data.totalActivities || 0,
+            completedChallenges: data.completedChallenges || 0, // Using completedChallenges instead of dynamic 'wins'
+          };
+        });
+
+        if (reset) {
+          setLeaderboardData(newUsers);
+        } else {
+          setLeaderboardData(prev => [...prev, ...newUsers]);
+        }
+
+        setLastVisible(snapshot.docs[snapshot.docs.length - 1]);
+
+        // If we got less than page size, we're at the end
+        if (snapshot.docs.length < PAGE_SIZE) {
+          setHasMore(false);
+        }
+      }
+
     } catch (err) {
-      console.error("Error fetching leaderboard data:", err)
-      Alert.alert("Error", "Failed to load leaderboard. Check console for details.", [
-        { text: "OK", onPress: navigateToDashboard },
-      ])
+      console.error("Error fetching leaderboard:", err);
+      if (err.message.includes("index")) {
+        Alert.alert("Missing Index", "The local leaderboard requires a Firestore index. Check console link.");
+      }
     } finally {
-      if (!isRefresh) setLoading(false)
-      else setRefreshing(false)
+      setLoading(false);
+      setLoadingMore(false);
+      setRefreshing(false);
     }
-  }
+  };
 
-  // Re-fetch when filter mode changes
+  // Initial Fetch & Refresh on Filter Change
   useEffect(() => {
-    if (isAuthenticated) {
-      fetchData()
+    fetchData(true);
+  }, [isAuthenticated, sortMetric, filterMode, userLocation]); // Reset when these change
+
+  const handleRefresh = () => {
+    setRefreshing(true);
+    fetchData(true);
+  };
+
+  const handleLoadMore = () => {
+    if (hasMore && !loading && !loadingMore) {
+      fetchData(false);
     }
-  }, [isAuthenticated, sortMetric, navigateToDashboard, filterMode, userLocation]) // Added filterMode, userLocation
+  };
 
   const handleMetricChange = (metric) => {
     setSortMetric(metric)
-  }
-
-  const handleRefresh = () => {
-    fetchData(true)
   }
 
   const getRankingColor = (index) => {
@@ -249,17 +266,20 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
 
   const formatValue = (value, metricId) => {
     const metric = metrics.find(m => m.id === metricId)
-    if (metricId === "totalDistance" || metricId === "longestRun") {
-      return `${(Number(value) || 0).toFixed(1)} km`
+    // Ensure we handle numeric conversion safely
+    const numValue = Number(value) || 0;
+
+    if (metricId === "totalDistance") {
+      return `${numValue.toFixed(1)} km`
     }
-    return `${Math.round(value) || 0}${metric?.unit || ''}`
+    return `${Math.round(numValue)}${metric?.unit || ''}`
   }
 
-  // --- UI COMPONENT: LOCATION TOGGLE ---
+  // --- RENDERERS ---
+
   const renderLocationToggle = () => (
     <View style={twrnc`px-5 pb-2`}>
       <View style={twrnc`flex-row bg-[#1e293b] p-1 rounded-xl border border-[#334155]`}>
-        {/* Global Tab */}
         <TouchableOpacity
           onPress={() => setFilterMode("global")}
           style={[
@@ -271,7 +291,6 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
           <CustomText weight="bold" style={twrnc`text-white text-xs`}>Global</CustomText>
         </TouchableOpacity>
 
-        {/* Local Tab */}
         <TouchableOpacity
           onPress={() => {
             if (!userLocation) {
@@ -293,13 +312,6 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
           </View>
         </TouchableOpacity>
       </View>
-
-      {/* Location Status Text */}
-      {filterMode === "city" && userLocation && (
-        <CustomText style={twrnc`text-[#94a3b8] text-[10px] text-center mt-2`}>
-          Showing competitors in {userLocation.city}, {userLocation.country}
-        </CustomText>
-      )}
     </View>
   )
 
@@ -308,7 +320,7 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
       <View style={twrnc`bg-[#1e293b] rounded-2xl overflow-hidden border border-[#334155]`}>
         <View style={twrnc`p-4`}>
           <View style={twrnc`flex-row items-center`}>
-            {/* Ranking Badge */}
+            {/* Rank */}
             <View
               style={[
                 twrnc`w-10 h-10 rounded-full items-center justify-center mr-3`,
@@ -320,7 +332,7 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
               </CustomText>
             </View>
 
-            {/* User Avatar */}
+            {/* Avatar */}
             <View style={twrnc`relative mr-3`}>
               <Image
                 source={{ uri: item.avatar }}
@@ -338,13 +350,11 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
               )}
             </View>
 
-            {/* User Info */}
+            {/* Info */}
             <View style={twrnc`flex-1`}>
               <CustomText style={twrnc`text-white text-base font-semibold`}>
                 {item.username}
               </CustomText>
-
-              {/* Added Location display under name */}
               <View style={twrnc`flex-row items-center mt-0.5`}>
                 {item.location?.city && (
                   <View style={twrnc`flex-row items-center mr-2`}>
@@ -354,44 +364,18 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
                     </CustomText>
                   </View>
                 )}
-                <CustomText style={twrnc`text-[#94a3b8] text-xs`}>
-                  • {item.totalActivities} activities
-                </CustomText>
               </View>
             </View>
           </View>
 
-          {/* Stats Grid */}
-          <View style={twrnc`mt-4 flex-row justify-between`}>
-            {/* ... existing stats grid code ... */}
-            <View style={twrnc`items-center flex-1`}>
-              <CustomText style={twrnc`text-[#4361EE] text-lg font-bold`}>
-                {formatValue(item.totalDistance, "totalDistance")}
-              </CustomText>
-              <CustomText style={twrnc`text-[#64748b] text-xs mt-1`}>Distance</CustomText>
-            </View>
-            <View style={twrnc`items-center flex-1`}>
-              <CustomText style={twrnc`text-[#06D6A0] text-lg font-bold`}>
-                {formatValue(item.totalActivities, "totalActivities")}
-              </CustomText>
-              <CustomText style={twrnc`text-[#64748b] text-xs mt-1`}>Activities</CustomText>
-            </View>
-            <View style={twrnc`items-center flex-1`}>
-              <CustomText style={twrnc`text-[#FFC107] text-lg font-bold`}>
-                {formatValue(item.challengeWins, "challengeWins")}
-              </CustomText>
-              <CustomText style={twrnc`text-[#64748b] text-xs mt-1`}>Wins</CustomText>
-            </View>
-          </View>
-
-          {/* Highlight current sorting metric */}
-          {sortMetric && (
-            <View
-              style={[
-                twrnc`mt-4 p-3 rounded-xl flex-row items-center`,
-                { backgroundColor: metrics.find((m) => m.id === sortMetric)?.bgColor },
-              ]}
-            >
+          {/* Metric Highlight */}
+          <View
+            style={[
+              twrnc`mt-4 p-3 rounded-xl flex-row items-center justify-between`,
+              { backgroundColor: metrics.find((m) => m.id === sortMetric)?.bgColor },
+            ]}
+          >
+            <View style={twrnc`flex-row items-center`}>
               <Ionicons
                 name={metrics.find((m) => m.id === sortMetric)?.icon}
                 size={16}
@@ -404,11 +388,18 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
                   { color: metrics.find((m) => m.id === sortMetric)?.color },
                 ]}
               >
-                {formatValue(item[sortMetric], metrics.find((m) => m.id === sortMetric)?.id)}
+                {metrics.find((m) => m.id === sortMetric)?.label}
               </CustomText>
             </View>
-          )}
-
+            <CustomText
+              style={[
+                twrnc`text-lg font-bold`,
+                { color: metrics.find((m) => m.id === sortMetric)?.color },
+              ]}
+            >
+              {formatValue(item[sortMetric], sortMetric)}
+            </CustomText>
+          </View>
         </View>
       </View>
     </View>
@@ -443,26 +434,25 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
     </TouchableOpacity>
   )
 
-  // ... Authentication and Loading checks remain the same ...
+  const renderFooter = () => {
+    if (!loadingMore) return <View style={twrnc`h-10`} />;
+    return (
+      <View style={twrnc`py-4`}>
+        <ActivityIndicator size="small" color="#4361EE" />
+      </View>
+    );
+  };
 
   if (!isAuthenticated) return <View style={twrnc`flex-1 bg-[#0f172a]`} />
-  if (loading) return (
-    <View style={twrnc`flex-1 bg-[#0f172a] items-center justify-center`}>
-      <ActivityIndicator size="large" color="#4361EE" />
-    </View>
-  )
 
   return (
     <View style={twrnc`flex-1 bg-[#0f172a]`}>
-      {/* ===== HEADER WITH ANIMATED PATTERN ===== */}
+      {/* Header */}
       <View style={twrnc`relative bg-gradient-to-b from-[#1e293b] to-[#0f172a] overflow-hidden`}>
         <Animated.View
           style={[
             twrnc`absolute top-0 right-0 w-32 h-32`,
-            {
-              opacity: 0.08,
-              transform: [{ rotate: patternRotation }],
-            },
+            { opacity: 0.08, transform: [{ rotate: patternRotation }] },
           ]}
         >
           <View style={twrnc`absolute inset-0 flex-row flex-wrap`}>
@@ -473,75 +463,55 @@ const LeaderboardScreen = ({ navigateToDashboard }) => {
         </Animated.View>
 
         <View style={twrnc`pt-12 pb-4 px-5 relative z-10`}>
-          <TouchableOpacity
-            onPress={navigateToDashboard}
-            style={twrnc`mb-4 flex-row items-center`}
-          >
+          <TouchableOpacity onPress={navigateToDashboard} style={twrnc`mb-4 flex-row items-center`}>
             <Ionicons name="arrow-back" size={24} color="#fff" />
           </TouchableOpacity>
 
           <View style={twrnc`flex-row items-center justify-between mb-2`}>
             <View style={twrnc`flex-1`}>
-              <CustomText style={twrnc`text-white text-3xl font-bold`}>
-                Leaderboard
-              </CustomText>
+              <CustomText style={twrnc`text-white text-3xl font-bold`}>Leaderboard</CustomText>
               <CustomText style={twrnc`text-[#94a3b8] text-sm mt-1`}>
-                {leaderboardData.length} competitors {filterMode === 'city' ? 'nearby' : 'globally'}
+                {filterMode === 'city' ? 'Local Champions' : 'Global Rankings'}
               </CustomText>
             </View>
-
-            <TouchableOpacity
-              onPress={handleRefresh}
-              style={twrnc`bg-[#1e293b] p-3 rounded-xl border border-[#334155]`}
-            >
-              {refreshing ? (
-                <ActivityIndicator size="small" color="#4361EE" />
-              ) : (
-                <Ionicons name="refresh" size={20} color="#4361EE" />
-              )}
+            <TouchableOpacity onPress={handleRefresh} style={twrnc`bg-[#1e293b] p-3 rounded-xl border border-[#334155]`}>
+              {refreshing ? <ActivityIndicator size="small" color="#4361EE" /> : <Ionicons name="refresh" size={20} color="#4361EE" />}
             </TouchableOpacity>
           </View>
         </View>
       </View>
 
-      {/* ===== NEW: LOCATION TOGGLE ===== */}
       {renderLocationToggle()}
 
-      {/* ===== METRIC SELECTOR ===== */}
       <View style={twrnc`px-5 py-4`}>
         <View style={twrnc`flex-row gap-3`}>
           {metrics.map((metric) => renderMetricButton(metric))}
         </View>
       </View>
 
-      {/* ===== LEADERBOARD LIST ===== */}
-      {leaderboardData.length > 0 ? (
+      {/* List */}
+      {loading ? (
+        <View style={twrnc`flex-1 items-center justify-center`}>
+          <ActivityIndicator size="large" color="#4361EE" />
+        </View>
+      ) : leaderboardData.length > 0 ? (
         <FlatList
           data={leaderboardData}
-          keyExtractor={(item, index) => `${item.uid}-${index}`}
+          keyExtractor={(item) => item.uid}
           renderItem={renderLeaderboardItem}
           contentContainerStyle={twrnc`pb-4`}
           showsVerticalScrollIndicator={false}
+          onEndReached={handleLoadMore}
+          onEndReachedThreshold={0.5}
+          ListFooterComponent={renderFooter}
         />
       ) : (
         <View style={twrnc`flex-1 items-center justify-center p-6`}>
           <Ionicons name="location-outline" size={64} color="#64748b" style={twrnc`mb-4`} />
-          <CustomText style={twrnc`text-white text-xl font-bold mb-2 text-center`}>
-            No Competitors Here
-          </CustomText>
+          <CustomText style={twrnc`text-white text-xl font-bold mb-2 text-center`}>No Competitors Found</CustomText>
           <CustomText style={twrnc`text-[#94a3b8] text-center mb-6`}>
-            {filterMode === 'city'
-              ? `You're the first one in ${userLocation?.city || 'this area'}! Be the local champion.`
-              : "Start tracking to join the global leaderboard."}
+            {filterMode === 'city' ? `Be the first in ${userLocation?.city || 'this area'}!` : "Start tracking to join."}
           </CustomText>
-          <TouchableOpacity
-            onPress={navigateToDashboard}
-            style={twrnc`bg-[#4361EE] px-6 py-3 rounded-xl`}
-          >
-            <CustomText style={twrnc`text-white font-semibold`}>
-              Start Activity
-            </CustomText>
-          </TouchableOpacity>
         </View>
       )}
     </View>

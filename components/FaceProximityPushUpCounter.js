@@ -10,7 +10,6 @@ import Animated, { Easing } from "react-native-reanimated"
 import { Accelerometer } from "expo-sensors"
 import tw from "twrnc"
 import CustomText from "./CustomText"
-// ✅ FIX: Removed all 'firebase/firestore' imports. This component should not talk to the database.
 import CustomModal from "./CustomModal"
 
 // Get responsive dimensions
@@ -51,10 +50,9 @@ export default function FaceProximityPushUpCounter({
   const [pushUpCount, setPushUpCount] = useState(0)
   const [currentState, setCurrentState] = useState("calibrating")
   const [calibrationCountdown, setCalibrationCountdown] = useState(3)
-  const [statusInfo, setStatusInfo] = useState("") // ✅ FIX: Renamed from debugInfo
+  const [statusInfo, setStatusInfo] = useState("") 
   const [isFlat, setIsFlat] = useState(true)
-  // const [showDebug, setShowDebug] = useState(false) // ✅ FIX: Removed debug state
-  const [isFinished, setIsFinished] = useState(false) // ✅ FIX: Renamed 'isSaving' to 'isFinished'
+  const [isFinished, setIsFinished] = useState(false) 
   const [remainingSecs, setRemainingSecs] = useState(null)
 
   const [modalVisible, setModalVisible] = useState(false)
@@ -67,26 +65,18 @@ export default function FaceProximityPushUpCounter({
 
   const device = useCameraDevice("front")
   const startTimeRef = useRef(null)
-  const finishReportedRef = useRef(false) // ✅ FIX: Prevents multiple 'onFinish' calls
+  const finishReportedRef = useRef(false)
   const countdownIntervalRef = useRef(null)
 
-  // ✅ --- START OF FIX ---
-  // Create a ref to hold the latest rep count.
-  // This solves the "stale closure" problem in the timer.
   const repCountRef = useRef(pushUpCount);
   useEffect(() => {
     repCountRef.current = pushUpCount;
   }, [pushUpCount]);
-  // ✅ --- END OF FIX ---
-
-
-  // Counter animation
   const counterScale = useSharedValue(1)
   const counterStyle = useAnimatedStyle(() => ({
     transform: [{ scale: withSpring(counterScale.value, { damping: 15, stiffness: 200 }) }],
   }))
 
-  // Face size tracking
   const baselineFaceSize = useRef(0)
   const downThreshold = useRef(0)
   const upThreshold = useRef(0)
@@ -96,7 +86,6 @@ export default function FaceProximityPushUpCounter({
   const recentFaceSizes = useRef([])
   const smoothingWindow = 3
 
-  // Liveness detection
   const hasEyesOpen = useRef(false)
   const hasEyesClosed = useRef(false)
 
@@ -154,45 +143,33 @@ export default function FaceProximityPushUpCounter({
     if (onRepUpdate) onRepUpdate(pushUpCount)
   }, [pushUpCount, onRepUpdate])
   
-  // ✅ FIX: Replaced 'saveWorkout' with 'handleFinishWorkout'
-  // This function NO LONGER saves to Firestore. It just bundles the
-  // final stats and sends them to ActivityScreen via the onFinish prop.
   const handleFinishWorkout = useCallback(async (isCancel = false) => {
-    if (finishReportedRef.current) return; // Prevent multiple finishes
+    if (finishReportedRef.current) return; 
     finishReportedRef.current = true;
     setIsFinished(true);
 
-    // Stop the timer if it's running
     if (countdownIntervalRef.current) {
       clearInterval(countdownIntervalRef.current);
       countdownIntervalRef.current = null;
     }
-
-    // ✅ FIX: Handle CANCEL button press
     if (isCancel) {
       console.log("[FaceCounter] Workout cancelled by user.");
       if (onFinish) {
-        onFinish(null); // Send null to signal cancellation
+        onFinish(null); 
       }
       return;
     }
 
     try {
-      // ✅ --- START OF FIX ---
-      // Read the rep count from the ref to get the LATEST value
       const finalRepCount = repCountRef.current;
-      // ✅ --- END OF FIX ---
-
-      // Allow short activities for timer-based challenges
       const isTimerChallenge = durationGoal > 0;
-      // ✅ FIX: Allow 0 reps for timer challenge (winner-takes-all), but use finalRepCount
-      if (finalRepCount < 1 && !isTimerChallenge) { // Changed minimum to 1 rep
+      if (finalRepCount < 1 && !isTimerChallenge) { 
         setModalContent({
           title: "Workout Too Short",
           message: "Please complete at least 1 push-up to finish your workout.",
           type: "info",
           buttons: [{ label: "OK", style: "primary", action: () => {
-            finishReportedRef.current = false; // Allow retry
+            finishReportedRef.current = false; 
             setIsFinished(false);
             return true;
           } }],
@@ -206,28 +183,22 @@ export default function FaceProximityPushUpCounter({
         ? Math.round((endTime - startTimeRef.current) / 1000)
         : 0;
 
-      // Calculate calories
-      const calories = Math.round(finalRepCount * 0.5); // ✅ FIX: Use finalRepCount
+      const calories = Math.round(finalRepCount * 0.5); 
 
-      // ✅ Bundle the final stats for ActivityScreen
       const finalStats = {
-        reps: finalRepCount, // ✅ FIX: Use finalRepCount
-        duration: duration, // Send total duration
+        reps: finalRepCount, 
+        duration: duration, 
         calories: calories,
         activityType: "pushup",
         unit: "reps",
-        // This flag tells ActivityScreen's saveActivity it was a strength workout
         isStrengthActivity: true, 
       };
 
       console.log("[FaceCounter] Finishing workout. Sending stats to parent:", finalStats);
 
-      // ✅ Pass all data back to ActivityScreen to handle saving
       if (onFinish) {
         onFinish(finalStats);
       }
-
-      // We don't show a modal here. ActivityScreen will show the "Activity Saved" modal.
 
     } catch (error) {
       setModalContent({
@@ -237,21 +208,16 @@ export default function FaceProximityPushUpCounter({
         buttons: [{ label: "OK", style: "primary", action: () => true }],
       });
       setModalVisible(true);
-      finishReportedRef.current = false; // Allow retry on error
+      finishReportedRef.current = false;
       setIsFinished(false);
     }
-    // ✅ --- START OF FIX ---
-    // Removed 'pushUpCount' from dependency array, as we now use the ref.
   }, [durationGoal, onFinish]);
-  // ✅ --- END OF FIX ---
 
-
-  // ✅ FIX: Cleaned up timer and auto-finish logic
+  // Countdown timer
   useEffect(() => {
     if (currentState === "up" && startTimeRef.current === null) {
       startTimeRef.current = Date.now();
 
-      // Start challenge countdown timer if durationGoal is provided
       if (durationGoal && durationGoal > 0 && remainingSecs === null) {
         const initialSeconds = durationGoal * 60;
         setRemainingSecs(initialSeconds);
@@ -264,14 +230,12 @@ export default function FaceProximityPushUpCounter({
               countdownIntervalRef.current = null;
               
               console.log("[FaceCounter] Timer finished. Auto-finishing workout.");
-              Vibration.vibrate(500); // Long vibration on finish
+              Vibration.vibrate(500); 
               
-              // Auto-finish when timer reaches 0
-              handleFinishWorkout(false); // Pass false to indicate not a cancel
+              handleFinishWorkout(false); 
               return 0;
             }
 
-            // Vibration feedback for last 3 seconds
             if (prev <= 4 && prev > 1) {
               Vibration.vibrate(100);
             }
@@ -281,9 +245,8 @@ export default function FaceProximityPushUpCounter({
         }, 1000);
       }
     }
-  }, [currentState, durationGoal, remainingSecs, handleFinishWorkout]); // Added handleFinishWorkout to dep array
+  }, [currentState, durationGoal, remainingSecs, handleFinishWorkout]); 
 
-  // Clean up timer on unmount
   useEffect(() => {
     return () => {
       if (countdownIntervalRef.current) {
@@ -359,7 +322,6 @@ export default function FaceProximityPushUpCounter({
         hasEyesOpen.current = true
       }
       
-      // ✅ FIX: Simplified status info
       setStatusInfo(`Calibrating... ${calibrationCountdown}s\nBlink to prove liveness.`)
       return
     }
@@ -369,7 +331,6 @@ export default function FaceProximityPushUpCounter({
       return
     }
     
-    // ✅ FIX: Simplified status info
     setStatusInfo(isFlat ? "✅ Ready" : "⚠️ Phone not flat. Paused.")
 
     if (currentState === "up" && smoothedFaceSize > downThreshold.current) {
@@ -438,7 +399,7 @@ export default function FaceProximityPushUpCounter({
 
   const handleFacesDetection = (faces) => {
     try {
-      if (isFinished) return; // Stop processing if finished
+      if (isFinished) return; 
 
       if (faces?.length > 0) {
         const face = faces[0]
@@ -447,12 +408,12 @@ export default function FaceProximityPushUpCounter({
       } else {
         drawFaceBounds()
         if (currentState !== "calibrating") {
-          setStatusInfo("❌ No face detected. Move closer.") // ✅ FIX: Clearer message
+          setStatusInfo("❌ No face detected. Move closer.") 
         }
       }
     } catch (error) {
       console.error("Error in face detection:", error)
-      setStatusInfo(`Error: ${error}`) // ✅ FIX: Use statusInfo
+      setStatusInfo(`Error: ${error}`) 
     }
   }
 

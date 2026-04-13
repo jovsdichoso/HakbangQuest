@@ -174,6 +174,9 @@ const ChallengeDetailsModal = ({
   if (!selectedChallenge) return null
 
   const endDate = getDateFromTimestamp(selectedChallenge.endDate)
+  // FIX: Calculate if expired based on date, regardless of DB status
+  const isExpired = endDate ? new Date() > endDate : false;
+
   const progressMap = selectedChallenge.progress || {}
   const participantIds = selectedChallenge.participants || []
 
@@ -464,8 +467,9 @@ const ChallengeDetailsModal = ({
             {/* Action Buttons - FIX: Full button touch areas */}
             <View style={twrnc`mb-4 mt-6`}>
 
-              {/* Winner Display */}
-              {selectedChallenge.status?.global === "completed" && (
+              {/* Winner Display OR Expired Display */}
+              {/* FIX: Check isExpired as well */}
+              {(selectedChallenge.status?.global === "completed" || isExpired) && (
                 <View
                   style={[
                     twrnc`p-4 rounded-xl mb-3`,
@@ -485,15 +489,15 @@ const ChallengeDetailsModal = ({
                     </View>
                   ) : (
                     <CustomText weight="bold" style={twrnc`text-[#9BA3AF] text-sm text-center uppercase tracking-wide`}>
-                      Challenge Ended: No Winner
+                      {isExpired ? "Challenge Expired" : "Challenge Ended: No Winner"}
                     </CustomText>
                   )}
                 </View>
               )}
 
 
-              {/* Active Challenge Actions */}
-              {selectedChallenge.status?.global !== "completed" && (
+              {/* Active Challenge Actions - FIX: Ensure not expired */}
+              {selectedChallenge.status?.global !== "completed" && !isExpired && (
                 <>
                   {/* Join/Accept Row */}
                   {(canAcceptInvite || canJoinPublic) && ( // Don't render if already joined

@@ -21,7 +21,7 @@ import CustomText from "../components/CustomText"
 import { FontAwesome, Ionicons } from "@expo/vector-icons"
 import { auth, db } from "../firebaseConfig"
 import { signOut } from "firebase/auth"
-import { doc, getDoc, updateDoc, setDoc } from "firebase/firestore"
+import { doc, getDoc, updateDoc, setDoc, collection, query, where, getDocs } from "firebase/firestore"
 import * as ImagePicker from "expo-image-picker"
 import axios from "axios"
 import CustomModal from "../components/CustomModal"
@@ -473,11 +473,28 @@ const ProfileScreen = ({ navigateToDashboard, navigateToLanding, navigateToSignI
       const user = auth.currentUser
       if (!user) throw new Error("Not authenticated")
 
+      // ✅ CHECK IF USERNAME EXISTS (Added Logic)
+      const usersRef = collection(db, "users");
+      const q = query(usersRef, where("username", "==", newUsername));
+      const querySnapshot = await getDocs(q);
+
+      if (!querySnapshot.empty) {
+        showModal({
+          title: "Username Taken",
+          message: "This username is already occupied by another user. Please choose another one.",
+          type: "warning",
+        });
+        setSavingUsername(false);
+        return;
+      }
+
       const userRef = doc(db, "users", user.uid)
       await updateDoc(userRef, { username: newUsername })
 
       setUserData((prev) => ({ ...prev, username: newUsername }))
-      updateUserData({ username: newUsername })
+      if (updateUserData) {
+        updateUserData({ username: newUsername })
+      }
       setShowEditProfileModal(false)
 
       showModal({

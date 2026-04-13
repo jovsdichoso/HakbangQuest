@@ -39,8 +39,6 @@ export class XPManager {
         console.log(`[XPManager] 🚀 Processing ${activityData.activityType} for user ${userId}`);
 
         try {
-            // STEP 1: PRE-FETCH ACTIVE QUESTS (The "Passive Scan" Fix)
-            // We fetch IDs here to know what to read inside the transaction
             const questsRef = collection(db, "quests");
             const q = query(
                 questsRef,
@@ -51,9 +49,6 @@ export class XPManager {
             const userQuestIds = questsSnapshot.docs.map(d => d.id);
 
             return await runTransaction(db, async (transaction) => {
-                // =========================================================
-                // PHASE 1: ALL READS (Must come before ANY writes)
-                // =========================================================
 
                 // 1. Receipt Check
                 const receiptRef = doc(db, "activity_receipts", activityId);
@@ -318,7 +313,9 @@ export class XPManager {
         const unit = challengeData.unit?.toLowerCase() || "";
         switch (unit) {
             case "reps": return stats.reps || 0;
-            case "distance": return (stats.distance || 0) / 1000;
+            case "distance":
+            case "km":
+                return (stats.distance || 0) / 1000;
             case "duration": return (stats.duration || 0) / 60;
             case "steps": return stats.steps || 0;
             case "calories": return stats.calories || 0;

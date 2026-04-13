@@ -24,11 +24,10 @@ export const calculateDistance = (lat1, lon1, lat2, lon2) => {
 export const calculatePace = (distance, duration) => {
   if (!distance || !duration || distance <= 0 || duration <= 0) return 0;
   const distanceInKm = distance / 1000;
-  const pace = (duration / 60) / distanceInKm; // min per km
+  const pace = (duration / 60) / distanceInKm; 
   return pace;
 };[2]
 
-// Format distance from meters to km with appropriate precision
 export const formatDistance = (meters) => {
   if (isNaN(meters) || meters === null || meters === undefined || meters === 0) return "0.00 km"
 
@@ -36,7 +35,6 @@ export const formatDistance = (meters) => {
   return `${km.toFixed(2)} km`
 }
 
-// Format duration from seconds to HH:MM:SS or MM:SS
 export const formatDuration = (seconds) => {
   if (isNaN(seconds) || seconds === null || seconds === undefined || seconds === 0) return "0:00"
 

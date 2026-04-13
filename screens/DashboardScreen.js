@@ -182,6 +182,10 @@ const getActivityDisplayInfo = (activity) => {
     const rawPace = activity.pace || activity.stats?.pace;
     const formattedPace = formatPaceString(rawPace);
 
+    const rawSpeed = activity.avgSpeed || activity.stats?.avgSpeed || 0;
+    const formattedSpeed = typeof rawSpeed === 'string' && rawSpeed.includes('km/h')
+      ? rawSpeed
+      : `${Number(rawSpeed).toFixed(1)} km/h`;
 
     return {
       primaryMetric: {
@@ -204,7 +208,6 @@ const getActivityDisplayInfo = (activity) => {
       },
     }
   }
-
   const isStrength =
     (activity.reps || activity.reps || 0) > 0 ||
     ["pushup", "pullup", "squat", "plank", "situp", "normal"].includes(activityType)
@@ -507,26 +510,6 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
     }
   }, [])
 
-  const handleClaimQuest = async (quest) => {
-    try {
-      setLoading(true); // Or local loading state for that button
-      const result = await QuestManager.claimQuestReward(userData.uid, quest.id);
-
-      if (result.success) {
-        // Show success sound/modal
-        alert(`Reward Claimed! +${result.xpEarned} XP`);
-        // Refresh dashboard data
-        fetchData();
-      } else {
-        alert("Could not claim reward.");
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
     const getUserLocation = async () => {
       try {
@@ -574,7 +557,6 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
       }
     }
 
-    // 2. Calculate Averages (Keep this logic)
     const totalDistance = activitiesData.reduce((sum, act) => sum + (Number(act.distance) || 0), 0)
     const totalDuration = activitiesData.reduce((sum, act) => sum + toSeconds(act.duration || act.durationSeconds || 0), 0)
     const totalReps = activitiesData.reduce((sum, act) => sum + (Number(act.reps) || 0), 0)
@@ -589,9 +571,6 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
     const avgActiveDuration = Math.round(totalDuration / 60 / Math.max(activitiesData.length, 1))
     const avgDailyReps = Math.round(totalReps / Math.max(uniqueDays, 1))
 
-    // 3. FIX: Use the Source of Truth for Level & XP
-    // Instead of recalculating based on activity count (which was wrong),
-    // we use the 'userData' prop from the component which comes from Firestore.
     const level = userData?.level || 1
     const totalXP = userData?.totalXP || userData?.xp || 0
 
@@ -607,29 +586,25 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
 
   const calculateQuestProgress = useCallback((quest) => {
     if (!quest) return 0;
-    const progressPercentage = QuestProgressManager.getProgressPercentage(quest, {
-      distance: todaysTotals.distanceMeters,
-      duration: todaysTotals.durationSec,
-      reps: todaysTotals.reps,
-    }, todaysTotals.calories || 0);
-
-    return progressPercentage;
+    // For passive quests, the progress is often directly stored in the quest object
+    // But we can fallback to calculation if needed.
+    // Assuming quest.progress contains the definitive passive tracking value:
+    const progress = quest.progress || 0;
+    const goal = quest.goal || 1;
+    return Math.min(progress / goal, 1);
   }, [todaysTotals]);
 
   const getCurrentQuestValue = useCallback((quest) => {
     if (!quest) return 0;
-    const totalValue = QuestProgressManager.getTotalValue(quest, {
-      distance: todaysTotals.distanceMeters,
-      duration: todaysTotals.durationSec,
-      reps: todaysTotals.reps,
-    }, todaysTotals.calories || 0);
-
-    return totalValue;
+    return quest.progress || 0;
   }, [todaysTotals]);
 
 
   const getQuestStatus = useCallback(
     (quest) => {
+      // Use the explicit status from Firestore if available
+      if (quest.status === 'completed') return "completed";
+
       const progress = calculateQuestProgress(quest)
       if (progress >= 1) return "completed"
       if (progress > 0) return "in_progress"
@@ -658,6 +633,10 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
         }
 
         const userId = user ? user.uid : sessionData.uid;
+
+        // ✅ TRIGGER PASSIVE QUEST CHECK
+        // This ensures that opening the dashboard forces an evaluation and awards XP instantly if background sync missed something.
+        await QuestManager.checkAndProcessQuests(userId);
 
         let startDate, endDate;
         if (timePeriod === "week") {
@@ -703,10 +682,18 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
           ...normalActivitiesData
         ];
 
-        // Deduplicate by ID using a Map
+        // --- FIXED DEDUPLICATION LOGIC ---
+        // Uses timestamp and activityType to identify duplicates across different collections
         const uniqueActivitiesMap = new Map();
         rawActivities.forEach(item => {
-          if (item.id) uniqueActivitiesMap.set(item.id, item);
+          const date = item.createdAt?.toDate ? item.createdAt.toDate() : new Date(item.createdAt);
+          const timeKey = !isNaN(date.getTime()) ? date.getTime() : item.id;
+          const typeKey = item.activityType || 'unknown';
+          const uniqueKey = `${timeKey}_${typeKey}`;
+
+          if (!uniqueActivitiesMap.has(uniqueKey)) {
+            uniqueActivitiesMap.set(uniqueKey, item);
+          }
         });
 
         const allPeriodActivities = Array.from(uniqueActivitiesMap.values());
@@ -799,12 +786,26 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
           getDocs(allNormalActivitiesQuery),
         ]);
 
-        const allActivitiesData = [
+        const rawAllActivitiesData = [
           ...allActivitiesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
           ...allQuestActivitiesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
           ...allChallengeActivitiesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
           ...allNormalActivitiesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
         ];
+
+        // --- FIXED DEDUPLICATION FOR STATS ---
+        const uniqueAllActivitiesMap = new Map();
+        rawAllActivitiesData.forEach(item => {
+          const date = item.createdAt?.toDate ? item.createdAt.toDate() : new Date(item.createdAt);
+          const timeKey = !isNaN(date.getTime()) ? date.getTime() : item.id;
+          const typeKey = item.activityType || 'unknown';
+          const uniqueKey = `${timeKey}_${typeKey}`;
+
+          if (!uniqueAllActivitiesMap.has(uniqueKey)) {
+            uniqueAllActivitiesMap.set(uniqueKey, item);
+          }
+        });
+        const allActivitiesData = Array.from(uniqueAllActivitiesMap.values());
 
         const calculatedStats = calculateUserStats(allActivitiesData);
         setPeriodStats({
@@ -826,19 +827,14 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
             userQuests = await QuestManager.generateDailyQuests(userId, calculatedStats);
           }
 
-          // ✅ CRITICAL FIX: Sort quests so "Ready to Claim" appears FIRST
+          // ✅ SORT QUESTS: Active First, Completed Last
           userQuests.sort((a, b) => {
-            // Priority 1: Ready to Claim
-            const aReady = a.status === 'ready_to_claim' || (calculateQuestProgress(a) >= 1 && a.status !== 'claimed');
-            const bReady = b.status === 'ready_to_claim' || (calculateQuestProgress(b) >= 1 && b.status !== 'claimed');
+            const aComplete = a.status === 'completed';
+            const bComplete = b.status === 'completed';
 
-            if (aReady && !bReady) return -1; // a first
-            if (!aReady && bReady) return 1;  // b first
-
-            // Priority 2: In Progress (highest % first)
-            const aProg = calculateQuestProgress(a);
-            const bProg = calculateQuestProgress(b);
-            return bProg - aProg;
+            if (!aComplete && bComplete) return -1; // Active first
+            if (aComplete && !bComplete) return 1;  // Completed last
+            return (b.progress || 0) - (a.progress || 0); // Then by progress descending
           });
 
           setDynamicQuests(userQuests);
@@ -853,10 +849,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
         let badgesToNotify = [];
 
         try {
-          // 1. Load what the user has actually earned from Firestore
           const earnedBadgesFromFireStore = await loadBadgesFromFirestore(userId);
-
-          // 2. Run the logic to see if they earned NEW ones right now
           const userQuestHistory = await getUserQuestHistory(userId);
           const badgeStats = calculateBadgeStats(allActivitiesData, userQuestHistory);
           const newBadges = evaluateBadges(badgeStats, earnedBadgesFromFireStore);
@@ -864,16 +857,13 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
           if (newBadges.length > 0) {
             const updatedEarnedBadges = [...earnedBadgesFromFireStore, ...newBadges];
             await saveBadgesToFirestore(userId, updatedEarnedBadges);
-
-            // Update our local reference of earned badges
             currentBadges = updatedEarnedBadges;
             badgesToNotify = newBadges;
           } else {
             currentBadges = earnedBadgesFromFireStore;
           }
 
-          // 3. Merge earned badges with the full list
-          const fullBadgeList = getAllBadgesWithStatus(currentBadges);
+          const fullBadgeList = getAllBadgesWithStatus(currentBadges, badgeStats);
           setAllBadges(fullBadgeList);
 
           if (badgesToNotify.length > 0) {
@@ -887,7 +877,6 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
         const referenceQuest = await (async () => {
           try {
             const userQuests = await QuestManager.loadUserQuests(userId);
-            // Use the sorted list if available, otherwise fetch raw
             return userQuests[0] || null;
           } catch {
             return null;
@@ -1016,58 +1005,12 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
     fetchData()
   }, [fetchData])
 
-  const navigateToQuestActivity = async (quest) => {
-    try {
-      setIsQuestModalVisible(false);
-      const currentProgress = getCurrentQuestValue(quest);
-      const progressPercentage = calculateQuestProgress(quest);
-      const currentStatus = getQuestStatus(quest);
-
-      navigateToActivity({
-        questId: quest.id,
-        title: quest.title,
-        description: quest.description,
-        goal: quest.goal,
-        unit: quest.unit,
-        progress: currentProgress,
-        progressPercentage: progressPercentage,
-        status: currentStatus,
-        activityType: quest.activityType,
-        xpReward: quest.xpReward,
-        difficulty: quest.difficulty,
-        category: quest.category,
-      });
-    } catch (error) {
-      console.error("Error starting quest", error);
-    }
-  };
+  // Removed navigateToQuestActivity as manual starting isn't needed for passive quests
+  // But keeping viewActivityDetails for the activity history modal
 
   const viewActivityDetails = (activity) => {
     setSelectedActivity(activity)
     setIsActivityModalVisible(true)
-  }
-
-  const resumeActivity = () => {
-    setIsActivityModalVisible(false)
-    if (selectedActivity) {
-      navigateToActivity({
-        activityType: selectedActivity.activityType,
-        coordinates: Array.isArray(selectedActivity.coordinates) ? selectedActivity.coordinates : [],
-        stats: {
-          distance: Number.parseFloat(selectedActivity.distance) * 1000 || 0,
-          duration:
-            selectedActivity.duration
-              ?.split(":")
-              .reduce((acc, time, index) => acc + Number.parseInt(time) * (index === 0 ? 60 : 1), 0) || 0,
-          pace:
-            selectedActivity.stats?.pace
-              ?.replace("/km", "")
-              .split(":")
-              .reduce((acc, time, index) => acc + Number.parseInt(time) * (index === 0 ? 60 : 1), 0) || 0,
-          avgSpeed: Number.parseFloat(selectedActivity.stats?.avgSpeed) || 0,
-        },
-      })
-    }
   }
 
   const clearActivity = () => {
@@ -1088,33 +1031,23 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
     setIsBadgeDetailModalVisible(true)
   }
 
-  // --- NEW: HANDLE CLAIM REWARD ---
   const handleClaimReward = async (badge) => {
     try {
       const user = auth.currentUser;
       if (!user) return;
 
-      // Call the backend logic
       const result = await claimBadgeReward(user.uid, badge.id);
 
-      // Optimistically update local state
       if (result.success) {
-        // Update All Badges List
         const updatedBadges = allBadges.map(b =>
           b.id === badge.id ? { ...b, claimed: true } : b
         );
         setAllBadges(updatedBadges);
-
-        // Update Selected Badge (to refresh Modal UI immediately)
         setSelectedBadge(prev => ({ ...prev, claimed: true }));
-
-        // Update User XP Stats (Add reward to current state)
         setUserStats(prev => ({
           ...prev,
           totalXP: (prev.totalXP || 0) + result.rewardAmount
         }));
-
-        console.log(`Claimed ${result.rewardAmount} XP!`);
       }
     } catch (error) {
       console.error("Failed to claim reward", error);
@@ -1244,12 +1177,26 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
         getDocs(createDayQuery(normalActivitiesRef)),
       ])
 
-      const activitiesData = [
+      const rawActivitiesData = [
         ...activitiesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
         ...questActivitiesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
         ...challengeActivitiesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
         ...normalActivitiesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
       ]
+
+      // --- FIXED DEDUPLICATION FOR LIST DISPLAY ---
+      const uniqueActivitiesMap = new Map()
+      rawActivitiesData.forEach((item) => {
+        const date = item.createdAt?.toDate ? item.createdAt.toDate() : new Date(item.createdAt)
+        const timeKey = !isNaN(date.getTime()) ? date.getTime() : item.id
+        const typeKey = item.activityType || "unknown"
+        const uniqueKey = `${timeKey}_${typeKey}`
+
+        if (!uniqueActivitiesMap.has(uniqueKey)) {
+          uniqueActivitiesMap.set(uniqueKey, item)
+        }
+      })
+      const activitiesData = Array.from(uniqueActivitiesMap.values())
 
       const detailedActivitiesData = activitiesData.map((docData) => ({
         id: docData.id,
@@ -1730,14 +1677,14 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                           twrnc`h-full rounded-full`,
                           {
                             width: `${Math.min(calculateQuestProgress(todayQuest) * 100, 100)}%`,
-                            backgroundColor: getQuestStatus(todayQuest) === 'ready_to_claim' || getQuestStatus(todayQuest) === 'claimed' ? "#06D6A0" : "#4361EE",
+                            backgroundColor: getQuestStatus(todayQuest) === 'completed' ? "#06D6A0" : "#4361EE",
                           },
                         ]}
                       />
                     </View>
                   </View>
 
-                  {/* Reward and Action - UPDATED SECTION */}
+                  {/* Reward and Action - PASSIVE TRACKING UI */}
                   <View style={twrnc`flex-row items-center justify-between`}>
 
                     {/* Reward Badge */}
@@ -1751,29 +1698,19 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                     </View>
 
                     {/* DYNAMIC ACTION LOGIC */}
-                    {getQuestStatus(todayQuest) === 'claimed' ? (
-                      // CASE 1: Completed & Claimed
+                    {getQuestStatus(todayQuest) === 'completed' ? (
+                      // CASE 1: Completed & Auto-Awarded
                       <View style={twrnc`bg-[#06D6A0]/20 rounded-full px-4 py-2 flex-row items-center`}>
                         <Ionicons name="checkmark-done" size={14} color="#06D6A0" style={twrnc`mr-1.5`} />
                         <CustomText weight="bold" style={twrnc`text-[#06D6A0] text-xs`}>Completed</CustomText>
                       </View>
 
-                    ) : getQuestStatus(todayQuest) === 'ready_to_claim' ? (
-                      // CASE 2: Ready to Claim (Show Claim Button)
-                      <TouchableOpacity
-                        style={twrnc`bg-[#FFC107] rounded-full px-5 py-2.5 shadow-lg shadow-yellow-500/20`}
-                        onPress={() => handleClaimQuest(todayQuest)}
-                        activeOpacity={0.8}
-                      >
-                        <CustomText weight="bold" style={twrnc`text-[#0f172a] text-xs`}>Claim Reward</CustomText>
-                      </TouchableOpacity>
-
                     ) : (
-                      // CASE 3: In Progress (Passive Mode - Just a status label, NO BUTTON)
+                      // CASE 2: In Progress (Passive Mode)
                       <View style={twrnc`bg-[#4361EE]/10 rounded-full px-4 py-2 flex-row items-center border border-[#4361EE]/30`}>
                         <Ionicons name="pulse" size={14} color="#4361EE" style={twrnc`mr-1.5`} />
                         <CustomText weight="bold" style={twrnc`text-[#4361EE] text-xs`}>
-                          In Progress
+                          Tracking...
                         </CustomText>
                       </View>
                     )}
@@ -1812,7 +1749,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                   </CustomText>
                 </View>
                 <CustomText style={twrnc`text-gray-400 text-xs ml-4`}>
-                  Personalized challenges based on your performance
+                  Personalized challenges tracking automatically
                 </CustomText>
               </View>
               <TouchableOpacity
@@ -1828,15 +1765,14 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                 dynamicQuests.map((quest, index) => {
                   // Calculate status
                   const progress = calculateQuestProgress(quest);
-                  const isClaimed = quest.status === 'claimed';
-                  const isReadyToClaim = (quest.status === 'ready_to_claim' || progress >= 1) && !isClaimed;
+                  const isCompleted = quest.status === 'completed';
 
                   return (
                     <View key={quest.id || index} style={twrnc`bg-[#0f172a] rounded-2xl p-4 mb-3 shadow-lg border border-gray-700/50`}>
                       <View style={twrnc`flex-row items-start mb-3`}>
                         <View style={[
                           twrnc`rounded-xl p-2.5 mr-3`,
-                          isClaimed ? twrnc`bg-[#06D6A0]` : twrnc`bg-[#4361EE]`
+                          isCompleted ? twrnc`bg-[#06D6A0]` : twrnc`bg-[#4361EE]`
                         ]}>
                           <Ionicons
                             name={
@@ -1884,7 +1820,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                           <CustomText style={twrnc`text-gray-400 text-[9px]`}>Progress</CustomText>
                           <CustomText style={[
                             twrnc`text-[10px] font-medium`,
-                            (isReadyToClaim || isClaimed) ? twrnc`text-[#06D6A0]` : twrnc`text-[#FFC107]`
+                            isCompleted ? twrnc`text-[#06D6A0]` : twrnc`text-[#FFC107]`
                           ]}>
                             {Math.round(Math.min(progress * 100, 100))}%
                           </CustomText>
@@ -1895,40 +1831,33 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
                               twrnc`h-1.5 rounded-full`,
                               {
                                 width: `${Math.min(progress * 100, 100)}%`,
-                                backgroundColor: (isReadyToClaim || isClaimed) ? "#06D6A0" : "#4361EE",
+                                backgroundColor: isCompleted ? "#06D6A0" : "#4361EE",
                               },
                             ]}
                           />
                         </View>
                       </View>
 
-                      {/* ACTION BUTTONS (Cleaned Up) */}
-                      {/* The entire spinner block is gone. If not ready, we render nothing (null). */}
-                      {(isClaimed || isReadyToClaim) && (
-                        <View style={twrnc`flex-row items-center justify-end`}>
-                          {isClaimed ? (
-                            // STATE 1: Claimed (Done)
-                            <View style={twrnc`rounded-xl py-2 px-4 items-center justify-center flex-row bg-[#06D6A0]/20`}>
-                              <Ionicons name="checkmark-done" size={16} color="#06D6A0" style={twrnc`mr-1.5`} />
-                              <CustomText weight="bold" style={twrnc`text-[#06D6A0] text-xs`}>
-                                Collected
-                              </CustomText>
-                            </View>
-                          ) : (
-                            // STATE 2: Ready to Claim
-                            <TouchableOpacity
-                              style={twrnc`rounded-xl py-2 px-4 items-center justify-center flex-row bg-[#FFC107] shadow-lg shadow-yellow-500/20`}
-                              onPress={() => handleClaimQuest(quest)}
-                              activeOpacity={0.8}
-                            >
-                              <Ionicons name="gift" size={16} color="#0f172a" style={twrnc`mr-1.5`} />
-                              <CustomText weight="bold" style={twrnc`text-[#0f172a] text-xs`}>
-                                Claim Reward
-                              </CustomText>
-                            </TouchableOpacity>
-                          )}
-                        </View>
-                      )}
+                      {/* ACTION BUTTONS (Cleaned Up for Passive Tracking) */}
+                      <View style={twrnc`flex-row items-center justify-end`}>
+                        {isCompleted ? (
+                          // STATE 1: Completed & Awarded
+                          <View style={twrnc`rounded-xl py-2 px-4 items-center justify-center flex-row bg-[#06D6A0]/20`}>
+                            <Ionicons name="checkmark-done" size={16} color="#06D6A0" style={twrnc`mr-1.5`} />
+                            <CustomText weight="bold" style={twrnc`text-[#06D6A0] text-xs`}>
+                              Completed
+                            </CustomText>
+                          </View>
+                        ) : (
+                          // STATE 2: In Progress
+                          <View style={twrnc`flex-row items-center opacity-60`}>
+                            <Ionicons name="radio-button-on" size={12} color="#4361EE" style={twrnc`mr-1`} />
+                            <CustomText style={twrnc`text-gray-400 text-[10px]`}>
+                              Auto-tracking
+                            </CustomText>
+                          </View>
+                        )}
+                      </View>
                     </View>
                   )
                 })
@@ -2204,97 +2133,101 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
 
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={twrnc`pb-3`}>
               {dateActivities.length > 0 ? (
-                dateActivities.map((activity, index) => {
-                  const displayInfo = activity.displayInfo || getActivityDisplayInfo(activity)
-                  const calories = activity.calories || 0
+                dateActivities
+                  .filter((activity, index, self) =>
+                    index === self.findIndex((a) => a.id === activity.id)
+                  )
+                  .map((activity, index) => {
+                    const displayInfo = activity.displayInfo || getActivityDisplayInfo(activity)
+                    const calories = activity.calories || 0
 
-                  return (
-                    <View
-                      key={index}
-                      style={twrnc`bg-[#0f172a] rounded-2xl p-4 mb-3 shadow-lg border border-gray-700/50`}
-                    >
-                      {/* Header with Activity Type and Time */}
-                      <View style={twrnc`flex-row justify-between items-center mb-3`}>
-                        <CustomText weight="bold" style={twrnc`text-white text-sm`}>
-                          {activity.activityType.charAt(0).toUpperCase() + activity.activityType.slice(1)}
-                        </CustomText>
-                        <CustomText style={twrnc`text-gray-400 text-xs`}>
-                          {activity.formattedTime}
-                        </CustomText>
-                      </View>
-
-                      {/* Calories Badge */}
-                      {calories > 0 && (
-                        <View style={twrnc`flex-row items-center bg-[#EF476F] bg-opacity-20 rounded-lg px-2.5 py-1.5 mb-3 self-start`}>
-                          <Ionicons name="flame" size={14} color="#EF476F" style={twrnc`mr-1`} />
-                          <CustomText weight="bold" style={twrnc`text-[#EF476F] text-xs`}>
-                            {calories} cal burned
+                    return (
+                      <View
+                        key={activity.id || index}
+                        style={twrnc`bg-[#0f172a] rounded-2xl p-4 mb-3 shadow-lg border border-gray-700/50`}
+                      >
+                        {/* Header with Activity Type and Time */}
+                        <View style={twrnc`flex-row justify-between items-center mb-3`}>
+                          <CustomText weight="bold" style={twrnc`text-white text-sm`}>
+                            {activity.activityType.charAt(0).toUpperCase() + activity.activityType.slice(1)}
+                          </CustomText>
+                          <CustomText style={twrnc`text-gray-400 text-xs`}>
+                            {activity.formattedTime}
                           </CustomText>
                         </View>
-                      )}
 
-                      {/* Map View */}
-                      {activity.coordinates && activity.coordinates.length > 0 && (
-                        <View style={twrnc`h-28 rounded-xl overflow-hidden mb-3`}>
-                          <MapView
-                            style={twrnc`w-full h-full`}
-                            initialRegion={calculateMapRegion(activity.coordinates)}
-                            scrollEnabled={false}
-                            zoomEnabled={false}
-                            pitchEnabled={false}
-                            rotateEnabled={false}
-                          >
-                            <Polyline
-                              coordinates={activity.coordinates}
-                              strokeColor="#4361EE"
-                              strokeWidth={3}
-                            />
-                          </MapView>
-                        </View>
-                      )}
-
-                      {/* Stats Row */}
-                      <View style={twrnc`flex-row justify-between mb-4`}>
-                        {[
-                          displayInfo.primaryMetric,
-                          displayInfo.secondaryMetric,
-                          displayInfo.tertiaryMetric
-                        ].map((metric, idx) => (
-                          <View key={idx} style={twrnc`items-center flex-1`}>
-                            <View style={twrnc`flex-row items-center mb-0.5`}>
-                              <Ionicons
-                                name={metric.icon}
-                                size={12}
-                                color={metric.color}
-                                style={twrnc`mr-1`}
-                              />
-                              <CustomText style={twrnc`text-gray-400 text-[9px]`}>
-                                {metric.label}
-                              </CustomText>
-                            </View>
-                            <CustomText weight="bold" style={twrnc`text-white text-xs`}>
-                              {metric.value}
+                        {/* Calories Badge */}
+                        {calories > 0 && (
+                          <View style={twrnc`flex-row items-center bg-[#EF476F] bg-opacity-20 rounded-lg px-2.5 py-1.5 mb-3 self-start`}>
+                            <Ionicons name="flame" size={14} color="#EF476F" style={twrnc`mr-1`} />
+                            <CustomText weight="bold" style={twrnc`text-[#EF476F] text-xs`}>
+                              {calories} cal burned
                             </CustomText>
                           </View>
-                        ))}
-                      </View>
+                        )}
 
-                      {/* View Details Button */}
-                      <TouchableOpacity
-                        style={twrnc`bg-[#4361EE] rounded-xl py-2.5 items-center flex-row justify-center`}
-                        onPress={() => {
-                          setIsDateActivitiesModalVisible(false)
-                          viewActivityDetails(activity)
-                        }}
-                      >
-                        <Ionicons name="eye-outline" size={16} color="#FFFFFF" style={twrnc`mr-1.5`} />
-                        <CustomText weight="bold" style={twrnc`text-white text-xs`}>
-                          View Details
-                        </CustomText>
-                      </TouchableOpacity>
-                    </View>
-                  )
-                })
+                        {/* Map View */}
+                        {activity.coordinates && activity.coordinates.length > 0 && (
+                          <View style={twrnc`h-28 rounded-xl overflow-hidden mb-3`}>
+                            <MapView
+                              style={twrnc`w-full h-full`}
+                              initialRegion={calculateMapRegion(activity.coordinates)}
+                              scrollEnabled={false}
+                              zoomEnabled={false}
+                              pitchEnabled={false}
+                              rotateEnabled={false}
+                            >
+                              <Polyline
+                                coordinates={activity.coordinates}
+                                strokeColor="#4361EE"
+                                strokeWidth={3}
+                              />
+                            </MapView>
+                          </View>
+                        )}
+
+                        {/* Stats Row */}
+                        <View style={twrnc`flex-row justify-between mb-4`}>
+                          {[
+                            displayInfo.primaryMetric,
+                            displayInfo.secondaryMetric,
+                            displayInfo.tertiaryMetric
+                          ].map((metric, idx) => (
+                            <View key={idx} style={twrnc`items-center flex-1`}>
+                              <View style={twrnc`flex-row items-center mb-0.5`}>
+                                <Ionicons
+                                  name={metric.icon}
+                                  size={12}
+                                  color={metric.color}
+                                  style={twrnc`mr-1`}
+                                />
+                                <CustomText style={twrnc`text-gray-400 text-[9px]`}>
+                                  {metric.label}
+                                </CustomText>
+                              </View>
+                              <CustomText weight="bold" style={twrnc`text-white text-xs`}>
+                                {metric.value}
+                              </CustomText>
+                            </View>
+                          ))}
+                        </View>
+
+                        {/* View Details Button */}
+                        <TouchableOpacity
+                          style={twrnc`bg-[#4361EE] rounded-xl py-2.5 items-center flex-row justify-center`}
+                          onPress={() => {
+                            setIsDateActivitiesModalVisible(false)
+                            viewActivityDetails(activity)
+                          }}
+                        >
+                          <Ionicons name="eye-outline" size={16} color="#FFFFFF" style={twrnc`mr-1.5`} />
+                          <CustomText weight="bold" style={twrnc`text-white text-xs`}>
+                            View Details
+                          </CustomText>
+                        </TouchableOpacity>
+                      </View>
+                    )
+                  })
               ) : (
                 <View style={twrnc`items-center justify-center py-12`}>
                   <View style={twrnc`bg-[#0f172a] p-5 rounded-2xl mb-4`}>
@@ -2319,7 +2252,7 @@ const DashboardScreen = ({ navigateToActivity, navigation, userData }) => {
         visible={isBadgeDetailModalVisible}
         badge={selectedBadge}
         onClose={() => setIsBadgeDetailModalVisible(false)}
-        onClaim={handleClaimReward} // PASSED PROP
+        onClaim={handleClaimReward}
       />
 
       <BadgeNotification visible={isBadgeNotificationVisible} badges={newlyEarnedBadges} onClose={() => setIsBadgeNotificationVisible(false)} />

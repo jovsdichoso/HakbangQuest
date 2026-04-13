@@ -1,9 +1,9 @@
-// utils/QuestManager.js
 import {
     doc,
     getDoc,
     getDocs,
     addDoc,
+    setDoc,
     updateDoc,
     deleteDoc,
     collection,
@@ -11,56 +11,150 @@ import {
     where,
     serverTimestamp,
     increment,
-    runTransaction
+    runTransaction,
+    Timestamp
 } from "firebase/firestore";
 import { db } from "../firebaseConfig";
 
 export class QuestManager {
 
-    /**
-     * ✅ NEW: Claim a completed quest reward (Passive Tracking System)
-     * This handles the "Claim" button press on the Dashboard.
-     */
-    static async claimQuestReward(userId, questId) {
+    // ==========================================================
+    //  ✅ CORE: PASSIVE TRACKING & AUTO-COMPLETION
+    // ==========================================================
+
+    static async checkAndProcessQuests(userId) {
         try {
-            console.log(`[QuestManager] Attempting to claim reward for quest: ${questId}`);
+            console.log(`[QuestManager] 🔄 Processing passive quest updates for user: ${userId}`);
 
-            return await runTransaction(db, async (transaction) => {
-                const questRef = doc(db, "quests", questId);
-                const userRef = doc(db, "users", userId);
+            // 1. Define "Today" (Local start of day)
+            const startOfDay = new Date();
+            startOfDay.setHours(0, 0, 0, 0);
 
-                const questDoc = await transaction.get(questRef);
-                const userDoc = await transaction.get(userRef);
+            // 2. Fetch ALL activity collections
+            const collectionsToCheck = [
+                "activities",
+                "normal_activities",
+                "challenge_activities",
+                "quest_activities"
+            ];
 
-                if (!questDoc.exists() || !userDoc.exists()) {
-                    throw new Error("Quest or User not found");
+            const fetchPromises = collectionsToCheck.map(colName => {
+                const q = query(
+                    collection(db, colName),
+                    where("userId", "==", userId),
+                    where("createdAt", ">=", startOfDay)
+                );
+                return getDocs(q);
+            });
+
+            const snapshots = await Promise.all(fetchPromises);
+            const allDocs = snapshots.flatMap(snap => snap.docs);
+            
+            // Deduplicate
+            const uniqueDocsMap = new Map();
+            allDocs.forEach(d => uniqueDocsMap.set(d.id, d.data()));
+            const uniqueActivities = Array.from(uniqueDocsMap.values());
+
+            const dailyStats = {
+                distance: 0, 
+                duration: 0, 
+                reps: 0,     
+                calories: 0,
+                runningDistance: 0,
+                cyclingDistance: 0
+            };
+
+            // 3. Aggregate Stats
+            uniqueActivities.forEach(data => {
+                if (this._validateActivity(data)) {
+                    const dist = Number(data.distance || 0);
+                    const dur = Number(data.duration || data.durationSeconds || 0);
+                    
+                    dailyStats.distance += dist; 
+                    dailyStats.duration += dur;
+                    dailyStats.reps += Number(data.reps || 0);
+                    dailyStats.calories += Number(data.calories || 0);
+
+                    if (data.activityType === 'running') dailyStats.runningDistance += dist;
+                    if (data.activityType === 'cycling') dailyStats.cyclingDistance += dist;
                 }
+            });
 
+            console.log("[QuestManager] 📊 Daily Stats Calculated:", dailyStats);
+
+            // 4. Fetch Active Quests
+            const questsQuery = query(
+                collection(db, "quests"),
+                where("userId", "==", userId),
+                where("status", "==", "active")
+            );
+            
+            const questsSnap = await getDocs(questsQuery);
+
+            // 5. Evaluate Each Quest
+            const evaluationPromises = questsSnap.docs.map(async (questDoc) => {
                 const quest = questDoc.data();
+                let currentProgress = 0;
 
-                // ✅ FIX: Floating point tolerance (0.01) for distance quests
-                // Checks if status is 'ready_to_claim' OR progress is met
-                const isGoalMet = quest.progress >= (quest.goal - 0.01);
-                const isComplete = quest.status === "ready_to_claim" || isGoalMet;
-
-                // Debug log to see exactly why it might fail
-                if (!isComplete) {
-                    console.error(`[QuestManager] Validation Failed: Status=${quest.status}, Progress=${quest.progress}, Goal=${quest.goal}`);
-                    throw new Error("Quest criteria not met yet.");
+                if (quest.activityType === 'running' && quest.unit === 'distance') {
+                    currentProgress = dailyStats.runningDistance / 1000; 
+                } 
+                else if (quest.activityType === 'cycling' && quest.unit === 'distance') {
+                    currentProgress = dailyStats.cyclingDistance / 1000;
+                } 
+                else if (quest.unit === 'distance') {
+                    currentProgress = dailyStats.distance / 1000; // km
+                } 
+                else if (quest.unit === 'duration') {
+                    currentProgress = dailyStats.duration / 60; // minutes
+                } 
+                else if (quest.unit === 'reps') {
+                    currentProgress = dailyStats.reps;
+                } 
+                else if (quest.unit === 'calories') {
+                    currentProgress = dailyStats.calories;
                 }
 
-                if (quest.status === "claimed") {
-                    throw new Error("Reward already claimed.");
+                currentProgress = Math.round(currentProgress * 100) / 100;
+
+                const isGoalMet = currentProgress >= quest.goal;
+
+                if (isGoalMet) {
+                    await this._processQuestCompletion(userId, questDoc.id, quest, currentProgress);
+                } else {
+                    if (currentProgress !== quest.progress) {
+                        await updateDoc(questDoc.ref, { 
+                            progress: currentProgress,
+                            updatedAt: serverTimestamp() 
+                        });
+                    }
+                }
+            });
+
+            await Promise.all(evaluationPromises);
+            console.log("[QuestManager] ✅ Passive processing complete.");
+
+        } catch (error) {
+            console.error("[QuestManager] ❌ Error processing quests:", error);
+        }
+    }
+
+    static async _processQuestCompletion(userId, questId, questData, finalProgress) {
+        try {
+            await runTransaction(db, async (transaction) => {
+                const userRef = doc(db, "users", userId);
+                const questRef = doc(db, "quests", questId);
+
+                const freshQuestSnap = await transaction.get(questRef);
+                if (!freshQuestSnap.exists() || freshQuestSnap.data().status === 'completed') {
+                    return; 
                 }
 
-                const xpReward = quest.xpReward || 50;
-                const currentXP = userDoc.data().totalXP || 0;
-                const newTotalXP = currentXP + xpReward;
-
-                // Calculate new level (Simple formula: 1000 XP per level)
+                const userDoc = await transaction.get(userRef);
+                const currentXP = userDoc.exists() ? (userDoc.data().totalXP || 0) : 0;
+                const newTotalXP = currentXP + questData.xpReward;
                 const newLevel = Math.floor(newTotalXP / 1000) + 1;
 
-                // 1. Award XP to User
                 transaction.update(userRef, {
                     totalXP: newTotalXP,
                     level: newLevel,
@@ -68,149 +162,136 @@ export class QuestManager {
                     lastActivityDate: serverTimestamp()
                 });
 
-                // 2. Mark Quest as Claimed
                 transaction.update(questRef, {
-                    status: "claimed",
-                    claimedAt: serverTimestamp(),
+                    status: "completed", 
+                    progress: finalProgress,
+                    completedAt: serverTimestamp(),
                     updatedAt: serverTimestamp()
                 });
 
-                // 3. Log the Completion (Receipt)
-                const completionRef = doc(collection(db, "quest_completions"));
-                transaction.set(completionRef, {
+                const historyRef = doc(collection(db, "quest_history"));
+                transaction.set(historyRef, {
                     userId,
                     questId,
-                    title: quest.title,
-                    xpEarned: xpReward,
-                    claimedAt: serverTimestamp(),
-                    activityType: quest.activityType
+                    title: questData.title,
+                    xpEarned: questData.xpReward,
+                    completedAt: serverTimestamp(),
+                    type: "passive_daily"
                 });
-
-                return {
-                    success: true,
-                    xpEarned: xpReward,
-                    newLevel: newLevel,
-                    title: quest.title
-                };
             });
+            console.log(`[QuestManager] 🏆 Quest "${questData.title}" Completed! +${questData.xpReward} XP`);
         } catch (error) {
-            console.error("[QuestManager] Claim Error:", error);
-            return { success: false, error: error.message };
+            console.error(`[QuestManager] Transaction failed for quest ${questId}:`, error);
         }
     }
 
+    static _validateActivity(data) {
+        const duration = Number(data.duration || data.durationSeconds || 0);
+        const type = data.activityType || 'unknown';
+        const reps = Number(data.reps || 0);
+
+        if (['pushup', 'push-ups', 'situp', 'squat'].includes(type) || reps > 0) {
+             if (duration > 0 || reps > 0) return true;
+        }
+
+        if (duration < 30) return false;
+
+        const distanceMeters = Number(data.distance || 0);
+        if (duration > 0 && distanceMeters > 0) {
+            const speedMps = distanceMeters / duration;
+            if (type === 'cycling' && speedMps > 17) return false; 
+            if (['walking', 'running', 'jogging'].includes(type) && speedMps > 7) return false; 
+        }
+
+        return true;
+    }
+
+    // ==========================================================
+    //  📅 DAILY QUEST GENERATION (✅ FIXED TRANSACTION)
+    // ==========================================================
+
     static async generateDailyQuests(userId, userStats) {
         try {
-            console.log("[QuestManager] Generating daily quests for user:", userId);
+            console.log("[QuestManager] Checking/Generating daily quests...");
 
-            const existingQuestsSnapshot = await getDocs(
-                query(
-                    collection(db, "quests"),
-                    where("userId", "==", userId),
-                    where("status", "==", "active")
-                )
-            );
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
+            const startOfDay = new Date();
+            startOfDay.setHours(0, 0, 0, 0);
+            const dateStr = startOfDay.toISOString().split('T')[0];
 
-            const todaysQuests = existingQuestsSnapshot.docs
-                .map((doc) => ({ id: doc.id, ...doc.data() }))
-                .filter((quest) => {
-                    if (!quest.createdAt) return false;
-                    const createdAt = quest.createdAt.toDate ? quest.createdAt.toDate() : new Date(quest.createdAt);
-                    return createdAt >= today;
+            const templates = this.getQuestTemplates(userStats);
+
+            const activeQuests = await runTransaction(db, async (transaction) => {
+                const results = [];
+                
+                // 1. Prepare all reads
+                const reads = templates.map(template => {
+                    const uniqueQuestId = `q_${userId}_${dateStr}_${template.id}`;
+                    const questRef = doc(db, "quests", uniqueQuestId);
+                    return { ref: questRef, template, id: uniqueQuestId };
                 });
 
-            if (todaysQuests.length > 0) {
-                // --- Deduplication Logic ---
-                const uniqueQuests = [];
-                const seenQuestTypes = new Set();
-                const duplicatesToDelete = [];
+                // 2. Execute reads
+                const snapshots = await Promise.all(reads.map(r => transaction.get(r.ref)));
 
-                for (const quest of todaysQuests) {
-                    const identifier = quest.questId || quest.title;
-
-                    if (seenQuestTypes.has(identifier)) {
-                        duplicatesToDelete.push(quest.id);
+                // 3. Execute writes only if needed
+                snapshots.forEach((snap, index) => {
+                    const item = reads[index];
+                    
+                    if (!snap.exists()) {
+                        // Create new quest (Allowed by 'allow create' rule)
+                        const questData = {
+                            ...item.template,
+                            id: item.id,
+                            userId: userId,
+                            progress: 0,
+                            status: "active",
+                            createdAt: serverTimestamp(),
+                            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+                        };
+                        transaction.set(item.ref, questData);
+                        results.push(questData);
                     } else {
-                        seenQuestTypes.add(identifier);
-                        uniqueQuests.push(quest);
+                        // Return existing (Allowed by 'allow read')
+                        results.push({ id: item.id, ...snap.data() });
                     }
-                }
-
-                if (duplicatesToDelete.length > 0) {
-                    console.log(`[QuestManager] 🧹 Found ${duplicatesToDelete.length} duplicate quests. Cleaning up...`);
-                    Promise.all(duplicatesToDelete.map(id => deleteDoc(doc(db, "quests", id))))
-                        .catch(err => console.error("[QuestManager] Failed to delete duplicates", err));
-                }
-
-                return uniqueQuests;
-            }
-
-            // Generate NEW quests if none exist for today
-            console.log("[QuestManager] No active quests found, generating new ones...");
-            const questTemplates = this.getQuestTemplates(userStats);
-            const newQuests = [];
-
-            for (const template of questTemplates) {
-                const questDoc = await addDoc(collection(db, "quests"), {
-                    ...template,
-                    userId: userId,
-                    progress: 0,
-                    status: "active",
-                    attempts: 0,
-                    createdAt: serverTimestamp(),
-                    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
                 });
 
-                newQuests.push({
-                    id: questDoc.id,
-                    ...template,
-                    progress: 0,
-                    status: "active",
-                    attempts: 0,
-                    createdAt: new Date(),
-                    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-                });
-            }
+                return results;
+            });
 
-            console.log(`[QuestManager] Created ${newQuests.length} new quests`);
-            return newQuests;
+            console.log(`[QuestManager] Processed ${activeQuests.length} daily quests.`);
+            return activeQuests;
+
         } catch (error) {
             console.error("[QuestManager] Error generating daily quests:", error);
             return [];
         }
     }
 
-    /**
-     * Load user's active quests
-     */
     static async loadUserQuests(userId) {
         try {
-            // Fetch 'active' AND 'ready_to_claim'
             const q = query(
                 collection(db, "quests"),
                 where("userId", "==", userId),
-                where("status", "in", ["active", "ready_to_claim"])
+                where("status", "in", ["active", "completed"])
             );
 
             const snapshot = await getDocs(q);
-            const quests = snapshot.docs.map((doc) => ({
-                id: doc.id,
-                ...doc.data(),
-            }));
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
 
-            console.log(`[QuestManager] Loaded ${quests.length} active/claimable quests`);
-            return quests;
+            return snapshot.docs
+                .map(doc => ({ id: doc.id, ...doc.data() }))
+                .filter(quest => {
+                    const qDate = quest.createdAt?.toDate ? quest.createdAt.toDate() : new Date(quest.createdAt);
+                    return qDate >= today;
+                });
         } catch (error) {
             console.error("[QuestManager] Error loading quests:", error);
             return [];
         }
     }
 
-    /**
-     * Cleanup expired quests
-     */
     static async cleanupExpiredQuests(userId) {
         try {
             const q = query(
@@ -221,7 +302,6 @@ export class QuestManager {
 
             const snapshot = await getDocs(q);
             const now = new Date();
-            let expiredCount = 0;
 
             for (const docSnapshot of snapshot.docs) {
                 const quest = docSnapshot.data();
@@ -232,28 +312,27 @@ export class QuestManager {
                         status: "expired",
                         updatedAt: serverTimestamp(),
                     });
-                    expiredCount++;
                 }
             }
-            if (expiredCount > 0) console.log(`[QuestManager] Expired ${expiredCount} quests`);
         } catch (error) {
-            console.error("[QuestManager] Error cleaning up expired quests:", error);
+            console.error("[QuestManager] Error cleaning up quests:", error);
         }
     }
 
-    /**
-     * Get quest templates with dynamic goals
-     */
     static getQuestTemplates(userStats) {
         const levelMultiplier = 1 + ((userStats.level || 1) - 1) * 0.1;
+        
+        const safeDistance = Math.max(1, userStats.avgDailyDistance || 2);
+        const safeReps = Math.max(10, userStats.avgDailyReps || 15);
+        const safeDuration = Math.max(15, userStats.avgActiveDuration || 30);
 
         return [
             {
-                questId: "daily_distance",
-                title: "Daily Distance",
-                description: "Walk or run to reach the distance goal",
+                id: "daily_mover", 
+                title: "Daily Mover",
+                description: "Walk, jog, run, or cycle to reach your goal.",
                 unit: "distance",
-                goal: Math.round(Math.max(2, userStats.avgDailyDistance * 1.1) * 10) / 10,
+                goal: Math.round(safeDistance * 1.1 * 10) / 10,
                 difficulty: "easy",
                 xpReward: Math.round(50 * levelMultiplier),
                 category: "fitness",
@@ -261,53 +340,29 @@ export class QuestManager {
                 type: "daily",
             },
             {
-                questId: "strength_builder",
-                title: "Strength Builder",
-                description: "Complete push-ups or strength reps",
+                id: "pushup_master", 
+                title: "Push-Up Master",
+                description: "Build upper body strength with push-ups.",
                 unit: "reps",
-                goal: Math.round(Math.max(20, userStats.avgDailyReps * 1.3)),
-                difficulty: "hard",
+                goal: Math.round(safeReps * 1.2),
+                difficulty: "medium",
                 xpReward: Math.round(80 * levelMultiplier),
                 category: "strength",
                 activityType: "pushup",
                 type: "daily",
             },
             {
-                questId: "active_minutes",
-                title: "Stay Active",
-                description: "Log active minutes via any activity",
+                id: "active_minutes",
+                title: "Active Minutes",
+                description: "Log active minutes across any activity.",
                 unit: "duration",
-                goal: Math.round(Math.max(30, userStats.avgActiveDuration * 1.15)),
-                difficulty: "medium",
+                goal: Math.round(safeDuration),
+                difficulty: "easy",
                 xpReward: Math.round(60 * levelMultiplier),
-                category: "consistency",
+                category: "endurance",
                 activityType: "any",
                 type: "daily",
-            },
-            {
-                questId: "distance_explorer",
-                title: "Runner's High",
-                description: "Specific goal for running activities",
-                unit: "distance",
-                goal: Math.round(Math.max(3, userStats.avgDailyDistance * 1.2) * 10) / 10,
-                difficulty: "medium",
-                xpReward: Math.round(75 * levelMultiplier),
-                category: "endurance",
-                activityType: "running",
-                type: "daily",
-            },
-            {
-                questId: "cycling_adventure",
-                title: "Cycling Adventure",
-                description: "Hit the road on your bike",
-                unit: "distance",
-                goal: Math.round(Math.max(5, userStats.avgDailyDistance * 1.5) * 10) / 10,
-                difficulty: "medium",
-                xpReward: Math.round(70 * levelMultiplier),
-                category: "endurance",
-                activityType: "cycling",
-                type: "daily",
-            },
+            }
         ];
     }
 }

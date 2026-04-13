@@ -12,3 +12,5 @@ ios/build/
 
 # Ignore the .git folder
 .git/
+
+android/local.properties

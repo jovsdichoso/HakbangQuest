@@ -148,7 +148,7 @@ const ButtonSection = ({
 
           {/* Clear Activity Button */}
           <TouchableOpacity
-            style={twrnc`[bg-1e293b] border border-EF476F rounded-2xl py-4 px-6 flex-row items-center justify-center`}
+            style={twrnc`[bg-ff5613] border border-EF476F rounded-2xl py-4 px-6 flex-row items-center justify-center`}
             onPress={clearActivity}
             disabled={isTrackingLoading}
             activeOpacity={0.8}
